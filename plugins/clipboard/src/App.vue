@@ -51,9 +51,14 @@ function push(text: string): void {
   void save()
 }
 
+/** contextBridge 传参会结构化克隆，Vue Proxy 不能直接传，先转纯数据 */
+function plain<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value))
+}
+
 async function save(): Promise<void> {
   try {
-    await window.appapi.storage.set('history', items.value)
+    await window.appapi.storage.set('history', plain(items.value))
   } catch {
     /* ignore */
   }

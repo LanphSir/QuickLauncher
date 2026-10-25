@@ -80,6 +80,11 @@ await appapi.storage.get('todos')          // 未声明 storage 权限会被拒�
 await appapi.storage.keys()
 await appapi.storage.remove('todos')
 
+// ⚠ 注意：跨 contextBridge 传参会做结构化克隆，Vue 的 reactive/ref Proxy 不能直接传
+//（报 `An object could not be cloned`，发生在 await 处，后续代码全部不执行）。
+// 存响应式状态前先转纯数据：storage.set('k', JSON.parse(JSON.stringify(state)))
+//（内置插件 clipboard/translator 里的 plain() 就是这个用途）
+
 // 剪贴板（需要 clipboard 权限）
 await appapi.clipboard.readText()
 await appapi.clipboard.writeText('hello')

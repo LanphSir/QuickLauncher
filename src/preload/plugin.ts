@@ -21,6 +21,19 @@ function subscribe<T = unknown>(channel: string, callback: (payload: T) => void)
 }
 
 /**
+ * 二次保险：桥传参（contextBridge）已要求纯数据，这里再防一次
+ * 插件侧漏传的可克隆性存疑值。注意：Proxy 在桥传参时就会被拒，
+ * 插件必须在调用前自行转纯数据（见插件开发指南）。
+ */
+function plain<T>(value: T): T {
+  try {
+    return structuredClone(value)
+  } catch {
+    return JSON.parse(JSON.stringify(value ?? null))
+  }
+}
+
+/**
  * 插件可用的受控 API（window.appapi）。
  * 主进程网关会校验调用方身份与 plugin.json 声明的权限。
  */
@@ -32,7 +45,7 @@ contextBridge.exposeInMainWorld('appapi', {
   },
   storage: {
     get: (key: string) => invoke('plugin:storage.get', key),
-    set: (key: string, value: unknown) => invoke('plugin:storage.set', { key, value }),
+    set: (key: string, value: unknown) => invoke('plugin:storage.set', { key, value: plain(value) }),
     remove: (key: string) => invoke('plugin:storage.remove', key),
     keys: () => invoke('plugin:storage.keys')
   },

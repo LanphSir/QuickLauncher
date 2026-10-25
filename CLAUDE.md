@@ -62,6 +62,7 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 | 面板 blur 隐藏 | DevTools 打开时不隐藏（`panel.ts` 已处理），调试面板 UI 不要关这个分支 |
 | Vue 模板里的 `<webview>` 被当作组件解析报错 | 插件 vite 配置需 `vue({ compilerOptions: { isCustomElement: (tag) => tag === 'webview' } })`，见 plugins/translator |
 | zip 安装 | 只能用 `manager.ts` 的手工解包（防 zip-slip），不要换 `extractAll` |
+| 插件 IPC 报 `An object could not be cloned` | contextBridge 传参即结构化克隆，Vue reactive/ref Proxy 不能直接传 appapi；插件侧先 `JSON.parse(JSON.stringify(...))`（见内置插件 `plain()`），preload 侧的 `plain()` 只是二次保险 |
 
 ## 6. Git 与迭代流程
 

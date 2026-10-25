@@ -1,7 +1,7 @@
 {
   "id": "com.launcher.translator",
   "name": "快速翻译",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "内嵌官方翻译网页（Google/DeepL/必应/百度），支持任意英文输入命中，可自定义添加翻译网站",
   "type": "web",
   "entry": "index.html",

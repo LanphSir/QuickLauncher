@@ -14,7 +14,7 @@ interface PluginApi {
 
   storage: {
     get(key: string): Promise<unknown>          // 无此 key 返回 null
-    set(key: string, value: unknown): Promise<boolean>   // value 须可 JSON 序列化
+    set(key: string, value: unknown): Promise<boolean>   // 值必须可结构化克隆
     remove(key: string): Promise<boolean>
     keys(): Promise<string[]>
   }
@@ -50,6 +50,14 @@ interface PluginApi {
 | （无需权限） | `info` / `onQuery` / `window.hide` / `exit` |
 
 权限在 `plugin.json` 的 `permissions` 数组声明，例如 `"permissions": ["storage", "clipboard"]`。
+
+## ⚠ 跨桥传参限制（高频坑）
+
+`window.appapi` 的所有调用经 contextBridge 跨世界传参，参数会被**结构化克隆**：
+- Vue 的 `reactive`/`ref` Proxy **不能直接传**，报 `An object could not be cloned`
+- 该错误在插件代码的 `await` 处抛出，后续代码全部不执行（极易误判成其他 bug）
+- 正确姿势：存响应式状态前先 `JSON.parse(JSON.stringify(state))` 转纯数据
+  （内置插件 clipboard/translator 中的 `plain()` 即此用途，写插件照抄即可）
 
 ## 生命周期与视图缓存
 
