@@ -227,13 +227,6 @@ function onTileCtx(plugin: PluginSummary, pos: { x: number; y: number }): void {
 
 <template>
   <div class="shell">
-    <span
-      v-for="h in RESIZE_HANDLES"
-      :key="h"
-      class="rz"
-      :class="`rz-${h}`"
-      @pointerdown="startResize($event, h)"
-    />
     <div class="panel" :class="{ pulse }">
     <template v-if="store.view === 'home'">
       <header class="search-row">
@@ -342,6 +335,15 @@ function onTileCtx(plugin: PluginSummary, pos: { x: number; y: number }): void {
       @detach="detach(detail); detail = null"
     />
     <ExternalEdit v-if="edit" :plugin="edit" @close="edit = null" />
+    <!-- 缩放热区必须排在 drag 区元素之后：Electron 按文档顺序做 drag 加/no-drag 减，
+         热区放前面会被搜索行后续加回的 drag 矩形覆盖（表现为顶边只能移动不能缩放） -->
+    <span
+      v-for="h in RESIZE_HANDLES"
+      :key="h"
+      class="rz"
+      :class="`rz-${h}`"
+      @pointerdown="startResize($event, h)"
+    />
     </div>
   </div>
 </template>
@@ -349,15 +351,20 @@ function onTileCtx(plugin: PluginSummary, pos: { x: number; y: number }): void {
 <style scoped>
 .shell {
   position: relative;
-  height: 100%;
+  /* 不能用 height:100%——naive-ui 的 Provider 包裹 div 无高度，会导致卡片比窗口矮、
+     底边缩放热区悬空；100vh 直接锚定窗口视口 */
+  height: 100vh;
   width: 100%;
 }
 
-/* 8 向缩放热区：透明无边框窗口不支持系统边缘缩放，自实现 */
+/* 8 向缩放热区：透明无边框窗口不支持系统边缘缩放，自实现。
+   必须显式 no-drag：搜索行的 drag 区从面板 y=0 开始，会把顶边热区吞进"移动窗口"；
+   drag region 计算是 drag 矩形减 no-drag 矩形，与层叠顺序无关。 */
 .rz {
   position: absolute;
   z-index: 40;
   touch-action: none;
+  -webkit-app-region: no-drag;
 }
 
 .rz-n,

@@ -63,6 +63,8 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 | Vue 模板里的 `<webview>` 被当作组件解析报错 | 插件 vite 配置需 `vue({ compilerOptions: { isCustomElement: (tag) => tag === 'webview' } })`，见 plugins/translator |
 | zip 安装 | 只能用 `manager.ts` 的手工解包（防 zip-slip），不要换 `extractAll` |
 | 插件 IPC 报 `An object could not be cloned` | contextBridge 传参即结构化克隆，Vue reactive/ref Proxy 不能直接传 appapi；插件侧先 `JSON.parse(JSON.stringify(...))`（见内置插件 `plain()`），preload 侧的 `plain()` 只是二次保险 |
+| `-webkit-app-region` 吞掉缩放热区 | drag region 按**文档顺序**做 drag 加/no-drag 减，与 DOM 层叠无关——no-drag 元素必须在 drag 元素之后（见 PanelShell 模板中 `.rz` 的位置注释） |
+| 渲染层根容器 `height:100%` 失效 | naive-ui Provider 包裹 div 无高度会逐层塌缩；PanelShell 的 `.shell` 用 `100vh` 锚定窗口视口，勿改回 100% |
 
 ## 6. Git 与迭代流程
 
