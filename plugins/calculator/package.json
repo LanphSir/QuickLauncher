@@ -1,0 +1,16 @@
+{
+  "name": "@launcher/plugin-calculator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "计算器（内置插件示例：纯 UI + 键盘操作）",
+  "scripts": {
+    "build": "vite build"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.0",
+    "vite": "^7.1.0"
+  },
+  "dependencies": {
+    "vue": "^3.5.0"
+  }
+}

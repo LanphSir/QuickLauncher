@@ -1,0 +1,11 @@
+node_modules/
+out/
+out-plugins/
+release/
+plugins/*/dist/
+*.log
+.DS_Store
+Thumbs.db
+*.local
+# ZCode 会话数据（skills 需要追踪，plans 是会话元数据）
+.zcode/plans/

@@ -1,0 +1,11 @@
+{
+  "id": "com.launcher.notepad",
+  "name": "记事本",
+  "version": "0.1.0",
+  "description": "外部程序集成示例：通过插件协议拉起 Windows 记事本",
+  "type": "external",
+  "command": "notepad.exe",
+  "args": [],
+  "keywords": ["notepad", "记事本", "txt", "文本", "编辑"],
+  "permissions": []
+}

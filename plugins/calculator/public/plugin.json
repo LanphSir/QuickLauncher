@@ -1,0 +1,10 @@
+{
+  "id": "com.launcher.calculator",
+  "name": "计算器",
+  "version": "0.1.0",
+  "description": "支持括号与键盘输入的四则计算器",
+  "type": "web",
+  "entry": "index.html",
+  "keywords": ["calc", "calculator", "计算", "计算器", "数学"],
+  "permissions": []
+}

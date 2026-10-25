@@ -1,0 +1,10 @@
+{
+  "id": "com.launcher.clipboard",
+  "name": "剪贴板历史",
+  "version": "0.1.0",
+  "description": "自动记录复制的文本，点击即可重新复制",
+  "type": "web",
+  "entry": "index.html",
+  "keywords": ["clip", "clipboard", "剪贴板", "粘贴", "复制", "历史"],
+  "permissions": ["storage", "clipboard", "notify"]
+}
