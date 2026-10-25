@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
+import AppIcon from './AppIcon.vue'
+import { fallbackIconFor, gradientFor } from '../utils/appFallback'
 
-defineProps<{
+const props = defineProps<{
   plugin: PluginSummary
   selected?: boolean
 }>()
@@ -10,9 +12,12 @@ const emit = defineEmits<{
   open: []
   hover: []
   pin: []
+  ctx: [pos: { x: number; y: number }]
 }>()
 
 const hovering = ref(false)
+const fallbackName = computed(() => fallbackIconFor(props.plugin))
+const fallbackBg = computed(() => gradientFor(props.plugin))
 </script>
 
 <template>
@@ -22,6 +27,7 @@ const hovering = ref(false)
     @click="emit('open')"
     @mouseenter="hovering = true; emit('hover')"
     @mouseleave="hovering = false"
+    @contextmenu.prevent="emit('ctx', { x: $event.clientX, y: $event.clientY })"
   >
     <button
       v-if="hovering || plugin.pinned"
@@ -30,22 +36,16 @@ const hovering = ref(false)
       :title="plugin.pinned ? '取消固定' : '固定到已固定'"
       @click.stop="emit('pin')"
     >
-      <svg viewBox="0 0 24 24" width="12" height="12">
-        <path
-          v-if="plugin.pinned"
-          d="M14.2 2.6 21.4 9.8a1 1 0 0 1-.5 1.7l-3.2.6-3.6 3.6.8 4.4a1 1 0 0 1-1.7.9l-4.5-4.5-4.7 4.7-1-1 4.7-4.7L3.2 11a1 1 0 0 1 .9-1.7l4.4.8 3.6-3.6.6-3.2a1 1 0 0 1 1.5-.7Z"
-          fill="currentColor"
-        />
-        <path
-          v-else
-          d="M14.2 2.6 21.4 9.8a1 1 0 0 1-.5 1.7l-3.2.6-3.6 3.6.8 4.4a1 1 0 0 1-1.7.9l-4.5-4.5-4.7 4.7-1-1 4.7-4.7L3.2 11a1 1 0 0 1 .9-1.7l4.4.8 3.6-3.6.6-3.2a1 1 0 0 1 1.5-.7Zm.4 2.9-.5 2.6a1 1 0 0 1-.3.5l-4.2 4.2a1 1 0 0 1-.9.3l-2.6-.5 8 8-.5-2.6a1 1 0 0 1 .3-.9l4.2-4.2a1 1 0 0 1 .5-.3l2.6-.5Z"
-          fill="currentColor"
-        />
-      </svg>
+      <AppIcon name="pin" :size="12" />
     </button>
     <div class="tile-icon">
       <img v-if="plugin.icon" :src="plugin.icon" alt="" draggable="false" />
-      <span v-else class="fallback">{{ plugin.name.slice(0, 1) }}</span>
+      <span v-else class="fallback" :style="{ background: fallbackBg }">
+        <AppIcon :name="fallbackName" :size="26" :stroke-width="1.8" />
+      </span>
+      <span v-if="plugin.type === 'external'" class="ext-badge" title="外部程序">
+        <AppIcon name="external-link" :size="9" :stroke-width="2.6" />
+      </span>
     </div>
     <div class="tile-label" :title="plugin.description || plugin.name">{{ plugin.name }}</div>
   </div>
@@ -91,18 +91,20 @@ const hovering = ref(false)
 }
 
 .tile-icon {
+  position: relative;
   display: grid;
   place-items: center;
   width: 48px;
   height: 48px;
   border-radius: 12px;
-  overflow: hidden;
+  overflow: visible;
 }
 
-.tile-icon img {
+.tile-icon > img {
   width: 44px;
   height: 44px;
   object-fit: contain;
+  border-radius: 10px;
 }
 
 .fallback {
@@ -112,8 +114,22 @@ const hovering = ref(false)
   height: 44px;
   border-radius: 12px;
   color: #fff;
-  font-size: 20px;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.12);
+}
+
+.ext-badge {
+  position: absolute;
+  right: -3px;
+  bottom: -2px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  color: #b25e09;
+  border: 1px solid #f0e2cf;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .tile-label {

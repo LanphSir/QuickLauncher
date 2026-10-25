@@ -1,18 +1,30 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useMessage } from 'naive-ui'
 import { useLauncherStore } from '../stores/launcher'
 import AppTile from './AppTile.vue'
+import AppIcon from './AppIcon.vue'
+import AppManage from './AppManage.vue'
+import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
+import PluginDetail from './PluginDetail.vue'
+import ExternalEdit from './ExternalEdit.vue'
 import SettingsView from './SettingsView.vue'
 
 const store = useLauncherStore()
 const message = useMessage()
 const searchRef = ref<HTMLInputElement | null>(null)
 
+const ctx = ref<{ plugin: PluginSummary; x: number; y: number } | null>(null)
+const detail = ref<PluginSummary | null>(null)
+const edit = ref<PluginSummary | null>(null)
+const pulse = ref(false)
+let pulseTimer: ReturnType<typeof setTimeout> | undefined
+
 onMounted(async () => {
   await store.load()
   window.panel.onShown(() => {
     store.resetHome()
+    triggerPulse()
     focusSearch()
   })
   window.panel.onPluginExited(() => {
@@ -24,8 +36,42 @@ onMounted(async () => {
     focusSearch()
     message.error(`插件「${name}」已崩溃退出，其他功能不受影响`)
   })
+  window.panel.onOpenSettings(() => {
+    store.view = 'settings'
+  })
+  // 弹层优先吃掉 Esc（capture 阶段），避免同时触发面板隐藏
+  window.addEventListener('keydown', onGlobalKeydown, true)
+  triggerPulse()
   focusSearch()
 })
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onGlobalKeydown, true)
+  if (pulseTimer) clearTimeout(pulseTimer)
+})
+
+function onGlobalKeydown(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return
+  if (edit.value) {
+    e.stopPropagation()
+    edit.value = null
+  } else if (detail.value) {
+    e.stopPropagation()
+    detail.value = null
+  } else if (ctx.value) {
+    e.stopPropagation()
+    ctx.value = null
+  }
+}
+
+function triggerPulse(): void {
+  pulse.value = false
+  requestAnimationFrame(() => {
+    pulse.value = true
+    if (pulseTimer) clearTimeout(pulseTimer)
+    pulseTimer = setTimeout(() => (pulse.value = false), 220)
+  })
+}
 
 function focusSearch(): void {
   requestAnimationFrame(() => searchRef.value?.focus())
@@ -60,7 +106,7 @@ function onKeydown(e: KeyboardEvent): void {
 }
 
 async function open(plugin: PluginSummary): Promise<void> {
-  const result = await window.panel.openPlugin(plugin.id)
+  const result = await window.panel.openPlugin(plugin.id, store.query.trim() || undefined)
   if (!result.ok && result.message) message.error(result.message)
 }
 
@@ -68,18 +114,45 @@ async function togglePin(plugin: PluginSummary): Promise<void> {
   plugin.pinned = !plugin.pinned
   await window.panel.pin(plugin.id, plugin.pinned)
 }
+
+const ctxItems = computed<ContextMenuItem[]>(() => {
+  if (!ctx.value) return []
+  const p = ctx.value.plugin
+  const items: ContextMenuItem[] = [
+    { key: 'open', label: '打开', icon: 'play', action: () => void open(p) },
+    {
+      key: 'pin',
+      label: p.pinned ? '取消固定' : '固定到已固定',
+      icon: p.pinned ? 'pin-off' : 'pin',
+      action: () => void togglePin(p)
+    },
+    { key: 'detail', label: '应用详情…', icon: 'info', action: () => (detail.value = p) }
+  ]
+  if (p.type === 'external') {
+    items.push({ key: 'edit', label: '编辑启动命令…', icon: 'pencil', action: () => (edit.value = p) })
+  }
+  items.push({
+    key: 'search-web',
+    label: '在浏览器搜索此名称',
+    icon: 'external-link',
+    action: () => {
+      const url = `https://www.bing.com/search?q=${encodeURIComponent(p.name)}`
+      void window.open(url, '_blank')
+    }
+  })
+  return items
+})
+
+function onTileCtx(plugin: PluginSummary, pos: { x: number; y: number }): void {
+  ctx.value = { plugin, x: pos.x, y: pos.y }
+}
 </script>
 
 <template>
-  <div class="panel">
+  <div class="panel" :class="{ pulse }">
     <template v-if="store.view === 'home'">
       <header class="search-row">
-        <svg class="search-icon" viewBox="0 0 24 24" width="20" height="20">
-          <path
-            d="M10.5 3a7.5 7.5 0 0 1 5.96 12.06l4.24 4.24a1 1 0 0 1-1.42 1.42l-4.24-4.24A7.5 7.5 0 1 1 10.5 3Zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Z"
-            fill="currentColor"
-          />
-        </svg>
+        <AppIcon class="search-icon" name="search" :size="20" />
         <input
           ref="searchRef"
           v-model="store.query"
@@ -90,20 +163,10 @@ async function togglePin(plugin: PluginSummary): Promise<void> {
           @keydown="onKeydown"
         />
         <button class="icon-btn" title="设置" @click="store.view = 'settings'">
-          <svg viewBox="0 0 24 24" width="20" height="20">
-            <path
-              d="M12 8.5A3.5 3.5 0 1 1 8.5 12 3.5 3.5 0 0 1 12 8.5Zm0 2A1.5 1.5 0 1 0 13.5 12 1.5 1.5 0 0 0 12 10.5Zm8.6 3.1-1.8-.5a7 7 0 0 0 0-2.2l1.8-.5a1 1 0 0 0 .7-1.2l-.8-2.1a1 1 0 0 0-1.2-.6l-1.8.6a7 7 0 0 0-1.9-1.1l.2-1.9A1 1 0 0 0 14.9 3h-2.2a1 1 0 0 0-1 1.1l.2 1.9a7 7 0 0 0-1.9 1.1l-1.8-.6a1 1 0 0 0-1.2.6l-.8 2.1a1 1 0 0 0 .7 1.2l1.8.5a7 7 0 0 0 0 2.2l-1.8.5a1 1 0 0 0-.7 1.2l.8 2.1a1 1 0 0 0 1.2.6l1.8-.6a7 7 0 0 0 1.9 1.1l-.2 1.9a1 1 0 0 0 1 1.1h2.2a1 1 0 0 0 1-1.1l-.2-1.9a7 7 0 0 0 1.9-1.1l1.8.6a1 1 0 0 0 1.2-.6l.8-2.1a1 1 0 0 0-.7-1.2Z"
-              fill="currentColor"
-            />
-          </svg>
+          <AppIcon name="settings" :size="19" />
         </button>
         <div class="avatar" title="QuickLauncher">
-          <svg viewBox="0 0 24 24" width="20" height="20">
-            <path
-              d="M12 12a4.2 4.2 0 1 0-4.2-4.2A4.2 4.2 0 0 0 12 12Zm0 2.1c-3.3 0-8 1.7-8 5V21h16v-1.9c0-3.3-4.7-5-8-5Z"
-              fill="currentColor"
-            />
-          </svg>
+          <AppIcon name="user" :size="19" />
         </div>
       </header>
 
@@ -119,9 +182,10 @@ async function togglePin(plugin: PluginSummary): Promise<void> {
               @open="open(p)"
               @hover="store.selIndex = i"
               @pin="togglePin(p)"
+              @ctx="(pos) => onTileCtx(p, pos)"
             />
           </div>
-          <p v-if="!flat.length" class="empty">没有匹配的功能，换个关键词试试</p>
+          <p v-if="!flat.length" class="empty">没有匹配的功能，换个关键词试试（支持通配符 * 与 re: 正则）</p>
         </template>
         <template v-else>
           <section v-if="store.pinned.length">
@@ -134,12 +198,17 @@ async function togglePin(plugin: PluginSummary): Promise<void> {
                 :selected="false"
                 @open="open(p)"
                 @pin="togglePin(p)"
+                @ctx="(pos) => onTileCtx(p, pos)"
               />
             </div>
           </section>
           <section>
-            <h3 class="section-title">
-              全部应用 <span class="muted">· 插件市场即将上线</span>
+            <h3 class="section-title between">
+              <span>全部应用</span>
+              <button class="manage-link" title="查看全部应用" @click="store.view = 'apps'">
+                全部
+                <AppIcon name="chevron-right" :size="13" />
+              </button>
             </h3>
             <div class="grid">
               <AppTile
@@ -150,14 +219,35 @@ async function togglePin(plugin: PluginSummary): Promise<void> {
                 @open="open(p)"
                 @hover="store.selIndex = i"
                 @pin="togglePin(p)"
+                @ctx="(pos) => onTileCtx(p, pos)"
               />
             </div>
           </section>
         </template>
       </main>
+
+      <footer class="foot">↑↓ 选择 · Enter 打开 · 右键 更多操作 · Esc 隐藏</footer>
     </template>
 
+    <AppManage
+      v-else-if="store.view === 'apps'"
+      @back="store.view = 'home'; focusSearch()"
+      @open="open($event)"
+      @pin="togglePin($event)"
+      @detail="detail = $event"
+    />
+
     <SettingsView v-else @back="store.view = 'home'; focusSearch()" />
+
+    <ContextMenu v-if="ctx" :x="ctx.x" :y="ctx.y" :items="ctxItems" @close="ctx = null" />
+    <PluginDetail
+      v-if="detail"
+      :plugin="detail"
+      @close="detail = null"
+      @open="open(detail); detail = null"
+      @edit="edit = detail; detail = null"
+    />
+    <ExternalEdit v-if="edit" :plugin="edit" @close="edit = null" />
   </div>
 </template>
 
@@ -172,6 +262,21 @@ async function togglePin(plugin: PluginSummary): Promise<void> {
   border: 1px solid rgba(0, 0, 0, 0.06);
   box-shadow: 0 12px 48px rgba(0, 0, 0, 0.2);
   overflow: hidden;
+}
+
+.panel.pulse {
+  animation: panel-pop 0.2s ease;
+}
+
+@keyframes panel-pop {
+  from {
+    transform: scale(0.97);
+    opacity: 0.55;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 .search-row {
@@ -229,7 +334,7 @@ async function togglePin(plugin: PluginSummary): Promise<void> {
 .body {
   flex: 1;
   overflow-y: auto;
-  padding: 4px 18px 18px;
+  padding: 4px 18px 8px;
 }
 
 .section-title {
@@ -238,10 +343,26 @@ async function togglePin(plugin: PluginSummary): Promise<void> {
   margin: 10px 4px 10px;
 }
 
-.section-title .muted {
-  font-weight: 400;
+.section-title.between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.manage-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   font-size: 12px;
+  font-weight: 400;
   color: #8f959e;
+  padding: 3px 8px;
+  border-radius: 7px;
+}
+
+.manage-link:hover {
+  background: #f2f3f5;
+  color: #4f46e5;
 }
 
 .grid {
@@ -256,5 +377,15 @@ async function togglePin(plugin: PluginSummary): Promise<void> {
   font-size: 13px;
   text-align: center;
   padding: 40px 0;
+}
+
+.foot {
+  flex: none;
+  text-align: center;
+  font-size: 11px;
+  color: #b4b8bf;
+  padding: 7px 0 9px;
+  border-top: 1px solid #f5f6f7;
+  user-select: none;
 }
 </style>

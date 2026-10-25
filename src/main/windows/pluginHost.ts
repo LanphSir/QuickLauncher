@@ -3,12 +3,23 @@ import { join } from 'node:path'
 import { pluginEntryUrl, type PluginRecord } from '../plugin/manager'
 import { registerPluginCaller } from '../plugin/callerRegistry'
 
+export interface PluginOpenPayload {
+  /** 面板搜索词，打开时透传给插件（appapi.onQuery 接收） */
+  query?: string
+}
+
+interface CacheEntry {
+  view: WebContentsView
+  rec: PluginRecord
+  pending?: PluginOpenPayload
+}
+
 /**
  * 插件宿主：每个 web 型插件一个独立 WebContentsView（独立渲染进程）。
  * - 视图缓存：退出插件不销毁页面，重进保留状态
  * - 崩溃隔离：单个插件崩溃只影响自身，主面板与其他插件不受影响
  */
-const viewCache = new Map<string, { view: WebContentsView; rec: PluginRecord }>()
+const viewCache = new Map<string, CacheEntry>()
 let activeId: string | null = null
 let panel: BrowserWindow | null = null
 
@@ -25,7 +36,13 @@ function syncBounds(): void {
   entry.view.setBounds({ x: 0, y: 0, width, height })
 }
 
-export function showPlugin(rec: PluginRecord): void {
+function flushPayload(entry: CacheEntry): void {
+  if (!entry.pending) return
+  entry.view.webContents.send('plugin:query', entry.pending)
+  entry.pending = undefined
+}
+
+export function showPlugin(rec: PluginRecord, payload?: PluginOpenPayload): void {
   if (!panel) return
   let entry = viewCache.get(rec.manifest.id)
   if (!entry) {
@@ -40,6 +57,7 @@ export function showPlugin(rec: PluginRecord): void {
     entry = { view, rec }
     viewCache.set(rec.manifest.id, entry)
     registerPluginCaller(view.webContents, rec)
+    view.webContents.on('did-finish-load', () => flushPayload(entry!))
     view.webContents.on('render-process-gone', (_event, details) => {
       onPluginCrashed(rec, details.reason)
     })
@@ -49,6 +67,9 @@ export function showPlugin(rec: PluginRecord): void {
   detachActive()
   panel.contentView.addChildView(entry.view)
   activeId = rec.manifest.id
+  entry.pending = payload
+  // 缓存视图页面已就绪时立即送达；新视图等 did-finish-load 再送
+  if (!entry.view.webContents.isLoading()) flushPayload(entry)
   syncBounds()
   entry.view.webContents.focus()
 }

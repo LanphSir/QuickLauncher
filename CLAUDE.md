@@ -33,6 +33,7 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 - **TypeScript strict**，禁止 `any` 逃逸到公共接口（网关 payload 处理是当前唯一 `any` 例外，逐步收紧）。
 - **main/preload 是 CJS 产物**（根 package.json 无 `"type": "module"`，这是有意的：sandbox preload 只支持 CJS）。main/preload 源码里直接用 `__dirname` 定位 `out/` 内兄弟产物（如 `join(__dirname, '../preload/panel.js')`），不要用 import.meta。
 - **渲染层一律 Vue 3 `<script setup lang="ts">`**；全局类型集中在 `src/renderer/src/env.d.ts`（`window.panel` / `window.appapi` 已声明，不要重复 declare）。
+- **UI 图标统一用 `<AppIcon name="..." />`**（path 数据登记在 `components/icons.ts`），不要散落内联 SVG；新图标先在 `icons.ts` 登记。
 - **UI 文案中文**，代码注释中文、只写"为什么"，不复述代码。日志前缀用模块名：`[plugin]`、`[config]`、`[storage]`、`[external]`。
 - 命名：文件用 kebab 或与周边一致；插件 id 一律反向域名 `com.launcher.<name>`；IPC 通道前缀 `panel:*` / `plugin:*`。
 - **不引入新的运行时依赖**除非确有必要；加依赖前先确认 electron 原生 API 覆盖不了。

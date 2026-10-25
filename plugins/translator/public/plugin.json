@@ -1,0 +1,15 @@
+{
+  "id": "com.launcher.translator",
+  "name": "快速翻译",
+  "version": "0.1.0",
+  "description": "输入英文单词/句子自动命中，回车翻译；也支持中文译英文",
+  "type": "web",
+  "entry": "index.html",
+  "keywords": [
+    "翻译",
+    "translate",
+    "fy",
+    "re:^[a-zA-Z][a-zA-Z0-9@._\\- ]{1,120}$"
+  ],
+  "permissions": ["storage", "clipboard"]
+}

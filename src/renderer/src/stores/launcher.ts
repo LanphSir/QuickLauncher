@@ -1,23 +1,22 @@
 import { defineStore } from 'pinia'
+import { pluginMatch } from '../utils/match'
+
+export type PanelView = 'home' | 'apps' | 'settings'
 
 export const useLauncherStore = defineStore('launcher', {
   state: () => ({
     plugins: [] as PluginSummary[],
     config: null as LauncherConfig | null,
     query: '',
-    view: 'home' as 'home' | 'settings',
+    view: 'home' as PanelView,
     selIndex: 0
   }),
   getters: {
+    /** 搜索命中：名称/id 子串，或任一关键词（支持通配符与 re: 正则） */
     visiblePlugins(state): PluginSummary[] {
-      const q = state.query.trim().toLowerCase()
+      const q = state.query.trim()
       if (!q) return state.plugins
-      return state.plugins.filter(
-        (p) =>
-          p.name.toLowerCase().includes(q) ||
-          p.id.toLowerCase().includes(q) ||
-          p.keywords.some((k) => k.toLowerCase().includes(q))
-      )
+      return state.plugins.filter((p) => pluginMatch(q, p))
     },
     pinned(state): PluginSummary[] {
       const ids = state.config?.pinnedIds ?? []

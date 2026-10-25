@@ -60,6 +60,53 @@
 
 ---
 
+## v0.2.0 — 体验优化：图标库 / 托盘菜单 / 关键词通配与正则 / 右键配置 / 全部应用管理（2026-10-25）
+
+**目标**：把 MVP 的粗糙处打磨到位——图标体系、托盘面板、搜索匹配能力、插件配置入口，并新增一个真实场景插件（翻译）。
+
+### 功能变更
+
+| 模块 | 变更 |
+|---|---|
+| 图标库 | 新增统一线性图标组件 `AppIcon.vue`（`icons.ts` 登记 path，18 个图标），替换全部内联 SVG；无自定义图标的插件按名称/关键词/ID 推断分类默认图标（翻译→地球、计算→计算器等 5 类），配 6 色渐变底（按插件 id 稳定散列）；external 型应用卡片带 ↗ 角标 |
+| 托盘菜单 | 重写为功能面板：快捷键提示、📌 常用插件子菜单（随固定/取消固定实时重建）、⚙ 设置入口（直达设置页）、ℹ 关于（版本+运行时信息）、开机自启；Windows 原生菜单不支持逐项图标，用 emoji 前缀替代 |
+| 关键词匹配 | `utils/match.ts`：普通子串之外支持通配符（`*`/`?`，整词匹配）与 `re:` 前缀正则（对整个查询词 test）；非法正则静默跳过。典型用法：`"keywords": ["翻译", "re:^[a-zA-Z][a-zA-Z0-9@._\\- ]{1,120}$"]` 让任意英文输入命中翻译应用 |
+| 右键配置 | 应用卡片右键菜单：打开 / 固定·取消 / 应用详情 / external 编辑启动命令 / 浏览器搜索；详情弹窗展示版本、类型、ID、目录、启动命令、关键词、权限（chips），web 型支持"清除插件数据"（NPopconfirm 二次确认） |
+| 插件配置覆盖 | external 型启动命令可被用户覆盖：`config.json#pluginOverrides`（`command`/`args`），扫描加载时应用、详情页"恢复默认"还原磁盘原始值；插件文件永不被修改 |
+| 全部应用管理页 | 主页"全部 ›"进入：搜索过滤 + 行式列表（类型徽章、双击打开、打开/固定/详情操作） |
+| 查询透传 | 打开插件时携带面板搜索词：主进程 `plugin:query` → preload 缓冲 → 插件 `appapi.onQuery`（解决页面加载与监听注册的时序竞争） |
+| 面板细节 | 显示入场动画（scale+fade）、底部操作提示栏（↑↓/Enter/右键/Esc）、"全部 ›"入口、空态文案提示通配符、外链搜索 |
+| 新插件 | **快速翻译**（com.launcher.translator）：演示 `re:` 正则命中英文输入 + onQuery 自动填充 + MyMemory 免费 API（中英互译自动判断语向）+ 历史记录（storage） |
+
+### 关键文件
+
+- `src/renderer/src/components/{icons.ts,AppIcon.vue,ContextMenu.vue,PluginDetail.vue,ExternalEdit.vue,AppManage.vue}`（新增）
+- `src/renderer/src/utils/{match.ts,appFallback.ts}`（新增）；`stores/launcher.ts`、`components/{PanelShell,AppTile}.vue`（重写）
+- `src/main/{index.ts,tray.ts,config.ts}`、`plugin/manager.ts`（覆盖应用）、`services/storage.ts`（clear）、`windows/pluginHost.ts`（payload）
+- `src/preload/{panel,plugin}.ts`（API 扩展 + query 缓冲）；`plugins/translator/`
+
+### 关键决策
+
+1. **Windows 原生菜单不支持逐项图标**（Electron 平台限制）→ 托盘菜单用 emoji 前缀 + 子菜单结构达成"有图标的面板"体验，不引入自定义 HTML 弹窗的复杂度。
+2. **正则匹配放渲染层而非主进程**：匹配是纯字符串逻辑，主面板进程崩溃有单实例锁兜底；正则风险（回溯）靠短查询词 + try/catch 控制，文档明示插件作者责任。
+3. **插件配置覆盖存全局 config 而非改写插件文件**：保持插件目录不可变（未来市场安装/更新才有清晰的升级语义），baseCommand 保留用于"恢复默认"。
+4. **onQuery 用 preload 缓冲而不是主进程延时重发**：时序问题在接收端解决最可靠，preload 先于页面脚本运行，天然有缓冲窗口。
+
+### 验证
+
+- 三端 typecheck 零错误；4 个插件全部构建成功
+- CDP 冒烟 **10/10 通过**（新增第 10 项：DOM 级输入 `hello world` → 断言"快速翻译"被 re: 正则命中出现在结果网格；另将快捷键断言放宽为格式合法——用户已把热键改为 CommandOrControl+Shift+Space，属预期用户状态）
+- 权限拒绝、插件崩溃隔离、外部程序集成回归通过（smoke 原有项）
+
+### 遗留事项
+
+- 通配/正则命中关键词不高亮显示；拼音搜索仍未做（ROADMAP v0.3.3）
+- 翻译用的是免费公共 API（MyMemory），无 SLA；正式版应接自有服务或本地词典
+- 托盘"常用插件"子菜单暂只含 web 型（external 直接点击启动语义不明确）
+- 右键菜单/详情弹窗暂无键盘导航（鼠标为主）
+
+---
+
 <!-- 新条目模板（复制后填写，放本注释之上）：
 
 ## vX.Y.Z — 迭代标题（YYYY-MM-DD）

@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { getConfig } from '../config'
 
 export type PluginType = 'web' | 'external'
 
@@ -27,6 +28,9 @@ export interface PluginRecord {
   /** 插件所在目录（web 型的 entry 相对此目录） */
   dir: string
   iconDataUrl: string | null
+  /** external 型：磁盘上的原始 command/args（用户覆盖前），用于"恢复默认" */
+  baseCommand?: string
+  baseArgs?: string[]
 }
 
 const registry = new Map<string, PluginRecord>()
@@ -84,7 +88,16 @@ function loadFromDir(dir: string): PluginRecord | null {
       console.warn(`[plugin] id 重复，跳过: ${manifest.id} (${dir})`)
       return null
     }
-    return { manifest, dir, iconDataUrl: iconToDataUrl(dir) }
+    const record: PluginRecord = { manifest, dir, iconDataUrl: iconToDataUrl(dir) }
+    if (manifest.type === 'external') {
+      record.baseCommand = manifest.command
+      record.baseArgs = [...(manifest.args ?? [])]
+      // 应用用户在面板里保存的启动命令覆盖
+      const override = getConfig().pluginOverrides?.[manifest.id]
+      if (override?.command) manifest.command = override.command
+      if (override?.args) manifest.args = override.args
+    }
+    return record
   } catch (err) {
     console.error(`[plugin] 加载失败 ${dir}`, err)
     return null

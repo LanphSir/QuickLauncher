@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { NButton, NSwitch, useMessage } from 'naive-ui'
+import AppIcon from './AppIcon.vue'
 
 const emit = defineEmits<{ back: [] }>()
 const message = useMessage()
@@ -67,9 +68,7 @@ async function toggleAutostart(enabled: boolean): Promise<void> {
   <div class="settings">
     <header class="settings-header">
       <button class="back" @click="emit('back')">
-        <svg viewBox="0 0 24 24" width="16" height="16">
-          <path d="M15 4 7 12l8 8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+        <AppIcon name="chevron-left" :size="16" />
         返回
       </button>
       <h2>设置</h2>

@@ -15,29 +15,45 @@ interface PluginSummary {
   keywords: string[]
   icon: string | null
   pinned: boolean
+  /** 申请的 API 权限（详情页展示） */
+  permissions?: string[]
+  /** external 型当前生效的启动命令/参数（含用户覆盖） */
+  command?: string
+  args?: string[]
+  /** 插件磁盘目录（详情页展示用） */
+  dir?: string
 }
 
 interface LauncherConfig {
   hotkey: string
   autostart: boolean
   pinnedIds: string[]
+  pluginOverrides: Record<string, { command?: string; args?: string[] }>
   isPackaged: boolean
 }
 
 interface PanelApi {
   getPlugins(): Promise<PluginSummary[]>
-  openPlugin(id: string): Promise<{ ok: boolean; message?: string }>
+  openPlugin(id: string, query?: string): Promise<{ ok: boolean; message?: string }>
   pin(id: string, pinned: boolean): Promise<string[]>
   getConfig(): Promise<LauncherConfig>
   updateConfig(patch: Partial<LauncherConfig>): Promise<{ ok: boolean; config?: LauncherConfig; message?: string }>
   hidePanel(): Promise<void>
+  savePluginOverride(
+    id: string,
+    data: { command?: string; args?: string }
+  ): Promise<{ ok: boolean; command?: string; args?: string[]; message?: string }>
+  clearPluginData(id: string): Promise<{ ok: boolean }>
   onShown(callback: () => void): void
   onPluginExited(callback: () => void): void
   onPluginCrashed(callback: (payload: { id: string; name: string }) => void): void
+  onOpenSettings(callback: () => void): void
 }
 
 interface PluginApi {
   info(): Promise<{ id: string; name: string; version?: string; permissions: string[] }>
+  /** 打开插件时面板搜索词（每次打开/带新搜索词重开都会推送一次） */
+  onQuery(callback: (payload: { query?: string }) => void): void
   storage: {
     get(key: string): Promise<unknown>
     set(key: string, value: unknown): Promise<boolean>

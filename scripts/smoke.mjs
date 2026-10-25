@@ -67,12 +67,39 @@ check('主面板 preload 桥注入', hasBridge === true)
 // 2. 插件列表
 const plugins = await evaluate(ws, 'window.panel.getPlugins().then(l => l.map(p => ({id: p.id, type: p.type, icon: !!p.icon})))')
 const ids = plugins.map((p) => p.id)
-check('插件扫描注册', ids.includes('com.launcher.clipboard') && ids.includes('com.launcher.calculator') && ids.includes('com.launcher.notepad'), ids.join(', '))
+check(
+  '插件扫描注册',
+  ['com.launcher.clipboard', 'com.launcher.calculator', 'com.launcher.notepad', 'com.launcher.translator'].every((id) => ids.includes(id)),
+  ids.join(', ')
+)
 check('插件图标 dataURL 化', plugins.every((p) => p.icon))
 
-// 3. 配置读写
+// 3. 配置读取（快捷键可能被用户改过，只验证格式合法：至少一个修饰键 + 主键）
 const cfg = await evaluate(ws, 'window.panel.getConfig().then(c => c.hotkey)')
-check('全局配置读取', cfg === 'Alt+Space', String(cfg))
+check(
+  '全局配置读取(快捷键格式合法)',
+  typeof cfg === 'string' && /^[A-Za-z0-9]+(\+[A-Za-z0-9]+)+$/.test(cfg),
+  String(cfg)
+)
+
+// 3.5 通配/正则关键词：英文输入应命中快速翻译（re: 正则）
+await evaluate(ws, `(() => {
+  const input = document.querySelector('.search')
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+  setter.call(input, 'hello world')
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  return true
+})()`)
+await new Promise((r) => setTimeout(r, 400))
+const searched = await evaluate(ws, 'Array.from(document.querySelectorAll(".tile-label")).map(e => e.textContent)')
+check('re: 正则关键词命中(英文输入→翻译)', searched.some((t) => t?.includes('快速翻译')), searched.join(' / '))
+await evaluate(ws, `(() => {
+  const input = document.querySelector('.search')
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+  setter.call(input, '')
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  return true
+})()`)
 
 // 4. 打开 web 插件 → 出现独立插件进程页面
 await evaluate(ws, 'window.panel.openPlugin("com.launcher.clipboard")')

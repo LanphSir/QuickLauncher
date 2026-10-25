@@ -25,6 +25,33 @@ my-plugin/
 }
 ```
 
+### 关键词高级匹配（v0.2.0 起）
+
+除普通子串匹配外，`keywords` 支持：
+
+```jsonc
+"keywords": [
+  "翻译",                              // 子串：query 包含"翻译"即命中
+  "calc*",                             // 通配符：* 任意串、? 单字符，与整个查询词匹配
+  "re:^[a-zA-Z][a-zA-Z0-9@._\\- ]{1,120}$"  // 正则：re: 前缀，对整个查询词 test
+]
+```
+
+- 典型场景：翻译类插件加 `re:^[a-zA-Z]...`，用户输入**任意英文**都会命中翻译应用
+- 正则非法时静默跳过；请避免灾难性回溯模式（查询词很短，风险可控但仍是好习惯）
+
+### 接收面板搜索词（v0.2.0 起）
+
+打开插件时面板会把当前搜索词传给插件，用于"输入即动作"场景：
+
+```ts
+onMounted(() => {
+  window.appapi.onQuery(({ query }) => {
+    if (query) doSomethingWith(query)   // 如翻译插件直接翻译该词
+  })
+})
+```
+
 把目录放到项目 `plugins/` 下（或其构建产物放进 `my-plugin/dist/`），重启应用即可在面板搜索到。
 
 ## 插件 API（window.appapi）
@@ -34,6 +61,9 @@ my-plugin/
 ```ts
 // 信息
 await appapi.info()                        // { id, name, version, permissions }
+
+// 面板搜索词（无需权限；onQuery 注册前的到达事件会被 preload 缓冲补发）
+appapi.onQuery(({ query }) => { /* query 为打开插件时的搜索词，可能为 undefined */ })
 
 // 存储（按插件 id 强制隔离，key-value，值需可 JSON 序列化）
 await appapi.storage.set('todos', [1, 2])

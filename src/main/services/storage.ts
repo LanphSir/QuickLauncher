@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 /**
@@ -57,5 +57,16 @@ export const pluginStorage = {
   },
   keys(pluginId: string): string[] {
     return Object.keys(load(pluginId))
+  },
+  /** 清空插件全部数据（面板"应用详情"里触发），下次 get 重新初始化 */
+  clear(pluginId: string): boolean {
+    cache.delete(pluginId)
+    try {
+      rmSync(join(storeFile(pluginId), '..'), { recursive: true, force: true })
+    } catch (err) {
+      console.error(`[storage] 清除失败 ${pluginId}`, err)
+      return false
+    }
+    return true
   }
 }

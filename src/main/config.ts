@@ -2,6 +2,12 @@ import { app } from 'electron'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+/** 用户对面板内置插件的运行时覆盖（如 external 型启动命令） */
+export interface PluginOverride {
+  command?: string
+  args?: string[]
+}
+
 export interface AppConfig {
   /** 全局唤起快捷键（Electron accelerator 格式） */
   hotkey: string
@@ -9,12 +15,15 @@ export interface AppConfig {
   autostart: boolean
   /** 已固定插件 id，按固定顺序排列 */
   pinnedIds: string[]
+  /** 插件运行时配置覆盖，key 为插件 id */
+  pluginOverrides: Record<string, PluginOverride>
 }
 
 const DEFAULTS: AppConfig = {
   hotkey: 'Alt+Space',
   autostart: false,
-  pinnedIds: ['com.launcher.clipboard', 'com.launcher.calculator']
+  pinnedIds: ['com.launcher.clipboard', 'com.launcher.calculator'],
+  pluginOverrides: {}
 }
 
 let config: AppConfig = { ...DEFAULTS }

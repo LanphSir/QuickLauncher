@@ -2,12 +2,34 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 const invoke = (channel: string, payload?: unknown) => ipcRenderer.invoke(channel, payload)
 
+// plugin:query 可能在插件页 onMounted 注册回调之前到达（页面加载完成即推送），
+// 这里先缓冲，onQuery 注册时一次性补发，保证查询不丢。
+interface QueryPayload {
+  query?: string
+}
+let queryHandler: ((payload: QueryPayload) => void) | null = null
+const pendingQueries: QueryPayload[] = []
+ipcRenderer.on('plugin:query', (_event, payload: QueryPayload) => {
+  if (queryHandler) queryHandler(payload)
+  else pendingQueries.push(payload)
+})
+
+function subscribe<T = unknown>(channel: string, callback: (payload: T) => void): () => void {
+  const listener = (_event: unknown, payload: unknown) => callback(payload as T)
+  ipcRenderer.on(channel, listener)
+  return () => ipcRenderer.removeListener(channel, listener)
+}
+
 /**
  * 插件可用的受控 API（window.appapi）。
  * 主进程网关会校验调用方身份与 plugin.json 声明的权限。
  */
 contextBridge.exposeInMainWorld('appapi', {
   info: () => invoke('plugin:info'),
+  onQuery: (callback: (payload: QueryPayload) => void) => {
+    queryHandler = callback
+    while (pendingQueries.length) callback(pendingQueries.shift()!)
+  },
   storage: {
     get: (key: string) => invoke('plugin:storage.get', key),
     set: (key: string, value: unknown) => invoke('plugin:storage.set', { key, value }),

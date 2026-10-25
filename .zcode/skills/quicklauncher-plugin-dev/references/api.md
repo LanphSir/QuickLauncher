@@ -9,6 +9,8 @@
 ```ts
 interface PluginApi {
   info(): Promise<{ id: string; name: string; version?: string; permissions: string[] }>
+  /** 打开插件时的面板搜索词；onQuery 注册前到达的事件由 preload 缓冲，注册后补发 */
+  onQuery(callback: (payload: { query?: string }) => void): void
 
   storage: {
     get(key: string): Promise<unknown>          // 无此 key 返回 null
@@ -61,6 +63,24 @@ interface PluginApi {
 
 storage 落盘在 `%APPDATA%/quick-launcher/data/<pluginId>/store.json`，
 插件 id 是主进程根据调用方 webContents 确定的，插件无法读写其他插件的数据，也无法感知路径。
+
+## 关键词高级匹配（manifest.keywords）
+
+- 普通字符串：查询词**包含**该关键词即命中（不区分大小写）
+- 通配符：含 `*` / `?` 时与**整个查询词**匹配（`*` 任意串、`?` 单字符）
+- 正则：`re:` 前缀，其余部分作为正则对整个查询词 `test`，如 `re:^[a-zA-Z][a-zA-Z0-9@._\- ]{1,120}$`
+  让用户输入任意英文都命中（翻译插件即此用法）；非法正则静默跳过
+
+## 范例：接收搜索词 + 翻译（节选自 plugins/translator）
+
+```ts
+onMounted(() => {
+  // 打开插件时自动翻译面板输入的英文
+  window.appapi.onQuery(({ query }) => {
+    if (query?.trim()) { input.value = query.trim(); void translate() }
+  })
+})
+```
 
 ## 范例：Esc 退出 + 轮询剪贴板（节选自 plugins/clipboard）
 

@@ -1,18 +1,26 @@
 import { app, ipcMain, Notification } from 'electron'
-import { loadConfig, getConfig, updateConfig } from './config'
+import { loadConfig, getConfig, updateConfig, type PluginOverride } from './config'
 import {
   createPanelWindow,
   getPanelWindow,
   hidePanel,
   showPanel
 } from './windows/panel'
-import { destroyAll, exitToHome, initPluginHost, showPlugin } from './windows/pluginHost'
+import {
+  destroyAll,
+  exitToHome,
+  initPluginHost,
+  showPlugin,
+  type PluginOpenPayload
+} from './windows/pluginHost'
 import { getPlugin, listPlugins, scanPlugins } from './plugin/manager'
 import { initGateway } from './plugin/gateway'
 import { initHotkey, registerHotkey, unregisterAll } from './hotkey'
 import { applyAutostart, createTray, refreshTray } from './tray'
 import { launchExternalPlugin } from './services/external'
+import { pluginStorage } from './services/storage'
 
+/** 唤起面板并回到主页 */
 function togglePanelWithHome(): void {
   const win = getPanelWindow()
   if (win?.isVisible()) {
@@ -21,6 +29,20 @@ function togglePanelWithHome(): void {
     exitToHome()
     showPanel()
   }
+}
+
+/** 打开插件的统一入口（面板回车/点击、托盘菜单共用） */
+function activatePlugin(id: string, payload?: PluginOpenPayload): { ok: boolean; message?: string } {
+  const rec = getPlugin(id)
+  if (!rec) return { ok: false, message: '插件不存在' }
+  if (rec.manifest.type === 'external') {
+    const result = launchExternalPlugin(rec)
+    hidePanel()
+    return result
+  }
+  if (!getPanelWindow()?.isVisible()) showPanel()
+  showPlugin(rec, payload)
+  return { ok: true }
 }
 
 function registerPanelIpc(): void {
@@ -34,21 +56,17 @@ function registerPanelIpc(): void {
       type: rec.manifest.type,
       keywords: rec.manifest.keywords ?? [],
       icon: rec.iconDataUrl,
-      pinned: pinnedIds.includes(rec.manifest.id)
+      pinned: pinnedIds.includes(rec.manifest.id),
+      permissions: rec.manifest.permissions ?? [],
+      command: rec.manifest.type === 'external' ? rec.manifest.command : undefined,
+      args: rec.manifest.type === 'external' ? rec.manifest.args : undefined,
+      dir: rec.dir
     }))
   })
 
-  ipcMain.handle('panel:open-plugin', (_event, id: string) => {
-    const rec = getPlugin(String(id))
-    if (!rec) return { ok: false, message: '插件不存在' }
-    if (rec.manifest.type === 'external') {
-      const result = launchExternalPlugin(rec)
-      hidePanel()
-      return result
-    }
-    showPlugin(rec)
-    return { ok: true }
-  })
+  ipcMain.handle('panel:open-plugin', (_event, { id, query }: { id: string; query?: string }) =>
+    activatePlugin(String(id), query ? { query: String(query) } : undefined)
+  )
 
   ipcMain.handle('panel:pin', (_event, { id, pinned }) => {
     const { pinnedIds } = getConfig()
@@ -56,6 +74,7 @@ function registerPanelIpc(): void {
       ? [...new Set([...pinnedIds, String(id)])]
       : pinnedIds.filter((x) => x !== String(id))
     updateConfig({ pinnedIds: next })
+    refreshTray()
     return next
   })
 
@@ -68,7 +87,6 @@ function registerPanelIpc(): void {
       if (!hotkeyResult.ok) {
         return { ok: false, message: hotkeyResult.message, config: { ...getConfig(), isPackaged: app.isPackaged } }
       }
-      refreshTray(togglePanelWithHome, () => app.quit())
     }
     const { autostart, ...rest } = patch
     updateConfig(rest)
@@ -76,12 +94,45 @@ function registerPanelIpc(): void {
       updateConfig({ autostart })
       applyAutostart(autostart)
     }
+    refreshTray()
     return { ok: true, config: { ...getConfig(), isPackaged: app.isPackaged } }
   })
 
   ipcMain.handle('panel:hide', () => {
     hidePanel()
     return true
+  })
+
+  // 保存 external 型插件的启动命令覆盖（command 留空 = 恢复默认）
+  ipcMain.handle(
+    'panel:save-plugin-override',
+    (_event, { id, command, args }: { id: string; command?: string; args?: string }) => {
+      const rec = getPlugin(String(id))
+      if (!rec || rec.manifest.type !== 'external') return { ok: false, message: '插件不存在或不是外部程序型' }
+      const cmd = String(command ?? '').trim()
+      const overrides: Record<string, PluginOverride> = { ...getConfig().pluginOverrides }
+      if (!cmd) {
+        delete overrides[String(id)]
+        rec.manifest.command = rec.baseCommand
+        rec.manifest.args = [...(rec.baseArgs ?? [])]
+      } else {
+        const argList = String(args ?? '')
+          .split(/\s+/)
+          .filter(Boolean)
+        overrides[String(id)] = { command: cmd, args: argList }
+        rec.manifest.command = cmd
+        rec.manifest.args = argList
+      }
+      updateConfig({ pluginOverrides: overrides })
+      refreshTray()
+      return { ok: true, command: rec.manifest.command, args: rec.manifest.args }
+    }
+  )
+
+  ipcMain.handle('panel:clear-plugin-data', (_event, id: string) => {
+    const rec = getPlugin(String(id))
+    if (!rec) return { ok: false, message: '插件不存在' }
+    return { ok: pluginStorage.clear(String(id)) }
   })
 }
 
@@ -110,7 +161,15 @@ if (!app.requestSingleInstanceLock()) {
       new Notification({ title: 'QuickLauncher', body: reg.message }).show()
     }
 
-    createTray(togglePanelWithHome, () => app.quit())
+    createTray({
+      onToggle: togglePanelWithHome,
+      onQuit: () => app.quit(),
+      onOpenPlugin: (id) => void activatePlugin(id),
+      onOpenSettings: () => {
+        if (!getPanelWindow()?.isVisible()) showPanel()
+        panel.webContents.send('panel:open-settings')
+      }
+    })
     if (getConfig().autostart) applyAutostart(true)
   })
 }
