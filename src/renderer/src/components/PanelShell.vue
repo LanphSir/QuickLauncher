@@ -18,6 +18,7 @@ const ctx = ref<{ plugin: PluginSummary; x: number; y: number } | null>(null)
 const detail = ref<PluginSummary | null>(null)
 const edit = ref<PluginSummary | null>(null)
 const pulse = ref(false)
+const pinned = ref(false)
 let pulseTimer: ReturnType<typeof setTimeout> | undefined
 
 onMounted(async () => {
@@ -41,6 +42,9 @@ onMounted(async () => {
   })
   window.panel.onPluginsChanged(() => {
     void store.load()
+  })
+  window.panel.onPinnedChanged((value) => {
+    pinned.value = value
   })
   // 弹层优先吃掉 Esc（capture 阶段），避免同时触发面板隐藏
   window.addEventListener('keydown', onGlobalKeydown, true)
@@ -118,6 +122,68 @@ async function togglePin(plugin: PluginSummary): Promise<void> {
   await window.panel.pin(plugin.id, plugin.pinned)
 }
 
+/** 置顶钉住：点击面板外不自动收起（Esc/快捷键仍可隐藏） */
+async function togglePinWindow(): Promise<void> {
+  const r = await window.panel.togglePinned()
+  pinned.value = r.pinned
+}
+
+async function detach(plugin: PluginSummary): Promise<void> {
+  const r = await window.panel.detachPlugin(plugin.id)
+  if (!r.ok && r.message) message.error(r.message)
+}
+
+// —— 自实现窗口缩放：透明无边框窗口不支持系统边缘缩放 ——
+const MIN_W = 520
+const MIN_H = 400
+
+async function startResize(e: PointerEvent, handle: string): Promise<void> {
+  e.preventDefault()
+  const el = e.currentTarget as HTMLElement
+  const start = await window.panel.getWindowBounds()
+  if (!start) return
+  const sx = e.screenX
+  const sy = e.screenY
+  let raf = 0
+  const apply = (ev: PointerEvent): void => {
+    if (raf) return
+    raf = requestAnimationFrame(() => {
+      raf = 0
+      const dx = ev.screenX - sx
+      const dy = ev.screenY - sy
+      let { x, y, width, height } = start
+      if (handle.includes('e')) width = Math.max(MIN_W, start.width + dx)
+      if (handle.includes('s')) height = Math.max(MIN_H, start.height + dy)
+      if (handle.includes('w')) {
+        width = Math.max(MIN_W, start.width - dx)
+        x = start.x + (start.width - width)
+      }
+      if (handle.includes('n')) {
+        height = Math.max(MIN_H, start.height - dy)
+        y = start.y + (start.height - height)
+      }
+      void window.panel.setWindowBounds({
+        x: Math.round(x),
+        y: Math.round(y),
+        width: Math.round(width),
+        height: Math.round(height)
+      })
+    })
+  }
+  const up = (): void => {
+    el.removeEventListener('pointermove', apply)
+    el.removeEventListener('pointerup', up)
+    el.removeEventListener('pointercancel', up)
+    void window.panel.saveWindowBounds()
+  }
+  el.setPointerCapture(e.pointerId)
+  el.addEventListener('pointermove', apply)
+  el.addEventListener('pointerup', up)
+  el.addEventListener('pointercancel', up)
+}
+
+const RESIZE_HANDLES = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const
+
 const ctxItems = computed<ContextMenuItem[]>(() => {
   if (!ctx.value) return []
   const p = ctx.value.plugin
@@ -128,9 +194,17 @@ const ctxItems = computed<ContextMenuItem[]>(() => {
       label: p.pinned ? '取消固定' : '固定到已固定',
       icon: p.pinned ? 'pin-off' : 'pin',
       action: () => void togglePin(p)
-    },
-    { key: 'detail', label: '应用详情…', icon: 'info', action: () => (detail.value = p) }
+    }
   ]
+  if (p.type === 'web') {
+    items.push({
+      key: 'detach',
+      label: '在独立窗口打开',
+      icon: 'external-link',
+      action: () => void detach(p)
+    })
+  }
+  items.push({ key: 'detail', label: '应用详情…', icon: 'info', action: () => (detail.value = p) })
   if (p.type === 'external') {
     items.push({ key: 'edit', label: '编辑启动命令…', icon: 'pencil', action: () => (edit.value = p) })
   }
@@ -152,7 +226,15 @@ function onTileCtx(plugin: PluginSummary, pos: { x: number; y: number }): void {
 </script>
 
 <template>
-  <div class="panel" :class="{ pulse }">
+  <div class="shell">
+    <span
+      v-for="h in RESIZE_HANDLES"
+      :key="h"
+      class="rz"
+      :class="`rz-${h}`"
+      @pointerdown="startResize($event, h)"
+    />
+    <div class="panel" :class="{ pulse }">
     <template v-if="store.view === 'home'">
       <header class="search-row">
         <AppIcon class="search-icon" name="search" :size="20" />
@@ -165,6 +247,14 @@ function onTileCtx(plugin: PluginSummary, pos: { x: number; y: number }): void {
           spellcheck="false"
           @keydown="onKeydown"
         />
+        <button
+          class="icon-btn"
+          :class="{ active: pinned }"
+          :title="pinned ? '取消置顶' : '置顶固定：点击面板外不自动收起'"
+          @click="togglePinWindow"
+        >
+          <AppIcon name="pin" :size="17" />
+        </button>
         <button class="icon-btn" title="设置" @click="store.view = 'settings'">
           <AppIcon name="settings" :size="19" />
         </button>
@@ -249,12 +339,91 @@ function onTileCtx(plugin: PluginSummary, pos: { x: number; y: number }): void {
       @close="detail = null"
       @open="open(detail); detail = null"
       @edit="edit = detail; detail = null"
+      @detach="detach(detail); detail = null"
     />
     <ExternalEdit v-if="edit" :plugin="edit" @close="edit = null" />
+    </div>
   </div>
 </template>
 
 <style scoped>
+.shell {
+  position: relative;
+  height: 100%;
+  width: 100%;
+}
+
+/* 8 向缩放热区：透明无边框窗口不支持系统边缘缩放，自实现 */
+.rz {
+  position: absolute;
+  z-index: 40;
+  touch-action: none;
+}
+
+.rz-n,
+.rz-s {
+  left: 10px;
+  right: 10px;
+  height: 5px;
+  cursor: ns-resize;
+}
+
+.rz-e,
+.rz-w {
+  top: 10px;
+  bottom: 10px;
+  width: 5px;
+  cursor: ew-resize;
+}
+
+.rz-n {
+  top: 0;
+}
+
+.rz-s {
+  bottom: 0;
+}
+
+.rz-e {
+  right: 0;
+}
+
+.rz-w {
+  left: 0;
+}
+
+.rz-ne,
+.rz-nw,
+.rz-se,
+.rz-sw {
+  width: 12px;
+  height: 12px;
+}
+
+.rz-ne {
+  top: 0;
+  right: 0;
+  cursor: nesw-resize;
+}
+
+.rz-nw {
+  top: 0;
+  left: 0;
+  cursor: nwse-resize;
+}
+
+.rz-se {
+  bottom: 0;
+  right: 0;
+  cursor: nwse-resize;
+}
+
+.rz-sw {
+  bottom: 0;
+  left: 0;
+  cursor: nesw-resize;
+}
+
 .panel {
   height: 100%;
   width: 100%;
@@ -287,6 +456,14 @@ function onTileCtx(plugin: PluginSummary, pos: { x: number; y: number }): void {
   align-items: center;
   gap: 10px;
   padding: 20px 20px 14px;
+  /* 无边框窗口拖拽区：搜索行空白处可拖动窗口 */
+  -webkit-app-region: drag;
+}
+
+.search-row input,
+.search-row button,
+.search-row .avatar {
+  -webkit-app-region: no-drag;
 }
 
 .search-icon {
@@ -321,6 +498,11 @@ function onTileCtx(plugin: PluginSummary, pos: { x: number; y: number }): void {
 .icon-btn:hover {
   background: #f2f3f5;
   color: #1f2329;
+}
+
+.icon-btn.active {
+  background: #eef0fe;
+  color: #6366f1;
 }
 
 .avatar {

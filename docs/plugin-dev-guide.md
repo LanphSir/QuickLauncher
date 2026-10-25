@@ -98,6 +98,8 @@ await appapi.shell.openExternal('https://example.com')
 // 窗口控制（无需权限）
 await appapi.window.hide()                 // 隐藏整个面板（等同 Esc）
 await appapi.exit()                        // 退出当前插件，返回面板主页
+await appapi.window.detach()               // 把当前插件分离为独立窗口：
+                                           // 状态保留、任务栏可见；此后 exit=关闭该窗口
 ```
 
 约定俗成的交互：**Esc 键调用 `appapi.exit()` 返回面板**，插件页自己监听 keydown 实现。

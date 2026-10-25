@@ -52,11 +52,17 @@ interface PanelApi {
   uninstallPlugin(id: string): Promise<{ ok: boolean; message?: string }>
   setPluginDisabled(id: string, disabled: boolean): Promise<{ ok: boolean }>
   revealPluginDir(id: string): Promise<{ ok: boolean }>
+  detachPlugin(id: string): Promise<{ ok: boolean; message?: string }>
+  getWindowBounds(): Promise<{ x: number; y: number; width: number; height: number } | null>
+  setWindowBounds(rect: { x: number; y: number; width: number; height: number }): Promise<boolean>
+  saveWindowBounds(): Promise<boolean>
+  togglePinned(): Promise<{ pinned: boolean }>
   onShown(callback: () => void): void
   onPluginExited(callback: () => void): void
   onPluginCrashed(callback: (payload: { id: string; name: string }) => void): void
   onOpenSettings(callback: () => void): void
   onPluginsChanged(callback: () => void): void
+  onPinnedChanged(callback: (pinned: boolean) => void): void
 }
 
 interface PluginApi {
@@ -75,7 +81,11 @@ interface PluginApi {
   }
   notify(title: string, body?: string): Promise<boolean>
   shell: { openExternal(url: string): Promise<boolean> }
-  window: { hide(): Promise<boolean> }
+  window: {
+    hide(): Promise<boolean>
+    /** 把当前插件分离为独立窗口（状态保留，任务栏可见） */
+    detach(): Promise<{ ok: boolean; message?: string }>
+  }
   exit(): Promise<boolean>
 }
 

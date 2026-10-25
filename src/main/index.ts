@@ -1,14 +1,18 @@
 import { app, dialog, ipcMain, Notification, shell } from 'electron'
 import { loadConfig, getConfig, updateConfig, type PluginOverride } from './config'
 import {
+  clampRect,
   createPanelWindow,
   getPanelWindow,
   hidePanel,
-  showPanel
+  savePanelBounds,
+  showPanel,
+  togglePinned
 } from './windows/panel'
 import {
   destroyAll,
   destroyPlugin,
+  detachPlugin,
   exitToHome,
   initPluginHost,
   showPlugin,
@@ -39,14 +43,20 @@ function togglePanelWithHome(): void {
 }
 
 /** 打开插件的统一入口（面板回车/点击、托盘菜单共用） */
-function activatePlugin(id: string, payload?: PluginOpenPayload): { ok: boolean; message?: string } {
+function activatePlugin(
+  id: string,
+  payload?: PluginOpenPayload,
+  detached = false
+): { ok: boolean; message?: string } {
   const rec = getPlugin(id)
   if (!rec) return { ok: false, message: '插件不存在' }
+  if (rec.disabled) return { ok: false, message: '插件已停用' }
   if (rec.manifest.type === 'external') {
     const result = launchExternalPlugin(rec)
     hidePanel()
     return result
   }
+  if (detached) return detachPlugin(id, payload)
   if (!getPanelWindow()?.isVisible()) showPanel()
   showPlugin(rec, payload)
   return { ok: true }
@@ -83,6 +93,27 @@ function registerPanelIpc(): void {
     if (rec?.disabled) return { ok: false, message: '插件已停用，请在 设置 → 插件管理 中启用' }
     return activatePlugin(String(id), query ? { query: String(query) } : undefined)
   })
+
+  ipcMain.handle('panel:detach-plugin', (_event, id: string) => {
+    const rec = getPlugin(String(id))
+    if (rec?.disabled) return { ok: false, message: '插件已停用，请在 设置 → 插件管理 中启用' }
+    return detachPlugin(String(id))
+  })
+
+  // —— 窗口管理：自实现缩放（透明无边框窗口不支持系统边缘缩放）——
+  ipcMain.handle('panel:get-window-bounds', () => getPanelWindow()?.getBounds() ?? null)
+
+  ipcMain.handle('panel:set-window-bounds', (_event, rect: { x: number; y: number; width: number; height: number }) => {
+    getPanelWindow()?.setBounds(clampRect(rect))
+    return true
+  })
+
+  ipcMain.handle('panel:save-window-bounds', () => {
+    savePanelBounds()
+    return true
+  })
+
+  ipcMain.handle('panel:toggle-pinned', () => ({ pinned: togglePinned() }))
 
   ipcMain.handle('panel:install-plugin', async (_event, mode: string) => {
     const panelWin = getPanelWindow()

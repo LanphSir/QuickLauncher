@@ -58,7 +58,9 @@ contextBridge.exposeInMainWorld('appapi', {
     openExternal: (url: string) => invoke('plugin:shell.openExternal', url)
   },
   window: {
-    hide: () => invoke('plugin:window.hide')
+    hide: () => invoke('plugin:window.hide'),
+    /** 把当前插件分离为独立窗口（状态保留，任务栏可见） */
+    detach: () => invoke('plugin:window.detach')
   },
   exit: () => invoke('plugin:exit')
 })

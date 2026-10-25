@@ -1,11 +1,10 @@
 import { clipboard, ipcMain, Notification, shell } from 'electron'
 import { getCaller } from './callerRegistry'
 import { pluginStorage } from '../services/storage'
-import { exitPlugin } from '../windows/pluginHost'
-import { hidePanel } from '../windows/panel'
+import { detachBySender, exitBySender, hideBySender } from '../windows/pluginHost'
 import type { PluginRecord } from './manager'
 
-type Handler = (rec: PluginRecord, payload: any) => unknown
+type Handler = (rec: PluginRecord, payload: any, sender: Electron.WebContents) => unknown
 
 /** 通道 -> 所需权限；未列出的通道（窗口控制/退出/自述信息）默认放行 */
 const PERMS: Record<string, string> = {
@@ -27,7 +26,7 @@ function handle(channel: string, handler: Handler): void {
     if (perm && !(rec.manifest.permissions ?? []).includes(perm)) {
       throw new Error(`插件 ${rec.manifest.id} 缺少权限: ${perm}（请在 plugin.json 的 permissions 中声明）`)
     }
-    return handler(rec, payload)
+    return handler(rec, payload, event.sender)
   })
 }
 
@@ -62,12 +61,13 @@ export function initGateway(): void {
     void shell.openExternal(String(url))
     return true
   })
-  handle('plugin:window.hide', () => {
-    hidePanel()
+  handle('plugin:window.hide', (_rec, _payload, sender) => {
+    hideBySender(sender)
     return true
   })
-  handle('plugin:exit', () => {
-    exitPlugin()
+  handle('plugin:window.detach', (_rec, _payload, sender) => detachBySender(sender))
+  handle('plugin:exit', (_rec, _payload, sender) => {
+    exitBySender(sender)
     return true
   })
 }

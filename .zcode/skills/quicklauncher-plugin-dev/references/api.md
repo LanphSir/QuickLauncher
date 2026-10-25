@@ -32,6 +32,7 @@ interface PluginApi {
 
   window: {
     hide(): Promise<boolean>                    // 隐藏整个面板（等同失焦）
+    detach(): Promise<{ ok, message? }>         // 分离为独立窗口（状态保留、任务栏可见；此后 exit=关窗）
   }
 
   exit(): Promise<boolean>                      // 退出当前插件，回面板主页（视图缓存保留）

@@ -13,7 +13,7 @@ const PERM_LABELS: Record<string, string> = {
 const PERM_ORDER = ['storage', 'clipboard', 'notify', 'shell']
 
 const props = defineProps<{ plugin: PluginSummary }>()
-const emit = defineEmits<{ close: []; open: []; edit: [] }>()
+const emit = defineEmits<{ close: []; open: []; edit: []; detach: [] }>()
 
 const message = useMessage()
 
@@ -94,6 +94,10 @@ async function clearData(): Promise<void> {
         <NButton size="small" type="primary" @click="emit('open')">
           <template #icon><AppIcon name="play" :size="13" /></template>
           打开
+        </NButton>
+        <NButton v-if="plugin.type === 'web'" size="small" @click="emit('detach')">
+          <template #icon><AppIcon name="external-link" :size="13" /></template>
+          独立窗口打开
         </NButton>
         <NButton v-if="plugin.type === 'external'" size="small" @click="emit('edit')">
           <template #icon><AppIcon name="pencil" :size="13" /></template>

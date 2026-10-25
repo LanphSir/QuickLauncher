@@ -8,6 +8,13 @@ export interface PluginOverride {
   args?: string[]
 }
 
+export interface WindowRect {
+  x?: number
+  y?: number
+  width: number
+  height: number
+}
+
 export interface AppConfig {
   /** 全局唤起快捷键（Electron accelerator 格式） */
   hotkey: string
@@ -19,6 +26,10 @@ export interface AppConfig {
   disabledPluginIds: string[]
   /** 插件运行时配置覆盖，key 为插件 id */
   pluginOverrides: Record<string, PluginOverride>
+  /** 面板窗口上次的边界（分离缩放后恢复用） */
+  panelBounds?: WindowRect
+  /** 各插件分离窗口的边界，key 为插件 id */
+  windowStates?: Record<string, WindowRect>
 }
 
 const DEFAULTS: AppConfig = {
@@ -26,7 +37,8 @@ const DEFAULTS: AppConfig = {
   autostart: false,
   pinnedIds: ['com.launcher.clipboard', 'com.launcher.calculator'],
   disabledPluginIds: [],
-  pluginOverrides: {}
+  pluginOverrides: {},
+  windowStates: {}
 }
 
 let config: AppConfig = { ...DEFAULTS }

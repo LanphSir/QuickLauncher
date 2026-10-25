@@ -21,12 +21,20 @@ const api = {
   setPluginDisabled: (id: string, disabled: boolean) =>
     ipcRenderer.invoke('panel:set-plugin-disabled', { id, disabled }),
   revealPluginDir: (id: string) => ipcRenderer.invoke('panel:reveal-plugin-dir', id),
+  detachPlugin: (id: string) => ipcRenderer.invoke('panel:detach-plugin', id),
+  getWindowBounds: () => ipcRenderer.invoke('panel:get-window-bounds'),
+  setWindowBounds: (rect: { x: number; y: number; width: number; height: number }) =>
+    ipcRenderer.invoke('panel:set-window-bounds', rect),
+  saveWindowBounds: () => ipcRenderer.invoke('panel:save-window-bounds'),
+  togglePinned: () => ipcRenderer.invoke('panel:toggle-pinned'),
   onShown: (callback: () => void) => subscribe('panel:shown', callback),
   onPluginExited: (callback: () => void) => subscribe('panel:plugin-exited', callback),
   onPluginCrashed: (callback: (payload: { id: string; name: string }) => void) =>
     subscribe<{ id: string; name: string }>('panel:plugin-crashed', callback),
   onOpenSettings: (callback: () => void) => subscribe('panel:open-settings', callback),
-  onPluginsChanged: (callback: () => void) => subscribe('panel:plugins-changed', callback)
+  onPluginsChanged: (callback: () => void) => subscribe('panel:plugins-changed', callback),
+  onPinnedChanged: (callback: (pinned: boolean) => void) =>
+    subscribe<boolean>('panel:pinned-changed', callback)
 }
 
 contextBridge.exposeInMainWorld('panel', api)
