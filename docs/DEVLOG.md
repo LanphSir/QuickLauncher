@@ -60,6 +60,44 @@
 
 ---
 
+## v0.2.1 — 本地插件安装 + 翻译插件官方网页多引擎版（2026-10-25）
+
+**目标**：落地 v0.2.1 规划的本地插件安装闭环；翻译弃用自建 API，改为内嵌官方翻译网页（减少适配难度），支持多引擎并存与自定义添加。
+
+### 功能变更
+
+| 模块 | 变更 |
+|---|---|
+| 本地插件安装 | 扫描根增加 `userData/plugins/installed/`（builtin 与 installed 双来源，id 冲突 builtin 优先）；**目录投放重启即生效**；面板"全部应用"页支持从目录/ZIP 安装（原生对话框）；ZIP 手工解包防 zip-slip（过滤 `..` 路径穿越与 node_modules）；安装即校验，失败自动回滚 |
+| 插件管理 | 设置页新增"插件管理"：全部插件列表、启用/停用开关（`disabledPluginIds`，停用后不进面板、打开被拒）、卸载（仅 installed 来源，插件文件删除/数据保留）、打开插件目录 |
+| 翻译插件 v2 | 弃用 MyMemory API，改为 **webview 内嵌官方翻译页**：Google / DeepL / 必应 / 百度四引擎并存，左侧切换（各引擎独立 webview 懒创建、状态保留）；**自定义添加翻译源**（名称 + 含 `{q}` 占位符的 URL 模板，存 storage，可删除）；"浏览器打开"当前页；查询词经 onQuery 自动导航翻译 |
+| webview 权限 | 新增 `webview` 权限：插件宿主开 `webviewTag`，`will-attach-webview` 网关式校验——未声明权限的插件嵌入被拦截，放行时强制 guest 沙箱（删 preload、禁 nodeIntegration、contextIsolation+sandbox） |
+| IPC | panel:* 新增 install-plugin / uninstall-plugin / set-plugin-disabled / reveal-plugin-dir / plugins-changed 事件；pluginHost 新增 destroyPlugin（卸载时销毁缓存视图） |
+
+### 关键文件
+
+- `src/main/plugin/manager.ts`（双扫描根、installPluginFromPath、uninstallPlugin、zip 安全解包）
+- `src/main/windows/pluginHost.ts`（webviewTag + will-attach-webview 门禁 + destroyPlugin）
+- `src/main/{index.ts,config.ts}`；`src/preload/panel.ts`
+- `src/renderer/src/components/{AppManage,SettingsView}.vue`；`stores/launcher.ts`（过滤停用）
+- `plugins/translator/`（webview 多引擎重写，vite `isCustomElement` 声明 webview 标签）
+
+### 关键决策
+
+1. **webview 而非 iframe**：官方翻译站普遍有 X-Frame-Options，iframe 全军覆没；webview 是独立 guest 进程不受限，且能按权限门禁——符合"减少适配难度 + 保持隔离架构"。
+2. **安装采用"拷贝进 installed 根"而非引用原路径**：与未来市场下载安装统一语义，插件目录不可变原则不被破坏。
+3. **ZIP 手工解包而非 adm-zip extractAll**：规避 zip-slip，同时顺带过滤 node_modules 垃圾。
+4. **停用而非删除内置插件**：builtin 不可卸载（随包发布），只允许停用。
+5. **翻译源 = URL 模板**（`{q}` 占位符）：把"适配"简化为一条 URL，任何翻译网站都能接入。
+
+### 验证
+
+- 三端 typecheck 零错误；插件构建通过；smoke 回归 10/10
+- 专项验证 **7/7**（临时脚本）：目录投放→重启扫描（source=installed）→ 停用后打开被拒 → 重新启用 → 卸载移除；翻译插件查询透传后 webview 成功加载 `translate.google.com/?...text=hello`
+- 已知限制：翻译页内嵌属网页级集成，站点自身改版/风控（如 Google 地区跳转）由官方页面自理，这正是选择 webview 的原因；个别站点如拒绝自动填充查询词，可手动粘贴
+
+---
+
 ## v0.2.0 — 体验优化：图标库 / 托盘菜单 / 关键词通配与正则 / 右键配置 / 全部应用管理（2026-10-25）
 
 **目标**：把 MVP 的粗糙处打磨到位——图标体系、托盘面板、搜索匹配能力、插件配置入口，并新增一个真实场景插件（翻译）。

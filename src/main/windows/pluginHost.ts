@@ -1,7 +1,7 @@
 import { BrowserWindow, WebContentsView } from 'electron'
 import { join } from 'node:path'
 import { pluginEntryUrl, type PluginRecord } from '../plugin/manager'
-import { registerPluginCaller } from '../plugin/callerRegistry'
+import { getCaller, registerPluginCaller } from '../plugin/callerRegistry'
 
 export interface PluginOpenPayload {
   /** 面板搜索词，打开时透传给插件（appapi.onQuery 接收） */
@@ -51,12 +51,27 @@ export function showPlugin(rec: PluginRecord, payload?: PluginOpenPayload): void
         preload: join(__dirname, '../preload/plugin.js'),
         sandbox: true,
         contextIsolation: true,
-        nodeIntegration: false
+        nodeIntegration: false,
+        // 插件可嵌入第三方网页（如官方翻译页）；实际放行由 will-attach-webview 按权限校验
+        webviewTag: true
       }
     })
     entry = { view, rec }
     viewCache.set(rec.manifest.id, entry)
     registerPluginCaller(view.webContents, rec)
+    // <webview> 权限门禁：仅声明 webview 权限的插件允许嵌入，且收紧 guest 偏好
+    view.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+      const caller = getCaller(view.webContents)
+      if (!caller?.manifest.permissions?.includes('webview')) {
+        console.warn(`[plugin] ${caller?.manifest.id ?? '未知插件'} 未声明 webview 权限，已拦截`)
+        event.preventDefault()
+        return
+      }
+      delete webPreferences.preload
+      webPreferences.nodeIntegration = false
+      webPreferences.contextIsolation = true
+      webPreferences.sandbox = true
+    })
     view.webContents.on('did-finish-load', () => flushPayload(entry!))
     view.webContents.on('render-process-gone', (_event, details) => {
       onPluginCrashed(rec, details.reason)
@@ -113,6 +128,24 @@ function onPluginCrashed(rec: PluginRecord, reason: string): void {
     entry.view.webContents.close()
   } catch {
     /* 崩溃后可能已不可关闭 */
+  }
+}
+
+/** 卸载/重置单个插件：主动退出 + 销毁缓存视图 */
+export function destroyPlugin(id: string): void {
+  const entry = viewCache.get(id)
+  if (!entry) return
+  if (activeId === id) {
+    panel?.contentView.removeChildView(entry.view)
+    activeId = null
+    panel?.webContents.focus()
+    panel?.webContents.send('panel:plugin-exited')
+  }
+  viewCache.delete(id)
+  try {
+    entry.view.webContents.close()
+  } catch {
+    /* ignore */
   }
 }
 

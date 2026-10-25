@@ -12,11 +12,12 @@ export const useLauncherStore = defineStore('launcher', {
     selIndex: 0
   }),
   getters: {
-    /** 搜索命中：名称/id 子串，或任一关键词（支持通配符与 re: 正则） */
+    /** 搜索命中：名称/id 子串，或任一关键词（支持通配符与 re: 正则）；已停用插件不参与 */
     visiblePlugins(state): PluginSummary[] {
+      const pool = state.plugins.filter((p) => !p.disabled)
       const q = state.query.trim()
-      if (!q) return state.plugins
-      return state.plugins.filter((p) => pluginMatch(q, p))
+      if (!q) return pool
+      return pool.filter((p) => pluginMatch(q, p))
     },
     pinned(state): PluginSummary[] {
       const ids = state.config?.pinnedIds ?? []

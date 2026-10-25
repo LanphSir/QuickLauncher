@@ -39,6 +39,9 @@ onMounted(async () => {
   window.panel.onOpenSettings(() => {
     store.view = 'settings'
   })
+  window.panel.onPluginsChanged(() => {
+    void store.load()
+  })
   // 弹层优先吃掉 Esc（capture 阶段），避免同时触发面板隐藏
   window.addEventListener('keydown', onGlobalKeydown, true)
   triggerPulse()

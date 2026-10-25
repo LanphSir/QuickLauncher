@@ -1,4 +1,4 @@
-import { app, ipcMain, Notification } from 'electron'
+import { app, dialog, ipcMain, Notification, shell } from 'electron'
 import { loadConfig, getConfig, updateConfig, type PluginOverride } from './config'
 import {
   createPanelWindow,
@@ -8,12 +8,19 @@ import {
 } from './windows/panel'
 import {
   destroyAll,
+  destroyPlugin,
   exitToHome,
   initPluginHost,
   showPlugin,
   type PluginOpenPayload
 } from './windows/pluginHost'
-import { getPlugin, listPlugins, scanPlugins } from './plugin/manager'
+import {
+  getPlugin,
+  installPluginFromPath,
+  listPlugins,
+  scanPlugins,
+  uninstallPlugin
+} from './plugin/manager'
 import { initGateway } from './plugin/gateway'
 import { initHotkey, registerHotkey, unregisterAll } from './hotkey'
 import { applyAutostart, createTray, refreshTray } from './tray'
@@ -46,6 +53,11 @@ function activatePlugin(id: string, payload?: PluginOpenPayload): { ok: boolean;
 }
 
 function registerPanelIpc(): void {
+  /** 插件列表变化后通知面板刷新 */
+  function notifyPluginsChanged(): void {
+    getPanelWindow()?.webContents.send('panel:plugins-changed')
+  }
+
   ipcMain.handle('panel:get-plugins', () => {
     const { pinnedIds } = getConfig()
     return listPlugins().map((rec) => ({
@@ -58,15 +70,71 @@ function registerPanelIpc(): void {
       icon: rec.iconDataUrl,
       pinned: pinnedIds.includes(rec.manifest.id),
       permissions: rec.manifest.permissions ?? [],
+      source: rec.source,
+      disabled: rec.disabled,
       command: rec.manifest.type === 'external' ? rec.manifest.command : undefined,
       args: rec.manifest.type === 'external' ? rec.manifest.args : undefined,
       dir: rec.dir
     }))
   })
 
-  ipcMain.handle('panel:open-plugin', (_event, { id, query }: { id: string; query?: string }) =>
-    activatePlugin(String(id), query ? { query: String(query) } : undefined)
-  )
+  ipcMain.handle('panel:open-plugin', (_event, { id, query }: { id: string; query?: string }) => {
+    const rec = getPlugin(String(id))
+    if (rec?.disabled) return { ok: false, message: '插件已停用，请在 设置 → 插件管理 中启用' }
+    return activatePlugin(String(id), query ? { query: String(query) } : undefined)
+  })
+
+  ipcMain.handle('panel:install-plugin', async (_event, mode: string) => {
+    const panelWin = getPanelWindow()
+    if (!panelWin) return { ok: false, message: '面板未就绪' }
+    const picked =
+      mode === 'zip'
+        ? await dialog.showOpenDialog(panelWin, {
+            title: '选择插件 ZIP 包',
+            properties: ['openFile'],
+            filters: [{ name: 'ZIP 插件包', extensions: ['zip'] }]
+          })
+        : await dialog.showOpenDialog(panelWin, {
+            title: '选择插件目录（含 plugin.json 或 dist/plugin.json）',
+            properties: ['openDirectory']
+          })
+    if (picked.canceled || !picked.filePaths[0]) return { ok: false, canceled: true }
+    const result = installPluginFromPath(picked.filePaths[0])
+    if (result.ok) {
+      refreshTray()
+      notifyPluginsChanged()
+    }
+    return result
+  })
+
+  ipcMain.handle('panel:uninstall-plugin', (_event, id: string) => {
+    destroyPlugin(String(id))
+    const result = uninstallPlugin(String(id))
+    if (result.ok) {
+      refreshTray()
+      notifyPluginsChanged()
+    }
+    return result
+  })
+
+  ipcMain.handle('panel:set-plugin-disabled', (_event, { id, disabled }) => {
+    const cur = getConfig().disabledPluginIds
+    const next = disabled
+      ? [...new Set([...cur, String(id)])]
+      : cur.filter((x) => x !== String(id))
+    updateConfig({ disabledPluginIds: next })
+    scanPlugins()
+    refreshTray()
+    notifyPluginsChanged()
+    return { ok: true }
+  })
+
+  ipcMain.handle('panel:reveal-plugin-dir', (_event, id: string) => {
+    const rec = getPlugin(String(id))
+    if (!rec) return { ok: false, message: '插件不存在' }
+    void shell.openPath(rec.baseDir)
+    return { ok: true }
+  })
 
   ipcMain.handle('panel:pin', (_event, { id, pinned }) => {
     const { pinnedIds } = getConfig()

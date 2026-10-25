@@ -16,11 +16,17 @@ const api = {
   savePluginOverride: (id: string, data: { command?: string; args?: string }) =>
     ipcRenderer.invoke('panel:save-plugin-override', { id, ...data }),
   clearPluginData: (id: string) => ipcRenderer.invoke('panel:clear-plugin-data', id),
+  installPlugin: (mode: 'dir' | 'zip') => ipcRenderer.invoke('panel:install-plugin', mode),
+  uninstallPlugin: (id: string) => ipcRenderer.invoke('panel:uninstall-plugin', id),
+  setPluginDisabled: (id: string, disabled: boolean) =>
+    ipcRenderer.invoke('panel:set-plugin-disabled', { id, disabled }),
+  revealPluginDir: (id: string) => ipcRenderer.invoke('panel:reveal-plugin-dir', id),
   onShown: (callback: () => void) => subscribe('panel:shown', callback),
   onPluginExited: (callback: () => void) => subscribe('panel:plugin-exited', callback),
   onPluginCrashed: (callback: (payload: { id: string; name: string }) => void) =>
     subscribe<{ id: string; name: string }>('panel:plugin-crashed', callback),
-  onOpenSettings: (callback: () => void) => subscribe('panel:open-settings', callback)
+  onOpenSettings: (callback: () => void) => subscribe('panel:open-settings', callback),
+  onPluginsChanged: (callback: () => void) => subscribe('panel:plugins-changed', callback)
 }
 
 contextBridge.exposeInMainWorld('panel', api)

@@ -15,6 +15,8 @@ export interface AppConfig {
   autostart: boolean
   /** 已固定插件 id，按固定顺序排列 */
   pinnedIds: string[]
+  /** 被停用的插件 id（仍注册但不出现在面板/不可打开） */
+  disabledPluginIds: string[]
   /** 插件运行时配置覆盖，key 为插件 id */
   pluginOverrides: Record<string, PluginOverride>
 }
@@ -23,6 +25,7 @@ const DEFAULTS: AppConfig = {
   hotkey: 'Alt+Space',
   autostart: false,
   pinnedIds: ['com.launcher.clipboard', 'com.launcher.calculator'],
+  disabledPluginIds: [],
   pluginOverrides: {}
 }
 

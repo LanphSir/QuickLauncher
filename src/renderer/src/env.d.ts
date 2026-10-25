@@ -17,6 +17,10 @@ interface PluginSummary {
   pinned: boolean
   /** 申请的 API 权限（详情页展示） */
   permissions?: string[]
+  /** 插件来源：builtin 随应用发布 / installed 用户安装 */
+  source?: 'builtin' | 'installed'
+  /** 已停用（设置中可重新启用） */
+  disabled?: boolean
   /** external 型当前生效的启动命令/参数（含用户覆盖） */
   command?: string
   args?: string[]
@@ -44,10 +48,15 @@ interface PanelApi {
     data: { command?: string; args?: string }
   ): Promise<{ ok: boolean; command?: string; args?: string[]; message?: string }>
   clearPluginData(id: string): Promise<{ ok: boolean }>
+  installPlugin(mode: 'dir' | 'zip'): Promise<{ ok: boolean; canceled?: boolean; message?: string }>
+  uninstallPlugin(id: string): Promise<{ ok: boolean; message?: string }>
+  setPluginDisabled(id: string, disabled: boolean): Promise<{ ok: boolean }>
+  revealPluginDir(id: string): Promise<{ ok: boolean }>
   onShown(callback: () => void): void
   onPluginExited(callback: () => void): void
   onPluginCrashed(callback: (payload: { id: string; name: string }) => void): void
   onOpenSettings(callback: () => void): void
+  onPluginsChanged(callback: () => void): void
 }
 
 interface PluginApi {

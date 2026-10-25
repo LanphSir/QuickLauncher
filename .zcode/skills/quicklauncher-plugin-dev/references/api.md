@@ -46,7 +46,8 @@ interface PluginApi {
 | `clipboard` | `appapi.clipboard.*` |
 | `notify` | `appapi.notify` |
 | `shell` | `appapi.shell.openExternal` |
-| （无需权限） | `info` / `window.hide` / `exit` |
+| `webview` | 插件页 `<webview>` 嵌入第三方网页（主进程 will-attach-webview 校验，guest 强制沙箱） |
+| （无需权限） | `info` / `onQuery` / `window.hide` / `exit` |
 
 权限在 `plugin.json` 的 `permissions` 数组声明，例如 `"permissions": ["storage", "clipboard"]`。
 

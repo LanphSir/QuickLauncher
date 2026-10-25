@@ -22,8 +22,14 @@
 |---|---|
 | 剪贴板历史 | storage + clipboard + notify，轮询监听剪贴板 |
 | 计算器 | 纯 UI 插件 + 键盘操作（自写表达式解析器，不用 eval） |
-| 快速翻译 | `re:` 正则关键词命中英文输入 + onQuery 查询透传 + 免费翻译 API |
+| 快速翻译 | webview 内嵌官方翻译页（Google/DeepL/必应/百度）+ 自定义翻译源 + `re:` 正则命中英文输入 |
 | 记事本 | external 型：manifest 直接集成 Windows 记事本 |
+
+## 安装第三方插件
+
+- 面板 → 全部应用 → "从目录安装 / 从 ZIP 安装"
+- 或手动把含 `plugin.json` 的目录放入 `%APPDATA%/quick-launcher/plugins/installed/`，重启生效
+- 设置 → 插件管理：启用/停用/卸载/打开目录
 
 ## 快速开始
 

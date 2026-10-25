@@ -26,7 +26,8 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 2. **新增插件 API 必须走网关**（`plugin/gateway.ts`）：在网关注册通道 + 在 `PERMS` 表声明所需权限 + 插件 manifest 显式声明该权限，三者缺一不可。禁止任何绕过网关的直连 IPC。
 3. **调用方身份锚定**：网关通过 `callerRegistry`（webContents.id → 插件）识别调用方，不信任 payload 里自带的插件 id。
 4. **数据强制命名空间**：插件存储只能落在 `userData/data/<pluginId>/`（`services/storage.ts`）。不允许给插件暴露任何路径能力。
-5. **插件扫描只认固定目录**（`plugin/manager.ts` 的 `getPluginRoots()`）：dev 为 `<root>/plugins/`，打包后为 `resources/plugins/builtin/`（将来加 `installed/` 也只改这里）。manifest 校验失败即跳过，id 冲突先到先得。
+5. **插件扫描只认固定目录**（`plugin/manager.ts` 的 `getPluginRoots()`）：builtin（dev 项目 `plugins/`、打包 `resources/plugins/builtin/`）+ installed（`userData/plugins/installed/`）。manifest 校验失败即跳过，id 冲突 builtin 优先。
+6. **`<webview>` 必须有权限门禁**：插件宿主虽开 `webviewTag`，但 `will-attach-webview` 只放行声明了 `webview` 权限的插件，且强制 guest 沙箱（删 preload、禁 nodeIntegration）。不要绕过这道门禁。
 
 ## 3. 代码规范
 
@@ -59,6 +60,8 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 | `WebContents` 用 `.id` 属性，没有 `getId()` | 类型定义如此 |
 | 开机自启 | 仅 `app.isPackaged` 时调用 `setLoginItemSettings`，避免开发期写用户登录项 |
 | 面板 blur 隐藏 | DevTools 打开时不隐藏（`panel.ts` 已处理），调试面板 UI 不要关这个分支 |
+| Vue 模板里的 `<webview>` 被当作组件解析报错 | 插件 vite 配置需 `vue({ compilerOptions: { isCustomElement: (tag) => tag === 'webview' } })`，见 plugins/translator |
+| zip 安装 | 只能用 `manager.ts` 的手工解包（防 zip-slip），不要换 `extractAll` |
 
 ## 6. Git 与迭代流程
 

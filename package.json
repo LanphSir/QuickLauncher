@@ -1,6 +1,6 @@
 {
   "name": "quick-launcher",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "快捷桌面启动器 — 全局快捷键唤起的插件化工具面板（类 uTools）",
   "private": true,
   "main": "out/main/index.js",
@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.6.0",
     "@types/node": "^26.6.5",
     "@vitejs/plugin-vue": "^6.0.0",
     "electron": "^38.0.0",
@@ -23,6 +24,7 @@
     "vite": "^7.1.0"
   },
   "dependencies": {
+    "adm-zip": "^0.6.1",
     "naive-ui": "^2.43.0",
     "pinia": "^3.0.3",
     "vue": "^3.5.0"

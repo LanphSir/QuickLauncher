@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { NButton, NPopconfirm, useMessage } from 'naive-ui'
 import AppIcon from './AppIcon.vue'
 import { useLauncherStore } from '../stores/launcher'
 import { pluginMatch } from '../utils/match'
@@ -12,13 +13,41 @@ const emit = defineEmits<{
 }>()
 
 const store = useLauncherStore()
+const message = useMessage()
 const query = ref('')
+const installing = ref(false)
 
 const filtered = computed(() => {
   const q = query.value.trim()
   if (!q) return store.plugins
   return store.plugins.filter((p) => pluginMatch(q, p))
 })
+
+async function install(mode: 'dir' | 'zip'): Promise<void> {
+  installing.value = true
+  try {
+    const r = await window.panel.installPlugin(mode)
+    if (r.canceled) return
+    if (r.ok) message.success(r.message ?? '安装成功')
+    else message.error(r.message ?? '安装失败')
+  } finally {
+    installing.value = false
+  }
+}
+
+async function uninstall(p: PluginSummary): Promise<void> {
+  const r = await window.panel.uninstallPlugin(p.id)
+  if (r.ok) message.success(r.message ?? '已卸载')
+  else message.error(r.message ?? '卸载失败')
+}
+
+async function open(p: PluginSummary): Promise<void> {
+  if (p.disabled) {
+    message.warning('插件已停用，请在 设置 → 插件管理 中启用')
+    return
+  }
+  emit('open', p)
+}
 </script>
 
 <template>
@@ -29,22 +58,38 @@ const filtered = computed(() => {
         返回
       </button>
       <h2>全部应用</h2>
-      <span class="count">共 {{ store.plugins.length }} 个 · 插件市场即将上线</span>
+      <span class="count">共 {{ store.plugins.length }} 个</span>
     </header>
 
-    <div class="search-row">
-      <AppIcon name="search" :size="16" class="search-icon" />
-      <input
-        v-model="query"
-        class="search"
-        type="text"
-        placeholder="按名称 / 关键词 / 正则过滤"
-        spellcheck="false"
-      />
+    <div class="toolbar">
+      <div class="search-row">
+        <AppIcon name="search" :size="16" class="search-icon" />
+        <input
+          v-model="query"
+          class="search"
+          type="text"
+          placeholder="按名称 / 关键词 / 正则过滤"
+          spellcheck="false"
+        />
+      </div>
+      <NButton size="small" :loading="installing" @click="install('dir')">
+        <template #icon><AppIcon name="folder" :size="13" /></template>
+        从目录安装
+      </NButton>
+      <NButton size="small" :loading="installing" @click="install('zip')">
+        <template #icon><AppIcon name="file" :size="13" /></template>
+        从 ZIP 安装
+      </NButton>
     </div>
 
     <div class="list">
-      <div v-for="p in filtered" :key="p.id" class="item" @dblclick="emit('open', p)">
+      <div
+        v-for="p in filtered"
+        :key="p.id"
+        class="item"
+        :class="{ disabled: p.disabled }"
+        @dblclick="open(p)"
+      >
         <div class="icon">
           <img v-if="p.icon" :src="p.icon" alt="" draggable="false" />
           <span v-else class="fallback-icon"><AppIcon name="grid" :size="18" /></span>
@@ -53,12 +98,14 @@ const filtered = computed(() => {
           <div class="name-row">
             <span class="name">{{ p.name }}</span>
             <span class="badge" :class="p.type">{{ p.type === 'external' ? '外部程序' : '应用' }}</span>
+            <span v-if="p.source === 'installed'" class="badge installed">已安装</span>
+            <span v-if="p.disabled" class="badge off">已停用</span>
             <span v-if="p.version" class="ver">v{{ p.version }}</span>
           </div>
           <div class="meta">{{ p.description || p.id }}</div>
         </div>
         <div class="actions">
-          <button class="act primary" title="打开" @click="emit('open', p)">
+          <button class="act primary" title="打开" @click="open(p)">
             <AppIcon name="play" :size="14" />
           </button>
           <button
@@ -72,6 +119,14 @@ const filtered = computed(() => {
           <button class="act" title="应用详情" @click="emit('detail', p)">
             <AppIcon name="info" :size="14" />
           </button>
+          <NPopconfirm v-if="p.source === 'installed'" @positive-click="uninstall(p)">
+            <template #trigger>
+              <button class="act danger" title="卸载">
+                <AppIcon name="trash" :size="14" />
+              </button>
+            </template>
+            卸载将删除「{{ p.name }}」的插件文件（数据保留），确定？
+          </NPopconfirm>
         </div>
       </div>
       <p v-if="!filtered.length" class="empty">没有匹配的应用</p>
@@ -125,15 +180,22 @@ const filtered = computed(() => {
   color: #1f2329;
 }
 
-.search-row {
+.toolbar {
   display: flex;
   align-items: center;
   gap: 8px;
   margin: 4px 20px 10px;
+}
+
+.search-row {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 0 12px;
-  height: 34px;
+  height: 32px;
   border: 1px solid #eceeef;
-  border-radius: 10px;
+  border-radius: 9px;
 }
 
 .search-row:focus-within {
@@ -174,6 +236,10 @@ const filtered = computed(() => {
 
 .item:hover {
   background: #f5f6f7;
+}
+
+.item.disabled {
+  opacity: 0.55;
 }
 
 .icon {
@@ -231,6 +297,16 @@ const filtered = computed(() => {
   color: #b25e09;
 }
 
+.badge.installed {
+  background: #e8f7ef;
+  color: #0a7d43;
+}
+
+.badge.off {
+  background: #f2f3f5;
+  color: #8f959e;
+}
+
 .ver {
   font-size: 10.5px;
   color: #a1a6ad;
@@ -279,6 +355,11 @@ const filtered = computed(() => {
 .act.active {
   color: #6366f1;
   background: #eef0fe;
+}
+
+.act.danger:hover {
+  color: #d5304f;
+  background: #fdecef;
 }
 
 .empty {

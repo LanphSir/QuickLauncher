@@ -54,6 +54,15 @@ onMounted(() => {
 
 把目录放到项目 `plugins/` 下（或其构建产物放进 `my-plugin/dist/`），重启应用即可在面板搜索到。
 
+### 安装到用户目录（不改项目源码）
+
+两种方式把插件装进用户目录 `%APPDATA%/quick-launcher/plugins/installed/`：
+
+1. **手动投放**：把含 `plugin.json` 的目录（或其 `dist/`）放进去，重启应用即生效
+2. **面板安装**：全部应用页 → "从目录安装" / "从 ZIP 安装"（zip 内支持根目录或 `dist/plugin.json`，安装时会做 manifest 校验、失败回滚；zip 解包过滤路径穿越与 node_modules）
+
+安装后的插件可在 设置 → 插件管理 中停用/启用/卸载/打开目录；内置插件只能停用不能卸载。
+
 ## 插件 API（window.appapi）
 
 所有调用经过主进程网关：先校验调用方身份，再校验 `plugin.json` 里声明的权限，未声明会直接 reject。
@@ -96,8 +105,22 @@ await appapi.exit()                        // 退出当前插件，返回面板�
 | `clipboard` | `appapi.clipboard.*` |
 | `notify` | `appapi.notify` |
 | `shell` | `appapi.shell.openExternal` |
+| `webview` | 在插件页使用 `<webview>` 嵌入第三方网页（v0.2.1 起） |
 
-`window.hide` / `exit` / `info` 不需要权限。
+`window.hide` / `exit` / `info` / `onQuery` 不需要权限。
+
+### 嵌入第三方网页（webview）
+
+声明 `webview` 权限后，插件页可直接使用 Electron 的 `<webview>` 标签内嵌任意网站
+（官方翻译页、文档站等）。它不受 X-Frame-Options 限制（独立 guest 进程），
+主进程会在 `will-attach-webview` 里校验权限并强制 guest 沙箱。
+Vue 插件需在 vite 配置声明自定义元素：
+
+```ts
+vue({ compilerOptions: { isCustomElement: (tag) => tag === 'webview' } })
+```
+
+参考 `plugins/translator/`（多翻译引擎 + `{q}` URL 模板 + 懒创建 webview 保留状态）。
 
 ## external 型插件：集成外部程序
 
