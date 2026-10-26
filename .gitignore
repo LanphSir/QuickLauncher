@@ -9,3 +9,6 @@ Thumbs.db
 *.local
 # ZCode 会话数据（skills 需要追踪，plans 是会话元数据）
 .zcode/plans/
+
+# 本地工作记忆与 IDE 会话数据，不上传
+.workbuddy/
