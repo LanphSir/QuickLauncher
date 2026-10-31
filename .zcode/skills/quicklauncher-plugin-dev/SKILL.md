@@ -49,12 +49,18 @@ await appapi.storage.set('key', value)     // 权限 storage —— 按插件 id
 await appapi.clipboard.writeText('hello')  // 权限 clipboard
 await appapi.notify('标题', '内容')          // 权限 notify
 await appapi.shell.openExternal(url)       // 权限 shell，仅 http(s)
+await appapi.docs.list()                   // 权限 docs —— 插件自己的文档库（import/read/remove/reveal）
 await appapi.exit()                        // 无需权限 —— 退出插件返回面板
 await appapi.window.hide()                 // 无需权限 —— 隐藏整个面板
 ```
 
 完整签名、生命周期（视图缓存/恢复状态）、示例代码见 `references/api.md`。
 **约定**：插件页自己监听 `keydown`，Esc 调 `appapi.exit()` 返回面板——所有内置插件都遵守。
+
+**插件页外框（v0.4.1 起）**：启动器在插件外面套了顶栏 46px + 四周 8px 留白的外框，
+已提供"返回主界面 / 独立窗口 / 关闭"。所以插件**不要自绘关闭、返回主界面这类窗口级控件**，
+自己的"返回"只用于内部层级；关键按钮也别贴内容区最边缘（留白那一圈是缩放热区的作用带）。
+布局用 `height: 100%` 自适应即可，进插件时面板会自动伸展。
 
 ### 4. 构建与注册
 
@@ -86,5 +92,7 @@ await appapi.window.hide()                 // 无需权限 —— 隐藏整个�
 | 页面白屏、资源 404 | vite 忘了 `base: './'`，或用绝对路径引用了资源 |
 | 调用 API 报"缺少权限" | manifest `permissions` 没声明，加上后**重新 build** |
 | 改了插件没变化 | dev 不热更插件，先 `pnpm build:plugins`；旧视图有缓存，Esc 重进即可 |
+| 插件页白屏、只显示骨架 HTML | manifest 放在了插件根目录而不是 `public/`——扫描器会命中源码目录，入口变成未被 vite 处理的 `index.html`（scaffold 已修正，老目录手动挪一下） |
+| `fetch('xx.md')` 拿不到本地文件 | 插件页跑在 `file://`，fetch 本地资源被 CORS 拦。离线内容用 vite `?raw` 构建期打进 bundle（见 `plugins/handbook/scripts/build-manuals.mjs`） |
 | 图标不显示 | icon 不在插件目录/dist 根部，或扩展名不在 svg/png/ico 列表 |
 | dev 与打包版配置串了 | 两者共用 `%APPDATA%/quick-launcher`，必要时清掉 |

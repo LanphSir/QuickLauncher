@@ -53,7 +53,11 @@ const write = (rel, content) => {
 
 console.log(`创建插件 ${name}（${externalCmd ? 'external' : 'web'} 型）→ plugins/${name}`)
 
-write('plugin.json', JSON.stringify({
+// web 型的 manifest 与图标必须放 public/（构建后进 dist/）；放根目录会让扫描器
+// 命中源码目录里的 plugin.json，入口指向未被 vite 处理的 index.html → 白屏。
+const assetDir = externalCmd ? '' : 'public/'
+
+write(`${assetDir}plugin.json`, JSON.stringify({
   id,
   name: displayName,
   version: '0.1.0',
@@ -64,7 +68,7 @@ write('plugin.json', JSON.stringify({
   permissions: perms
 }, null, 2) + '\n')
 
-write('icon.svg', `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+write(`${assetDir}icon.svg`, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <rect x="4" y="4" width="56" height="56" rx="14" fill="${externalCmd ? '#F59E0B' : '#6366F1'}"/>
   <rect x="20" y="20" width="24" height="24" rx="6" fill="#FFFFFF"/>
 </svg>

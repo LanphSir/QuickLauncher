@@ -95,6 +95,13 @@ await appapi.notify('标题', '内容')
 // 打开外部链接（需要 shell 权限，仅 http/https）
 await appapi.shell.openExternal('https://example.com')
 
+// 文档库（需要 docs 权限，v0.4.0 起）：文件落在 userData/data/<pluginId>/docs/，由主进程代管
+await appapi.docs.list()                   // [{ id, title, size, updatedAt }]，id 即文件名
+await appapi.docs.import()                 // 弹系统文件框（可多选 .md/.markdown/.txt），拷进自己的文档目录
+await appapi.docs.read(id)                 // { ok, text }  文本内容（UTF-8 / GBK 自动识别，单文件上限 4MB）
+await appapi.docs.remove(id)               // 删除
+await appapi.docs.reveal()                 // 在资源管理器打开文档目录（方便直接拖文件进去）
+
 // 窗口控制（无需权限）
 await appapi.window.hide()                 // 隐藏整个面板（等同 Esc）
 await appapi.exit()                        // 退出当前插件，返回面板主页
@@ -104,6 +111,16 @@ await appapi.window.detach()               // 把当前插件分离为独立窗�
 
 约定俗成的交互：**Esc 键调用 `appapi.exit()` 返回面板**，插件页自己监听 keydown 实现。
 
+### 插件页外框（v0.4.1 起）
+
+插件页不是裸窗口：启动器会在外面套一层外框——顶部 46px 工具条（返回主界面 / 插件名 / 独立窗口 / 关闭）+ 四周 8px 留白，
+插件内容区 = 面板尺寸 − 46 − 左右各 8 − 底部 8。由此有两条约定：
+
+- **不要自己画窗口级控件**（关闭、返回主界面、最小化）：外框已统一提供，重复画会变成两套入口。
+  插件自己的"返回"只用于内部层级（如 章节 → 手册列表）。
+- **关键控件别贴内容区最边缘**：留白那一圈是缩放热区的作用带，贴边的按钮容易被拖拽/缩放手势抢走点击。
+- 布局用 `height: 100%` / `100vh` 即可，进插件时面板会自动伸展到适合阅读的尺寸，退出时还原主页尺寸。
+
 ## 权限一览
 
 | 权限 | 控制的 API |
@@ -112,6 +129,7 @@ await appapi.window.detach()               // 把当前插件分离为独立窗�
 | `clipboard` | `appapi.clipboard.*` |
 | `notify` | `appapi.notify` |
 | `shell` | `appapi.shell.openExternal` |
+| `docs` | `appapi.docs.*`（插件自己的文档库目录，路径不出主进程） |
 | `webview` | 在插件页使用 `<webview>` 嵌入第三方网页（v0.2.1 起） |
 
 `window.hide` / `exit` / `info` / `onQuery` 不需要权限。
@@ -128,6 +146,34 @@ vue({ compilerOptions: { isCustomElement: (tag) => tag === 'webview' } })
 ```
 
 参考 `plugins/translator/`（多翻译引擎 + `{q}` URL 模板 + 懒创建 webview 保留状态）。
+
+## 本地文档类插件（手册 / 笔记 / 速查）
+
+插件跑在 `file://` 下，**运行时 `fetch('xx.md')` 会被 CORS 拦掉**；同时插件拿不到任何路径能力。
+所以"读本地文档"有两条正交的做法，`plugins/handbook/` 两个都用了：
+
+| 数据来源 | 做法 | 适用 |
+|---|---|---|
+| 随插件发布的文档 | 构建期用 vite 的 `?raw` 把 md 打进 bundle（`manual.json` → 生成 `src/data/manuals.generated.ts`） | 内置手册、离线速查 |
+| 用户自己的文档 | `appapi.docs.import()` / `docs.list()` / `docs.read()`，文件由主进程收在自己命名空间 | 导入笔记、私有资料 |
+
+手册包格式（加一本手册 = 建目录 + `manual.json` + md，然后 `pnpm build:plugins`）：
+
+```jsonc
+// manuals/<name>/manual.json
+{
+  "id": "typescript",
+  "title": "TypeScript 手册",
+  "description": "一句话说明",
+  "keywords": ["ts", "类型"],
+  "order": 10,                       // 列表排序，小的在前
+  "source": "https://...",           // 可选，界面里展示来源
+  "license": "MIT",                   // 可选
+  "chapters": [
+    { "file": "basics.md", "title": "基础" }   // 省略 chapters 则按文件名排序自动收录
+  ]
+}
+```
 
 ## external 型插件：集成外部程序
 

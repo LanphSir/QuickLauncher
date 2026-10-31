@@ -30,6 +30,15 @@ interface PluginApi {
     openExternal(url: string): Promise<boolean> // 仅 http(s)，否则网关抛错
   }
 
+  /** 文档库（需 docs 权限）：目录由主进程持有，插件只拿句柄与内容，拿不到路径 */
+  docs: {
+    list(): Promise<Array<{ id: string; title: string; size: number; updatedAt: number }>>
+    import(): Promise<{ ok: boolean; added: number; skipped: number; message?: string }>  // 弹文件框，可多选
+    read(id: string): Promise<{ ok: boolean; text?: string; message?: string }>           // UTF-8 优先，GBK 回退，<=4MB
+    remove(id: string): Promise<{ ok: boolean; message?: string }>
+    reveal(): Promise<{ ok: boolean; message?: string }>                                  // 打开文档目录
+  }
+
   window: {
     hide(): Promise<boolean>                    // 隐藏整个面板（等同失焦）
     detach(): Promise<{ ok, message? }>         // 分离为独立窗口（状态保留、任务栏可见；此后 exit=关窗）
@@ -47,6 +56,7 @@ interface PluginApi {
 | `clipboard` | `appapi.clipboard.*` |
 | `notify` | `appapi.notify` |
 | `shell` | `appapi.shell.openExternal` |
+| `docs` | `appapi.docs.*`（文档库读写，v0.4.0 起） |
 | `webview` | 插件页 `<webview>` 嵌入第三方网页（主进程 will-attach-webview 校验，guest 强制沙箱） |
 | （无需权限） | `info` / `onQuery` / `window.hide` / `exit` |
 
@@ -73,6 +83,16 @@ interface PluginApi {
 
 storage 落盘在 `%APPDATA%/quick-launcher/data/<pluginId>/store.json`，
 插件 id 是主进程根据调用方 webContents 确定的，插件无法读写其他插件的数据，也无法感知路径。
+
+文档库同理：`%APPDATA%/quick-launcher/data/<pluginId>/docs/`，只能通过 `appapi.docs.*` 按
+文件句柄访问，路径由主进程解析（句柄必须是纯文件名，`../` 与绝对路径会被拒）。
+
+## 本地文档类插件（file:// 下不能 fetch）
+
+插件页是 `file://` 加载的，`fetch('xx.md')` 会被 CORS 拦掉。要"随插件发布离线内容"，
+用 vite 的 `?raw` 在构建期把 md 打进 bundle（`plugins/handbook` 的 `scripts/build-manuals.mjs`
+是现成范例：扫 `manuals/*/manual.json` → 生成 `src/data/manuals.generated.ts`）。
+用户自己导入的文档才走 `appapi.docs.*`。
 
 ## 关键词高级匹配（manifest.keywords）
 
