@@ -1,0 +1,27 @@
+{
+  "id": "typescript",
+  "title": "TypeScript 手册",
+  "description": "TypeScript 官方手册中文版（handbook v2 全 16 章）：常见类型、类型收窄、函数进阶、对象类型、类、模块，以及泛型等类型操纵能力。",
+  "keywords": ["ts", "typescript", "类型", "泛型", "handbook", "类型体操"],
+  "order": 10,
+  "source": "https://github.com/zhongsp/TypeScript",
+  "license": "译文：zhongsp/TypeScript（社区翻译）；原文版权归 Microsoft",
+  "chapters": [
+    { "file": "the-handbook.md", "title": "TypeScript 手册（引言）" },
+    { "file": "basics.md", "title": "基础" },
+    { "file": "everyday-types.md", "title": "常见类型" },
+    { "file": "narrowing.md", "title": "缩小类型范围" },
+    { "file": "more-on-functions.md", "title": "函数进阶" },
+    { "file": "object-types.md", "title": "对象类型" },
+    { "file": "type-manipulation/_creating-types-from-types.md", "title": "用现有类型创建新类型" },
+    { "file": "type-manipulation/generics.md", "title": "泛型" },
+    { "file": "type-manipulation/keyof-type-operator.md", "title": "keyof 类型运算符" },
+    { "file": "type-manipulation/typeof-type-operator.md", "title": "typeof 类型运算符" },
+    { "file": "type-manipulation/indexed-access-types.md", "title": "索引访问类型" },
+    { "file": "type-manipulation/conditional-types.md", "title": "条件类型" },
+    { "file": "type-manipulation/mapped-types.md", "title": "映射类型" },
+    { "file": "type-manipulation/template-literal-types.md", "title": "模板字面量类型" },
+    { "file": "classes.md", "title": "类" },
+    { "file": "modules.md", "title": "模块" }
+  ]
+}

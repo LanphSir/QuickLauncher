@@ -21,7 +21,7 @@ export interface PluginManifest {
   command?: string
   args?: string[]
   keywords?: string[]
-  /** 申请的 API 权限：storage / clipboard / notify / shell / webview */
+  /** 申请的 API 权限：storage / clipboard / notify / shell / docs / webview */
   permissions?: string[]
 }
 

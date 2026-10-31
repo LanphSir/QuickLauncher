@@ -1,6 +1,7 @@
 import { clipboard, ipcMain, Notification, shell } from 'electron'
 import { getCaller } from './callerRegistry'
 import { pluginStorage } from '../services/storage'
+import { pluginDocs } from '../services/docs'
 import { detachBySender, exitBySender, hideBySender } from '../windows/pluginHost'
 import type { PluginRecord } from './manager'
 
@@ -15,7 +16,12 @@ const PERMS: Record<string, string> = {
   'plugin:clipboard.readText': 'clipboard',
   'plugin:clipboard.writeText': 'clipboard',
   'plugin:notify': 'notify',
-  'plugin:shell.openExternal': 'shell'
+  'plugin:shell.openExternal': 'shell',
+  'plugin:docs.list': 'docs',
+  'plugin:docs.import': 'docs',
+  'plugin:docs.read': 'docs',
+  'plugin:docs.remove': 'docs',
+  'plugin:docs.reveal': 'docs'
 }
 
 function handle(channel: string, handler: Handler): void {
@@ -61,6 +67,12 @@ export function initGateway(): void {
     void shell.openExternal(String(url))
     return true
   })
+  // ---------- 插件文档库（手册类插件用）：只按 id 收发内容，路径不出主进程 ----------
+  handle('plugin:docs.list', (rec) => pluginDocs.list(rec.manifest.id))
+  handle('plugin:docs.import', (rec) => pluginDocs.importFromDialog(rec.manifest.id))
+  handle('plugin:docs.read', (rec, id: string) => pluginDocs.read(rec.manifest.id, id))
+  handle('plugin:docs.remove', (rec, id: string) => pluginDocs.remove(rec.manifest.id, id))
+  handle('plugin:docs.reveal', (rec) => pluginDocs.reveal(rec.manifest.id))
   handle('plugin:window.hide', (_rec, _payload, sender) => {
     hideBySender(sender)
     return true

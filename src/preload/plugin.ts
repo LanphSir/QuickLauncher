@@ -57,6 +57,19 @@ contextBridge.exposeInMainWorld('appapi', {
   shell: {
     openExternal: (url: string) => invoke('plugin:shell.openExternal', url)
   },
+  /**
+   * 插件文档库（权限 docs）：文件落在 userData/data/<pluginId>/docs/，由主进程代管。
+   * 插件只拿内容与文件句柄，拿不到任何路径。
+   */
+  docs: {
+    list: () => invoke('plugin:docs.list'),
+    /** 弹文件选择框导入（可多选）；用户取消返回 ok:false */
+    import: () => invoke('plugin:docs.import'),
+    read: (id: string) => invoke('plugin:docs.read', id),
+    remove: (id: string) => invoke('plugin:docs.remove', id),
+    /** 在资源管理器打开文档目录，方便直接拖文件进去 */
+    reveal: () => invoke('plugin:docs.reveal')
+  },
   window: {
     hide: () => invoke('plugin:window.hide'),
     /** 把当前插件分离为独立窗口（状态保留，任务栏可见） */

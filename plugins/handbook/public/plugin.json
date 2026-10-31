@@ -1,0 +1,24 @@
+{
+  "id": "com.launcher.handbook",
+  "name": "程序员手册",
+  "version": "0.1.0",
+  "description": "离线可读的本地手册库：内置 TypeScript / Linux 命令等中文手册，可随时停用某本；支持导入自己的 Markdown 文档",
+  "type": "web",
+  "entry": "index.html",
+  "keywords": [
+    "手册",
+    "文档",
+    "manual",
+    "handbook",
+    "docs",
+    "cheatsheet",
+    "速查",
+    "参考",
+    "typescript",
+    "ts",
+    "linux",
+    "命令",
+    "shell"
+  ],
+  "permissions": ["storage", "docs", "clipboard"]
+}

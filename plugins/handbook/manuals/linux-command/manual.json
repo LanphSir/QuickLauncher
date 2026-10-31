@@ -1,0 +1,160 @@
+{
+  "id": "linux-command",
+  "title": "Linux 命令手册",
+  "description": "35 个高频 Linux 命令的中文速查：文件与目录、文本处理、进程与磁盘、网络、服务管理。",
+  "keywords": [
+    "linux",
+    "命令",
+    "shell",
+    "bash",
+    "grep",
+    "awk",
+    "sed",
+    "cheatsheet"
+  ],
+  "order": 20,
+  "source": "https://github.com/jaywcjlove/linux-command",
+  "license": "MIT（jaywcjlove/linux-command）",
+  "chapters": [
+    {
+      "file": "ls.md",
+      "title": "ls · 显示目录内容列表"
+    },
+    {
+      "file": "cd.md",
+      "title": "cd · 切换用户当前工作目录"
+    },
+    {
+      "file": "pwd.md",
+      "title": "pwd · 显示当前工作目录的绝对路径"
+    },
+    {
+      "file": "cat.md",
+      "title": "cat · 连接多个文件并打印到标准输出"
+    },
+    {
+      "file": "less.md",
+      "title": "less · 分屏上下翻页浏览文件内容"
+    },
+    {
+      "file": "head.md",
+      "title": "head · 显示文件的开头部分"
+    },
+    {
+      "file": "tail.md",
+      "title": "tail · 在屏幕上显示指定文件的末尾若干行"
+    },
+    {
+      "file": "grep.md",
+      "title": "grep · 强大的文本搜索工具"
+    },
+    {
+      "file": "sed.md",
+      "title": "sed · 功能强大的流式文本编辑器"
+    },
+    {
+      "file": "awk.md",
+      "title": "awk · 文本和数据进行处理的编程语言"
+    },
+    {
+      "file": "find.md",
+      "title": "find · 在指定目录下查找文件"
+    },
+    {
+      "file": "xargs.md",
+      "title": "xargs · 给其他命令传递参数的一个过滤器"
+    },
+    {
+      "file": "cp.md",
+      "title": "cp · 将源文件或目录复制到目标文件或目录中"
+    },
+    {
+      "file": "mv.md",
+      "title": "mv · 用来对文件或目录重新命名"
+    },
+    {
+      "file": "rm.md",
+      "title": "rm · 用于删除给定的文件和目录"
+    },
+    {
+      "file": "mkdir.md",
+      "title": "mkdir · 用来创建目录"
+    },
+    {
+      "file": "chmod.md",
+      "title": "chmod · 用来变更文件或目录的权限"
+    },
+    {
+      "file": "chown.md",
+      "title": "chown · 用来变更文件或目录的拥有者或所属群组"
+    },
+    {
+      "file": "ln.md",
+      "title": "ln · 用来为文件创建链接"
+    },
+    {
+      "file": "tar.md",
+      "title": "tar"
+    },
+    {
+      "file": "ps.md",
+      "title": "ps · 报告当前系统的进程状态"
+    },
+    {
+      "file": "top.md",
+      "title": "top · 显示或管理执行中的程序"
+    },
+    {
+      "file": "kill.md",
+      "title": "kill · 发送信号到进程"
+    },
+    {
+      "file": "df.md",
+      "title": "df · 显示磁盘的相关信息"
+    },
+    {
+      "file": "du.md",
+      "title": "du · 显示每个文件和目录的磁盘使用空间"
+    },
+    {
+      "file": "free.md",
+      "title": "free · 显示内存的使用情况"
+    },
+    {
+      "file": "uname.md",
+      "title": "uname · 打印系统信息"
+    },
+    {
+      "file": "date.md",
+      "title": "date · 显示或设置系统时间与日期"
+    },
+    {
+      "file": "echo.md",
+      "title": "echo · 输出指定的字符串或者变量"
+    },
+    {
+      "file": "which.md",
+      "title": "which · 查找并显示给定命令的绝对路径"
+    },
+    {
+      "file": "curl.md",
+      "title": "curl · 利用URL规则在命令行下工作的文件传输工具"
+    },
+    {
+      "file": "ssh.md",
+      "title": "ssh · openssh套件中的客户端连接工具"
+    },
+    {
+      "file": "rsync.md",
+      "title": "rsync · 远程数据同步工具"
+    },
+    {
+      "file": "systemctl.md",
+      "title": "systemctl · Systemd服务管理器"
+    },
+    {
+      "file": "crontab.md",
+      "title": "crontab · 提交和管理用户的需要周期性执行的任务"
+    }
+  ]
+}
