@@ -27,7 +27,13 @@ const api = {
     ipcRenderer.invoke('panel:set-window-bounds', rect),
   saveWindowBounds: () => ipcRenderer.invoke('panel:save-window-bounds'),
   togglePinned: () => ipcRenderer.invoke('panel:toggle-pinned'),
+  /** 从插件页返回主界面（视图保留缓存，再进状态不丢） */
+  exitPlugin: () => ipcRenderer.invoke('panel:exit-plugin'),
+  /** 把当前插件页分离为独立窗口 */
+  detachActive: () => ipcRenderer.invoke('panel:detach-active'),
   onShown: (callback: () => void) => subscribe('panel:shown', callback),
+  onPluginOpened: (callback: (payload: { id: string; name: string; icon: string | null }) => void) =>
+    subscribe<{ id: string; name: string; icon: string | null }>('panel:plugin-opened', callback),
   onPluginExited: (callback: () => void) => subscribe('panel:plugin-exited', callback),
   onPluginCrashed: (callback: (payload: { id: string; name: string }) => void) =>
     subscribe<{ id: string; name: string }>('panel:plugin-crashed', callback),

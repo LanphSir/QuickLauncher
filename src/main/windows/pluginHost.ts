@@ -3,7 +3,8 @@ import { join } from 'node:path'
 import { getConfig, updateConfig, type WindowRect } from '../config'
 import { getPlugin, pluginEntryUrl, type PluginRecord } from '../plugin/manager'
 import { getCaller, registerPluginCaller } from '../plugin/callerRegistry'
-import { hidePanel } from './panel'
+import { enterPluginLayout, hidePanel, leavePluginLayout } from './panel'
+import { PLUGIN_FRAME, pluginViewRect } from '../../shared/pluginFrame'
 
 export interface PluginOpenPayload {
   /** 面板搜索词，打开时透传给插件（appapi.onQuery 接收） */
@@ -38,7 +39,8 @@ function syncBounds(): void {
   const entry = activeId ? viewCache.get(activeId) : null
   if (!entry || !panel || entry.host) return
   const [width, height] = panel.getContentSize()
-  entry.view.setBounds({ x: 0, y: 0, width, height })
+  // 顶部让出工具条、四周留出边带：边缘留白让缩放热区与插件内边缘控件都点得到
+  entry.view.setBounds(pluginViewRect(width, height))
 }
 
 function flushPayload(entry: CacheEntry): void {
@@ -70,6 +72,13 @@ function ensureEntry(rec: PluginRecord): CacheEntry {
   })
   entry = { view, rec, host: null }
   viewCache.set(rec.manifest.id, entry)
+  // 卡片视觉：白底 + 圆角（角落由原生视图自身裁切，渲染层无法盖住它）
+  view.setBackgroundColor('#ffffff')
+  try {
+    view.setBorderRadius(PLUGIN_FRAME.radius)
+  } catch {
+    /* 旧版本 Electron 没有圆角能力，直角也不影响使用 */
+  }
   registerPluginCaller(view.webContents, rec)
   // <webview> 权限门禁：仅声明 webview 权限的插件允许嵌入，且收紧 guest 偏好
   view.webContents.on('will-attach-webview', (event, webPreferences, params) => {
@@ -105,13 +114,20 @@ export function showPlugin(rec: PluginRecord, payload?: PluginOpenPayload): void
     return
   }
 
-  detachActive()
+  detachActive(false)
   panel.contentView.addChildView(entry.view)
   activeId = rec.manifest.id
   entry.pending = payload
+  // 插件页比主页需要更大空间：进页面前先把窗口伸展好，再按新尺寸排视图
+  enterPluginLayout()
   // 缓存视图页面已就绪时立即送达；新视图等 did-finish-load 再送
   if (!entry.view.webContents.isLoading()) flushPayload(entry)
   syncBounds()
+  panel.webContents.send('panel:plugin-opened', {
+    id: rec.manifest.id,
+    name: rec.manifest.name,
+    icon: rec.iconDataUrl
+  })
   entry.view.webContents.focus()
 }
 
@@ -136,6 +152,7 @@ export function detachPlugin(id: string, payload?: PluginOpenPayload): { ok: boo
   if (activeId === id && panel) {
     panel.contentView.removeChildView(entry.view)
     activeId = null
+    leavePluginLayout()
     panel.webContents.send('panel:plugin-exited')
   }
 
@@ -209,12 +226,29 @@ export function exitToHome(): void {
   exitPlugin(false)
 }
 
-function detachActive(): boolean {
+/**
+ * 摘掉面板里的插件视图。
+ * restoreLayout=false 用于"换一个插件"：外框尺寸保持不变，不必先缩回主页再撑开。
+ */
+function detachActive(restoreLayout = true): boolean {
   if (!activeId || !panel) return false
   const entry = viewCache.get(activeId)
   if (entry) panel.contentView.removeChildView(entry.view)
   activeId = null
+  if (restoreLayout) leavePluginLayout()
   return true
+}
+
+/** 当前在面板里打开的插件 id（分离到独立窗口的不算） */
+export function getActivePluginId(): string | null {
+  return activeId
+}
+
+/** 把当前插件页分离为独立窗口（面板外框随即收起、回到主页尺寸） */
+export function detachActivePlugin(): { ok: boolean; message?: string } {
+  if (!activeId) return { ok: false, message: '当前没有打开的插件' }
+  const id = activeId
+  return detachPlugin(id)
 }
 
 /** 按 webContents 定位调用方视图，处理 exit/hide/detach（区分面板内与已分离） */
@@ -246,6 +280,7 @@ function onPluginCrashed(rec: PluginRecord, reason: string): void {
   if (activeId === rec.manifest.id) {
     panel?.contentView.removeChildView(entry.view)
     activeId = null
+    leavePluginLayout()
     panel?.webContents.focus()
     panel?.webContents.send('panel:plugin-crashed', {
       id: rec.manifest.id,
@@ -270,6 +305,7 @@ export function destroyPlugin(id: string): void {
   } else if (activeId === id) {
     panel?.contentView.removeChildView(entry.view)
     activeId = null
+    leavePluginLayout()
     panel?.webContents.focus()
     panel?.webContents.send('panel:plugin-exited')
   }

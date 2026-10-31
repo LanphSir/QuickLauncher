@@ -12,7 +12,9 @@ import {
 import {
   destroyAll,
   destroyPlugin,
+  detachActivePlugin,
   detachPlugin,
+  exitPlugin,
   exitToHome,
   initPluginHost,
   showPlugin,
@@ -201,6 +203,14 @@ function registerPanelIpc(): void {
     hidePanel()
     return true
   })
+
+  // 插件页外框：返回主页 / 把当前插件甩到独立窗口
+  ipcMain.handle('panel:exit-plugin', () => {
+    exitPlugin()
+    return { ok: true }
+  })
+
+  ipcMain.handle('panel:detach-active', () => detachActivePlugin())
 
   // 保存 external 型插件的启动命令覆盖（command 留空 = 恢复默认）
   ipcMain.handle(

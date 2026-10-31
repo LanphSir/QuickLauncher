@@ -57,7 +57,10 @@ interface PanelApi {
   setWindowBounds(rect: { x: number; y: number; width: number; height: number }): Promise<boolean>
   saveWindowBounds(): Promise<boolean>
   togglePinned(): Promise<{ pinned: boolean }>
+  exitPlugin(): Promise<{ ok: boolean }>
+  detachActive(): Promise<{ ok: boolean; message?: string }>
   onShown(callback: () => void): void
+  onPluginOpened(callback: (payload: { id: string; name: string; icon: string | null }) => void): void
   onPluginExited(callback: () => void): void
   onPluginCrashed(callback: (payload: { id: string; name: string }) => void): void
   onOpenSettings(callback: () => void): void

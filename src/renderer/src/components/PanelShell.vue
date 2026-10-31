@@ -7,6 +7,7 @@ import AppIcon from './AppIcon.vue'
 import AppManage from './AppManage.vue'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
 import PluginDetail from './PluginDetail.vue'
+import PluginFrame from './PluginFrame.vue'
 import ExternalEdit from './ExternalEdit.vue'
 import SettingsView from './SettingsView.vue'
 
@@ -19,20 +20,28 @@ const detail = ref<PluginSummary | null>(null)
 const edit = ref<PluginSummary | null>(null)
 const pulse = ref(false)
 const pinned = ref(false)
+/** 面板里正在打开的插件（null = 主页）；外框由启动器提供，插件自己不用画窗口控件 */
+const activePlugin = ref<{ id: string; name: string; icon: string | null } | null>(null)
 let pulseTimer: ReturnType<typeof setTimeout> | undefined
 
 onMounted(async () => {
   await store.load()
   window.panel.onShown(() => {
+    activePlugin.value = null
     store.resetHome()
     triggerPulse()
     focusSearch()
   })
+  window.panel.onPluginOpened((plugin) => {
+    activePlugin.value = plugin
+  })
   window.panel.onPluginExited(() => {
+    activePlugin.value = null
     store.resetHome()
     focusSearch()
   })
   window.panel.onPluginCrashed(({ name }) => {
+    activePlugin.value = null
     store.resetHome()
     focusSearch()
     message.error(`插件「${name}」已崩溃退出，其他功能不受影响`)
@@ -115,6 +124,19 @@ function onKeydown(e: KeyboardEvent): void {
 async function open(plugin: PluginSummary): Promise<void> {
   const result = await window.panel.openPlugin(plugin.id, store.query.trim() || undefined)
   if (!result.ok && result.message) message.error(result.message)
+}
+
+/** 插件外框：返回主界面（主进程摘掉插件视图并还原主页尺寸） */
+async function backToHome(): Promise<void> {
+  activePlugin.value = null
+  await window.panel.exitPlugin()
+  focusSearch()
+}
+
+/** 插件外框：把当前插件分离为独立窗口 */
+async function detachActive(): Promise<void> {
+  const r = await window.panel.detachActive()
+  if (!r.ok && r.message) message.error(r.message)
 }
 
 async function togglePin(plugin: PluginSummary): Promise<void> {
@@ -228,6 +250,8 @@ function onTileCtx(plugin: PluginSummary, pos: { x: number; y: number }): void {
 <template>
   <div class="shell">
     <div class="panel" :class="{ pulse }">
+    <!-- 插件打开时主页整块卸载：插件视图是原生层，留在 DOM 里只会被盖住并抢键盘焦点 -->
+    <template v-if="!activePlugin">
     <template v-if="store.view === 'home'">
       <header class="search-row">
         <AppIcon class="search-icon" name="search" :size="20" />
@@ -335,6 +359,9 @@ function onTileCtx(plugin: PluginSummary, pos: { x: number; y: number }): void {
       @detach="detach(detail); detail = null"
     />
     <ExternalEdit v-if="edit" :plugin="edit" @close="edit = null" />
+    </template>
+
+    <PluginFrame v-else :plugin="activePlugin" @exit="backToHome" @detach="detachActive" />
     <!-- 缩放热区必须排在 drag 区元素之后：Electron 按文档顺序做 drag 加/no-drag 减，
          热区放前面会被搜索行后续加回的 drag 矩形覆盖（表现为顶边只能移动不能缩放） -->
     <span

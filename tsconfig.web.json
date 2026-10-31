@@ -12,5 +12,5 @@
     "esModuleInterop": true,
     "jsx": "preserve"
   },
-  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.d.ts"]
+  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.d.ts", "src/shared/**/*.ts"]
 }

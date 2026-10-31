@@ -1,6 +1,6 @@
 {
   "name": "quick-launcher",
-  "version": "0.3.0",
+  "version": "0.4.1",
   "description": "快捷桌面启动器 — 全局快捷键唤起的插件化工具面板（类 uTools）",
   "private": true,
   "main": "out/main/index.js",
@@ -11,7 +11,7 @@
     "build": "electron-vite build",
     "dist": "pnpm run build:plugins && pnpm run build && node scripts/collect-plugins.mjs && electron-builder --win",
     "smoke": "node scripts/smoke.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.web.json"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.6.0",

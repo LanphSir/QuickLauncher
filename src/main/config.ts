@@ -28,6 +28,8 @@ export interface AppConfig {
   pluginOverrides: Record<string, PluginOverride>
   /** 面板窗口上次的边界（分离缩放后恢复用） */
   panelBounds?: WindowRect
+  /** 插件页窗口尺寸：进插件时按它伸展，只记宽高避免位置漂移 */
+  pluginBounds?: WindowRect
   /** 各插件分离窗口的边界，key 为插件 id */
   windowStates?: Record<string, WindowRect>
 }
