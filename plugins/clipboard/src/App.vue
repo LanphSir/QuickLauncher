@@ -17,13 +17,30 @@ onMounted(async () => {
   const saved = await window.appapi.storage.get('history')
   if (Array.isArray(saved)) items.value = saved as ClipItem[]
   last = (await window.appapi.clipboard.readText()) ?? ''
-  timer = setInterval(poll, 800)
+  // 视图退出后只缓存不销毁，onUnmounted 不会再触发；轮询改由可见性事件控制，
+  // 切走/收起面板时立刻停（不空转、不读剪贴板），回来时补一次并继续。
+  window.appapi.onShow(() => {
+    void poll()
+    startPolling()
+  })
+  window.appapi.onHide(stopPolling)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
-  if (timer) clearInterval(timer)
+  stopPolling()
 })
+
+function startPolling(): void {
+  if (timer) return
+  timer = setInterval(poll, 800)
+}
+
+function stopPolling(): void {
+  if (!timer) return
+  clearInterval(timer)
+  timer = undefined
+}
 
 function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') void window.appapi.exit()

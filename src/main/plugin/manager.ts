@@ -1,9 +1,11 @@
 import { app } from 'electron'
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import AdmZip from 'adm-zip'
 import { getConfig } from '../config'
+import { PLUGIN_FEATURES } from '../../shared/pluginApi'
+import { readDevServers } from './devServers'
+import { pluginAppUrl } from './urls'
 
 export type PluginType = 'web' | 'external'
 export type PluginSource = 'builtin' | 'installed'
@@ -21,8 +23,19 @@ export interface PluginManifest {
   command?: string
   args?: string[]
   keywords?: string[]
-  /** 申请的 API 权限：storage / clipboard / notify / shell / docs / webview */
+  /** 申请的 API 权限：storage / clipboard / notify / shell / docs / search / webview / net */
   permissions?: string[]
+  /**
+   * 可选功能声明：`inline` = 参与面板内联结果（每敲一次键推一次查询）。
+   * 与 permissions 分开：权限是「能调什么」，功能是「以什么形态参与启动器」。
+   */
+  features?: string[]
+  /**
+   * net 权限可访问的域白名单（浏览器扩展式声明）：
+   * `api.github.com`、`*.example.com`（含裸域）、`localhost:8080`。
+   * 缺省或空 = 一个都不许。
+   */
+  hosts?: string[]
 }
 
 export interface PluginRecord {
@@ -37,6 +50,8 @@ export interface PluginRecord {
   /** external 型：磁盘上的原始 command/args（用户覆盖前），用于"恢复默认" */
   baseCommand?: string
   baseArgs?: string[]
+  /** 开发期入口：vite dev server 地址（仅 .dev-plugins.json 存在且未打包时生效） */
+  devUrl?: string
 }
 
 const registry = new Map<string, PluginRecord>()
@@ -80,7 +95,52 @@ function validate(raw: unknown, dir: string): PluginManifest | null {
   if (m.type === 'external' && (typeof m.command !== 'string' || !m.command)) {
     return bad('external 型插件缺少 command')
   }
+  // hosts 非法只丢该项（不整插件拒载）：白名单缺项等于少给权限，不会越权
+  if (m.hosts !== undefined) {
+    const list = Array.isArray(m.hosts) ? m.hosts : []
+    m.hosts = normalizeHosts(list, dir)
+  }
+  // features 同理：不认识的功能名直接丢，插件照常加载（只是不参与该形态）
+  if (m.features !== undefined) {
+    m.features = normalizeFeatures(Array.isArray(m.features) ? m.features : [], m.type, dir)
+  }
   return m as unknown as PluginManifest
+}
+
+/** 只认 PLUGIN_FEATURES 里声明过的功能名；external 型不参与任何功能 */
+function normalizeFeatures(raw: unknown[], type: unknown, dir: string): string[] {
+  const out: string[] = []
+  for (const item of raw) {
+    if (typeof item !== 'string') continue
+    const value = item.trim().toLowerCase()
+    if (!(PLUGIN_FEATURES as readonly string[]).includes(value)) {
+      console.warn(`[plugin] ${dir}: 忽略未知的 features 项 ${JSON.stringify(item)}`)
+      continue
+    }
+    if (type !== 'web') {
+      console.warn(`[plugin] ${dir}: external 型插件不支持 features，已忽略 ${value}`)
+      continue
+    }
+    if (!out.includes(value)) out.push(value)
+  }
+  return out
+}
+
+/** 形如 api.github.com / *.example.com / localhost:8080；其余一律丢弃并告警 */
+const HOST_RE = /^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:\d{1,5})?$/i
+
+function normalizeHosts(raw: unknown[], dir: string): string[] {
+  const out: string[] = []
+  for (const item of raw) {
+    if (typeof item !== 'string') continue
+    const value = item.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '')
+    if (!value || !HOST_RE.test(value)) {
+      console.warn(`[plugin] ${dir}: 忽略非法的 hosts 项 ${JSON.stringify(item)}`)
+      continue
+    }
+    if (!out.includes(value)) out.push(value)
+  }
+  return out
 }
 
 function iconToDataUrl(dir: string): string | null {
@@ -136,6 +196,8 @@ function loadFromDir(dir: string, source: PluginSource, baseDir: string): Plugin
 /** 扫描所有插件根目录并重建注册表。子目录本身含 plugin.json，或其 dist/ 内含均可。 */
 export function scanPlugins(): PluginRecord[] {
   registry.clear()
+  // 开发期入口：仅在本地存在 .dev-plugins.json 时非空，打包版恒为空
+  const devServers = readDevServers()
   for (const { root, source } of getPluginRoots()) {
     if (!existsSync(root)) continue
     for (const entry of readdirSync(root, { withFileTypes: true })) {
@@ -148,10 +210,14 @@ export function scanPlugins(): PluginRecord[] {
           : null
       if (!dir) continue
       const rec = loadFromDir(dir, source, base)
-      if (rec) registry.set(rec.manifest.id, rec)
+      if (!rec) continue
+      const devUrl = devServers[rec.manifest.id]
+      if (devUrl) rec.devUrl = devUrl
+      registry.set(rec.manifest.id, rec)
     }
   }
-  console.log(`[plugin] 已加载 ${registry.size} 个插件`)
+  const devCount = listPlugins().filter((r) => r.devUrl).length
+  console.log(`[plugin] 已加载 ${registry.size} 个插件${devCount ? `（其中 ${devCount} 个走 dev server）` : ''}`)
   return listPlugins()
 }
 
@@ -163,8 +229,15 @@ export function getPlugin(id: string): PluginRecord | undefined {
   return registry.get(id)
 }
 
+/** 构建产物入口：plugin://<id>/<entry>（自定义协议由 plugin/protocol.ts 提供） */
+export function pluginBuiltUrl(rec: PluginRecord): string {
+  return pluginAppUrl(rec.manifest.id, rec.manifest.entry)
+}
+
 export function pluginEntryUrl(rec: PluginRecord): string {
-  return pathToFileURL(join(rec.dir, rec.manifest.entry!)).href
+  // 开发期优先走 vite dev server：页面拿到 HMR，改代码不用重构建也不用重启
+  if (rec.devUrl) return rec.devUrl
+  return pluginBuiltUrl(rec)
 }
 
 // ---------- 安装 / 卸载 ----------

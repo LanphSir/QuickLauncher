@@ -8,13 +8,22 @@ function subscribe<T = unknown>(channel: string, callback: (payload: T) => void)
 
 const api = {
   getPlugins: () => ipcRenderer.invoke('panel:get-plugins'),
-  openPlugin: (id: string, query?: string) => ipcRenderer.invoke('panel:open-plugin', { id, query }),
+  openPlugin: (id: string, query?: string, intent?: Record<string, unknown>) =>
+    ipcRenderer.invoke('panel:open-plugin', { id, query, intent }),
+  /** 搜索贡献：插件注册的条目（手册章节、笔记等） */
+  search: (query: string) => ipcRenderer.invoke('panel:search', query),
+  /** 内联结果：features:["inline"] 的插件在后台回话（有 120ms 超时） */
+  inline: (query: string) => ipcRenderer.invoke('panel:inline', query),
+  /** 内联结果「回车复制」用；写剪贴板统一由主进程做 */
+  copyText: (text: string) => ipcRenderer.invoke('panel:copy-text', text),
   pin: (id: string, pinned: boolean) => ipcRenderer.invoke('panel:pin', { id, pinned }),
   getConfig: () => ipcRenderer.invoke('panel:get-config'),
   updateConfig: (patch: Record<string, unknown>) => ipcRenderer.invoke('panel:update-config', patch),
   hidePanel: () => ipcRenderer.invoke('panel:hide'),
   savePluginOverride: (id: string, data: { command?: string; args?: string }) =>
     ipcRenderer.invoke('panel:save-plugin-override', { id, ...data }),
+  /** 浏览本地文件挑可执行文件，回填 external 型插件的启动命令 */
+  pickCommand: () => ipcRenderer.invoke('panel:pick-command'),
   clearPluginData: (id: string) => ipcRenderer.invoke('panel:clear-plugin-data', id),
   installPlugin: (mode: 'dir' | 'zip') => ipcRenderer.invoke('panel:install-plugin', mode),
   uninstallPlugin: (id: string) => ipcRenderer.invoke('panel:uninstall-plugin', id),
@@ -40,7 +49,9 @@ const api = {
   onOpenSettings: (callback: () => void) => subscribe('panel:open-settings', callback),
   onPluginsChanged: (callback: () => void) => subscribe('panel:plugins-changed', callback),
   onPinnedChanged: (callback: (pinned: boolean) => void) =>
-    subscribe<boolean>('panel:pinned-changed', callback)
+    subscribe<boolean>('panel:pinned-changed', callback),
+  /** 内联插件页加载完成：面板用当前搜索词补查一次（首次输入时插件还没就绪的场景） */
+  onInlineReady: (callback: () => void) => subscribe('panel:inline-ready', callback)
 }
 
 contextBridge.exposeInMainWorld('panel', api)

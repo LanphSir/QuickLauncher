@@ -1,6 +1,7 @@
 import { BrowserWindow, screen } from 'electron'
 import { join } from 'node:path'
 import { getConfig, updateConfig, type WindowRect } from '../config'
+import { centerInWorkArea, pluginSize } from './panelLayout'
 
 export const PANEL_DEFAULT_WIDTH = 760
 export const PANEL_DEFAULT_HEIGHT = 560
@@ -10,10 +11,13 @@ export const PANEL_MIN_HEIGHT = 400
 /** 进插件页时至少伸展到的尺寸：主页是"搜一个就打开"，插件页是要在里面读/用的 */
 export const PLUGIN_DEFAULT_WIDTH = 980
 export const PLUGIN_DEFAULT_HEIGHT = 720
+const DEFAULT_PLUGIN_SIZE = { width: PLUGIN_DEFAULT_WIDTH, height: PLUGIN_DEFAULT_HEIGHT }
 
 let panel: BrowserWindow | null = null
 /** 置顶钉住模式：失焦不自动隐藏（Esc/快捷键仍可隐藏） */
 let pinned = false
+/** 正在打开的原生对话框数量：dialog 会抢焦点，这期间不能把面板当"失焦"收起 */
+let dialogDepth = 0
 /** 启动时是否恢复了上次的位置尺寸（决定 show 时要不要重新定位） */
 let restoredBounds = false
 /** 进插件页前的窗口边界：返回主页时原样还原，避免主页被撑成大窗口 */
@@ -88,6 +92,8 @@ export function createPanelWindow(): BrowserWindow {
   panel.setAlwaysOnTop(true, 'screen-saver')
 
   panel.on('blur', () => {
+    // 原生对话框（安装插件、挑可执行文件）自己会抢焦点，别把它连面板一起收起
+    if (dialogDepth > 0) return
     // 置顶钉住或开着 DevTools 调试时不自动隐藏
     if (pinned || panel?.webContents.isDevToolsOpened()) return
     hidePanel()
@@ -151,38 +157,38 @@ export function togglePinned(): boolean {
 }
 
 /**
- * 进入插件页：面板自动伸展到适合"在里面读/用"的尺寸。
- * 只放大不缩小——用户如果本来就把主页拉得更大，不该因为开插件被压回去。
+ * 以面板为父窗口开原生对话框。
+ * 对话框会把焦点从面板拿走，不挡一下的话面板会先被 blur 收起，对话框就成了没爹的孤儿窗口
+ * （选完文件回来，面板已经不见了）。结束后把焦点还给面板。
+ */
+export async function withPanelDialog<T>(open: () => Promise<T>): Promise<T> {
+  dialogDepth++
+  try {
+    return await open()
+  } finally {
+    dialogDepth--
+    if (panel && !panel.isDestroyed() && panel.isVisible()) panel.focus()
+  }
+}
+
+/**
+ * 进入插件页：面板伸展到适合"在里面读/用"的尺寸，并**以屏幕中心为锚点**展开。
+ *
+ * 主页贴着唤起位置（略偏上，像输入框"掉下来"），但插件页是要连续看/操作一段时间的窗口，
+ * 端在屏幕正中才不别扭——以前保持顶边、只做水平居中，窗口一变大下半截就偏下。
  */
 export function enterPluginLayout(): void {
   if (!panel) return
   const cur = panel.getBounds()
   if (!homeBounds) homeBounds = { ...cur }
 
-  // 上次在插件页调过的尺寸优先；首次用默认值
-  const saved = getConfig().pluginBounds
   const area = screen.getDisplayMatching(cur).workArea
-  const width = Math.min(
-    Math.round(Math.max(cur.width, saved?.width ?? PLUGIN_DEFAULT_WIDTH)),
-    Math.round(area.width * 0.94)
-  )
-  const height = Math.min(
-    Math.round(Math.max(cur.height, saved?.height ?? PLUGIN_DEFAULT_HEIGHT)),
-    Math.round(area.height * 0.94)
-  )
-  if (width === cur.width && height === cur.height) return
-
-  // 以水平中心为锚点展开，纵向保持顶边位置（贴近唤起时的位置，不会突然跳）
-  const x = Math.round(cur.x + (cur.width - width) / 2)
-  panel.setBounds(
-    {
-      x: Math.min(Math.max(x, area.x), area.x + area.width - width),
-      y: Math.min(Math.max(cur.y, area.y), area.y + area.height - height),
-      width,
-      height
-    },
-    false
-  )
+  const size = pluginSize(cur, getConfig().pluginBounds ?? DEFAULT_PLUGIN_SIZE, area)
+  const target = centerInWorkArea(area, size)
+  const same =
+    target.x === cur.x && target.y === cur.y && target.width === cur.width && target.height === cur.height
+  if (same) return
+  panel.setBounds(target, false)
 }
 
 /** 退出插件页：记住这次的插件页尺寸，并还原主页尺寸 */

@@ -1,85 +1,43 @@
-import { clipboard, ipcMain, Notification, shell } from 'electron'
+import { ipcMain } from 'electron'
+import { PLUGIN_PERMS } from '../../shared/pluginApi'
 import { getCaller } from './callerRegistry'
-import { pluginStorage } from '../services/storage'
-import { pluginDocs } from '../services/docs'
-import { detachBySender, exitBySender, hideBySender } from '../windows/pluginHost'
-import type { PluginRecord } from './manager'
+import { apiDefs, assertUniqueChannels, type ApiDefinition } from './api'
 
-type Handler = (rec: PluginRecord, payload: any, sender: Electron.WebContents) => unknown
-
-/** 通道 -> 所需权限；未列出的通道（窗口控制/退出/自述信息）默认放行 */
-const PERMS: Record<string, string> = {
-  'plugin:storage.get': 'storage',
-  'plugin:storage.set': 'storage',
-  'plugin:storage.remove': 'storage',
-  'plugin:storage.keys': 'storage',
-  'plugin:clipboard.readText': 'clipboard',
-  'plugin:clipboard.writeText': 'clipboard',
-  'plugin:notify': 'notify',
-  'plugin:shell.openExternal': 'shell',
-  'plugin:docs.list': 'docs',
-  'plugin:docs.import': 'docs',
-  'plugin:docs.read': 'docs',
-  'plugin:docs.remove': 'docs',
-  'plugin:docs.reveal': 'docs'
-}
-
-function handle(channel: string, handler: Handler): void {
-  ipcMain.handle(channel, async (event, payload) => {
+/**
+ * 插件 API 网关：对每个通道统一执行身份锚定、权限/功能校验、入参校验。
+ *
+ * 本文件不再出现任何具体通道名：能力定义在 plugin/api/ 下逐个声明，权限来自
+ * shared/pluginApi 的 PLUGIN_PERMS，功能要求来自定义里的 feature，
+ * 入参校验来自定义里的 parse。
+ * 这样"注册了通道忘挂权限""实现与类型对不上"这两类漂移在结构上就不可能发生。
+ *
+ * 权限与功能是两回事：
+ * - 权限（permissions）= 能调用哪些系统能力，缺失即拒绝；
+ * - 功能（features）  = 以哪种形态参与启动器（如 inline），缺失只影响该形态。
+ */
+function register([channel, def]: ApiDefinition): void {
+  ipcMain.handle(channel, async (event, payload: unknown) => {
     const rec = getCaller(event.sender)
     if (!rec) throw new Error('gateway: 未注册的调用方')
-    const perm = PERMS[channel]
+
+    const perm = PLUGIN_PERMS[channel]
     if (perm && !(rec.manifest.permissions ?? []).includes(perm)) {
       throw new Error(`插件 ${rec.manifest.id} 缺少权限: ${perm}（请在 plugin.json 的 permissions 中声明）`)
     }
-    return handler(rec, payload, event.sender)
+
+    if (def.feature && !(rec.manifest.features ?? []).includes(def.feature)) {
+      throw new Error(
+        `插件 ${rec.manifest.id} 缺少功能声明: ${def.feature}（请在 plugin.json 的 features 中声明）`
+      )
+    }
+
+    const input = def.parse ? def.parse(payload) : payload
+    return def.handle({ rec, sender: event.sender }, input)
   })
 }
 
 export function initGateway(): void {
-  handle('plugin:info', (rec) => ({
-    id: rec.manifest.id,
-    name: rec.manifest.name,
-    version: rec.manifest.version,
-    permissions: rec.manifest.permissions ?? []
-  }))
-  handle('plugin:storage.get', (rec, key: string) => pluginStorage.get(rec.manifest.id, key))
-  handle('plugin:storage.set', (rec, { key, value }) => {
-    pluginStorage.set(rec.manifest.id, key, value)
-    return true
-  })
-  handle('plugin:storage.remove', (rec, key: string) => {
-    pluginStorage.remove(rec.manifest.id, key)
-    return true
-  })
-  handle('plugin:storage.keys', (rec) => pluginStorage.keys(rec.manifest.id))
-  handle('plugin:clipboard.readText', () => clipboard.readText())
-  handle('plugin:clipboard.writeText', (_rec, text: string) => {
-    clipboard.writeText(String(text ?? ''))
-    return true
-  })
-  handle('plugin:notify', (rec, { title, body }) => {
-    new Notification({ title: title || rec.manifest.name, body: body ?? '' }).show()
-    return true
-  })
-  handle('plugin:shell.openExternal', (_rec, url: string) => {
-    if (!/^https?:\/\//i.test(String(url))) throw new Error('仅允许 http(s) 链接')
-    void shell.openExternal(String(url))
-    return true
-  })
-  // ---------- 插件文档库（手册类插件用）：只按 id 收发内容，路径不出主进程 ----------
-  handle('plugin:docs.list', (rec) => pluginDocs.list(rec.manifest.id))
-  handle('plugin:docs.import', (rec) => pluginDocs.importFromDialog(rec.manifest.id))
-  handle('plugin:docs.read', (rec, id: string) => pluginDocs.read(rec.manifest.id, id))
-  handle('plugin:docs.remove', (rec, id: string) => pluginDocs.remove(rec.manifest.id, id))
-  handle('plugin:docs.reveal', (rec) => pluginDocs.reveal(rec.manifest.id))
-  handle('plugin:window.hide', (_rec, _payload, sender) => {
-    hideBySender(sender)
-    return true
-  })
-  handle('plugin:window.detach', (_rec, _payload, sender) => detachBySender(sender))
-  handle('plugin:exit', (_rec, _payload, sender) => {
-    exitBySender(sender)
-    return true
-  })
+  assertUniqueChannels(apiDefs)
+  for (const def of apiDefs) register(def)
+  console.log(`[gateway] 已注册 ${apiDefs.length} 个插件 API 通道`)
 }

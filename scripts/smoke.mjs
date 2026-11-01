@@ -1,5 +1,9 @@
 // 功能冒烟测试：通过 CDP 驱动真实运行的 QuickLauncher
 // 用法: 先启动 npx electron . --remote-debugging-port=9222，再运行 node scripts/smoke.mjs
+import { createServer } from 'node:http'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 const CDP = 'http://127.0.0.1:9222'
 
 async function targets() {
@@ -48,11 +52,34 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ' — ' + detail : ''}`)
 }
 
+/**
+ * 插件页判定：生产走自定义协议 plugin://<id>/index.html，
+ * 用 pnpm dev:plugin 起了 dev server 时走 http://localhost:<port>/?__plugin=<id>，
+ * 两种都要认，否则本地开着热更新时冒烟会全部找不到插件页。
+ */
+const isPluginPage = (target, name) =>
+  target.url.startsWith(`plugin://com.launcher.${name}/`) ||
+  target.url.includes(`__plugin=com.launcher.${name}`)
+
+/** 在插件页里执行表达式（插件有独立 partition，页面不在主面板 WS 上） */
+async function evaluateIn(name, expression) {
+  const target = (await targets()).find((t) => isPluginPage(t, name))
+  if (!target) throw new Error(`未找到插件页: ${name}`)
+  const ws = await connect(target.webSocketDebuggerUrl)
+  try {
+    return await evaluate(ws, expression)
+  } finally {
+    ws.close()
+  }
+}
+
 const list = await targets()
-// 只能用主面板页面：插件页（plugins/*/dist/index.html）同样含 index.html，且没有 window.panel
+// 只能用主面板页面：插件页同为 index.html，且没有 window.panel
 const page =
   list.find((t) => t.type === 'page' && t.url.includes('out/renderer/index.html')) ??
-  list.find((t) => t.type === 'page' && t.url.includes('localhost') && !t.url.includes('/plugins/'))
+  list.find(
+    (t) => t.type === 'page' && t.url.includes('localhost') && !t.url.includes('/plugins/') && !t.url.includes('__plugin=')
+  )
 if (!page) {
   console.error('未找到主面板页面，targets:', list.map((t) => `${t.type}:${t.url}`).join('\n'))
   process.exit(1)
@@ -60,6 +87,11 @@ if (!page) {
 
 const ws = await connect(page.webSocketDebuggerUrl)
 await send(ws, 'Runtime.enable')
+
+// 0. 复位到主页：上一次跑完可能停在某个插件页（此时主页 UI 已卸载，搜索框不存在，
+//    后续 setter 会报 Illegal invocation）。冒烟应可从任意状态重跑。
+await evaluate(ws, 'window.panel.exitPlugin()')
+await new Promise((r) => setTimeout(r, 400))
 
 // 1. 面板桥存在
 const hasBridge = await evaluate(ws, 'typeof window.panel === "object" && typeof window.panel.openPlugin === "function"')
@@ -107,7 +139,7 @@ const homeBounds = await evaluate(ws, 'window.panel.getWindowBounds()')
 await evaluate(ws, 'window.panel.openPlugin("com.launcher.clipboard")')
 await new Promise((r) => setTimeout(r, 2000))
 const list2 = await targets()
-const pluginPage = list2.find((t) => t.url.includes('plugins/clipboard/dist/index.html'))
+const pluginPage = list2.find((t) => isPluginPage(t, 'clipboard'))
 check('web 插件视图加载(独立进程)', !!pluginPage, pluginPage?.url ?? '未找到')
 
 // 4b. 插件页外框：窗口自动伸展 + 提供返回主界面
@@ -122,6 +154,20 @@ check(
   (await evaluate(ws, 'document.querySelector(".frame .back")?.textContent?.includes("主界面")')) === true
 )
 
+// 4c. 插件页要"端在屏幕正中"：窗口中心与工作区中心对齐（125% 缩放取整，允许几像素误差）
+const offset = await evaluate(
+  ws,
+  `(async () => {
+    const b = await window.panel.getWindowBounds()
+    const s = window.screen
+    return {
+      dx: Math.round(Math.abs(b.x + b.width / 2 - (s.availLeft + s.availWidth / 2))),
+      dy: Math.round(Math.abs(b.y + b.height / 2 - (s.availTop + s.availHeight / 2)))
+    }
+  })()`
+)
+check('插件页窗口居中于屏幕', offset.dx <= 6 && offset.dy <= 6, `偏移 ${offset.dx}px / ${offset.dy}px`)
+
 // 5. 插件内 appapi 可用 + storage 隔离
 if (pluginPage) {
   const pws = await connect(pluginPage.webSocketDebuggerUrl)
@@ -133,6 +179,27 @@ if (pluginPage) {
   check('插件 storage 读写', typeof stored === 'string' && stored.startsWith('hello-'), String(stored))
   const info = await evaluate(pws, 'window.appapi.info()')
   check('插件身份信息', info?.id === 'com.launcher.clipboard', JSON.stringify(info))
+
+  // 5b. 协议与分区隔离：插件页有自己的 origin，同源可 fetch，跨插件与越界都被拦
+  const origin = await evaluate(pws, 'location.origin')
+  check('插件页 origin 为 plugin://<id>', String(origin).startsWith('plugin://com.launcher.clipboard'), String(origin))
+  const ls = await evaluate(
+    pws,
+    `(() => { try { localStorage.setItem('smokeOrigin', 'clipboard'); return localStorage.getItem('smokeOrigin') } catch (e) { return 'ERR:' + e.message } })()`
+  )
+  check('插件页 localStorage 可用', ls === 'clipboard', String(ls))
+  const sameOrigin = await evaluate(
+    pws,
+    `fetch('plugin.json').then(r => r.ok ? r.json() : { id: 'HTTP ' + r.status }).then(j => j.id).catch(e => 'ERR:' + e.message)`
+  )
+  check('plugin:// 下同源 fetch 本地资源', sameOrigin === 'com.launcher.clipboard', String(sameOrigin))
+  const cross = await evaluate(
+    pws,
+    `fetch('plugin://com.launcher.calculator/index.html').then(() => 'ALLOWED').catch(() => 'BLOCKED')`
+  )
+  check('跨插件资源读取被拦(CORS)', cross === 'BLOCKED', String(cross))
+  const escape = await evaluate(pws, `fetch('..%2f..%2fpackage.json').then(r => r.status).catch(() => 'THREW')`)
+  check('路径越界被拒', escape === 403 || escape === 'THREW', String(escape))
   // 点外框的"主界面"：插件视图摘掉、主页回来、窗口缩回原尺寸
   await evaluate(ws, '(() => { document.querySelector(".frame .back")?.click(); return true })()')
   await new Promise((r) => setTimeout(r, 700))
@@ -149,15 +216,46 @@ if (pluginPage) {
   )
 }
 
-// 6. 手册插件：静态手册打包 + docs 权限通道
-await evaluate(ws, 'window.panel.openPlugin("com.launcher.handbook")')
-await new Promise((r) => setTimeout(r, 2500))
-const listHb = await targets()
-const hbPage = listHb.find((t) => t.url.includes('plugins/handbook/dist/index.html'))
+// 6. 搜索贡献：插件注册的条目在面板可搜（静态索引兜底）+ intent 直达
+const linuxHits = await evaluate(ws, 'window.panel.search("linux")')
+check(
+  '搜索贡献命中手册条目',
+  Array.isArray(linuxHits) && linuxHits.some((h) => h.pluginId === 'com.launcher.handbook'),
+  JSON.stringify(linuxHits?.map((h) => h.title))
+)
+check(
+  '手册级条目排在章节之前(weight)',
+  Array.isArray(linuxHits) && linuxHits.length > 0 && linuxHits[0].id.startsWith('manual:'),
+  linuxHits?.[0]?.id
+)
+
+// 7. 手册插件：静态手册打包 + docs 权限通道
+await evaluate(ws, 'window.panel.openPlugin("com.launcher.handbook", undefined, { manualId: "linux-command" })')
+// 等页面真正渲染：dev server 失效时主进程会先打开错误页、再回退到 dist，
+// 固定 sleep 会在这个窗口期读到空 DOM（假失败）。
+const hbPage = await (async () => {
+  for (let i = 0; i < 14; i++) {
+    const page = (await targets()).find((t) => isPluginPage(t, 'handbook'))
+    if (page) {
+      try {
+        const probe = await connect(page.webSocketDebuggerUrl)
+        await send(probe, 'Runtime.enable')
+        if (await evaluate(probe, '!!document.querySelector(".side-title")')) return page
+        probe.close()
+      } catch {
+        /* 页面正在切换，下一轮 */
+      }
+    }
+    await new Promise((r) => setTimeout(r, 500))
+  }
+  return null
+})()
 check('手册插件加载(独立进程)', !!hbPage, hbPage?.url ?? '未找到')
 if (hbPage) {
   const hws = await connect(hbPage.webSocketDebuggerUrl)
   await send(hws, 'Runtime.enable')
+  const landed = await evaluate(hws, 'document.querySelector(".side-title")?.textContent?.trim() ?? ""')
+  check('搜索条目 intent 直达手册', landed.includes('Linux'), landed)
   // 插件会记住上次阅读位置/管理模式/搜索词，先归位到"手册列表"再断言，避免依赖历史状态
   for (let i = 0; i < 3; i++) {
     await evaluate(hws, `(() => {
@@ -198,6 +296,203 @@ if (hbPage) {
   await new Promise((r) => setTimeout(r, 500))
 }
 
+// 6.5 网络能力 + 生命周期：临时探针插件（声明 net + hosts:[127.0.0.1]）由本地 HTTP 服务回话
+const PROBE_ID = 'com.smoke.probe-net'
+const PROBE_DIR = join(process.cwd(), 'plugins', 'probe-net')
+const PROBE_URL_PREFIX = `plugin://${PROBE_ID}/`
+rmSync(PROBE_DIR, { recursive: true, force: true }) // 上一轮被强杀时的残留
+
+const server = createServer((req, res) => {
+  if (req.url === '/redirect-out') {
+    res.writeHead(302, { location: 'https://example.com/' })
+    res.end()
+    return
+  }
+  if (req.url === '/redirect-ok') {
+    res.writeHead(302, { location: '/ok' })
+    res.end()
+    return
+  }
+  res.writeHead(200, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ ok: true, path: req.url }))
+})
+await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+const probePort = server.address().port
+
+mkdirSync(PROBE_DIR, { recursive: true })
+writeFileSync(
+  join(PROBE_DIR, 'plugin.json'),
+  JSON.stringify(
+    {
+      id: PROBE_ID,
+      name: '冒烟探针',
+      version: '0.0.0',
+      type: 'web',
+      entry: 'index.html',
+      keywords: ['smoke-probe'],
+      permissions: ['net'],
+      hosts: ['127.0.0.1']
+    },
+    null,
+    2
+  )
+)
+// 探针页只做两件事：记录可见性事件、供 CDP 调用 appapi
+writeFileSync(
+  join(PROBE_DIR, 'index.html'),
+  `<!doctype html><meta charset="utf-8"><title>probe</title><body>probe
+<script>
+  window.__life = { show: 0, hide: 0 }
+  window.appapi.onShow(() => { window.__life.show++ })
+  window.appapi.onHide(() => { window.__life.hide++ })
+</script></body>`
+)
+// 强制重扫：借"停用/启用"这条已有链路的副作用（它内部会 scanPlugins），无需为冒烟加调试接口
+await evaluate(ws, 'window.panel.setPluginDisabled("com.launcher.notepad", true)')
+await evaluate(ws, 'window.panel.setPluginDisabled("com.launcher.notepad", false)')
+const probeListed = await evaluate(ws, `window.panel.getPlugins().then(l => l.some(p => p.id === "${PROBE_ID}"))`)
+check('临时探针插件可被扫描(无需重启)', probeListed === true)
+
+let probeOk = false
+try {
+  await evaluate(ws, `window.panel.openPlugin("${PROBE_ID}")`)
+  const probePage = await (async () => {
+    for (let i = 0; i < 20; i++) {
+      const t = (await targets()).find((x) => x.url.startsWith(PROBE_URL_PREFIX))
+      if (t) return t
+      await new Promise((r) => setTimeout(r, 300))
+    }
+    return null
+  })()
+  check('探针插件页加载', !!probePage, probePage?.url ?? '未找到')
+  if (probePage) {
+    probeOk = true
+    const pws = await connect(probePage.webSocketDebuggerUrl)
+    await send(pws, 'Runtime.enable')
+    const call = (expr) => evaluate(pws, expr)
+
+    const okRes = JSON.parse(
+      await call(`window.appapi.net.request({ url: 'http://127.0.0.1:${probePort}/ok' })
+        .then(r => JSON.stringify({ status: r.status, body: r.body }))
+        .catch(e => JSON.stringify({ error: String(e.message || e) }))`)
+    )
+    check('net 请求成功(主进程转发)', okRes.status === 200 && okRes.body.includes('"ok":true'), JSON.stringify(okRes))
+
+    const postRes = JSON.parse(
+      await call(`window.appapi.net.request({ url: 'http://127.0.0.1:${probePort}/echo', method: 'post', headers: { 'x-probe': 'yes' } })
+        .then(r => JSON.stringify({ status: r.status, path: JSON.parse(r.body).path }))
+        .catch(e => JSON.stringify({ error: String(e.message || e) }))`)
+    )
+    check('net 方法大小写归一(POST)', postRes.status === 200 && postRes.path === '/echo', JSON.stringify(postRes))
+
+    const outside = await call(`window.appapi.net.request({ url: 'http://127.0.0.2:${probePort}/ok' })
+      .then(() => 'ALLOWED').catch(e => String(e.message || e))`)
+    check('net 白名单外的域被拒', String(outside).includes('白名单'), String(outside).slice(0, 90))
+
+    const scheme = await call(`window.appapi.net.request({ url: 'file:///etc/passwd' })
+      .then(() => 'ALLOWED').catch(e => String(e.message || e))`)
+    check('net 拒绝非 http(s)', String(scheme).includes('仅允许 http(s)'), String(scheme).slice(0, 90))
+
+    const redirectOut = await call(`window.appapi.net.request({ url: 'http://127.0.0.1:${probePort}/redirect-out' })
+      .then(() => 'ALLOWED').catch(e => String(e.message || e))`)
+    check('net 重定向跨域被逐跳拦截', String(redirectOut).includes('白名单'), String(redirectOut).slice(0, 90))
+
+    const redirectOk = JSON.parse(
+      await call(`window.appapi.net.request({ url: 'http://127.0.0.1:${probePort}/redirect-ok' })
+        .then(r => JSON.stringify({ status: r.status, url: r.url }))
+        .catch(e => JSON.stringify({ error: String(e.message || e) }))`)
+    )
+    check('net 同域重定向自动跟随', redirectOk.status === 200 && String(redirectOk.url).endsWith('/ok'), JSON.stringify(redirectOk))
+
+    // 功能门禁：探针没声明 features:["inline"]，回传内联结果必须被拒
+    const inlineDenied = await call(`window.appapi.inline.set({ seq: 1, items: [] })
+      .then(() => 'ALLOWED').catch(e => String(e.message || e))`)
+    check('内联结果需 features 声明', String(inlineDenied).includes('功能声明'), String(inlineDenied).slice(0, 90))
+
+    // 生命周期：加载即 show=1；退出面板 → hide=1；再进来 → show=2
+    const life0 = JSON.parse(await call('JSON.stringify(window.__life)'))
+    check('插件加载即收到 onShow', life0.show === 1 && life0.hide === 0, JSON.stringify(life0))
+    await evaluate(ws, 'window.panel.exitPlugin()')
+    await new Promise((r) => setTimeout(r, 600))
+    const life1 = JSON.parse(await call('JSON.stringify(window.__life)'))
+    check('退出插件页收到 onHide', life1.hide === 1, JSON.stringify(life1))
+    await evaluate(ws, `window.panel.openPlugin("${PROBE_ID}")`)
+    await new Promise((r) => setTimeout(r, 800))
+    const life2 = JSON.parse(await call('JSON.stringify(window.__life)'))
+    check('重新打开收到 onShow', life2.show === 2 && life2.hide === 1, JSON.stringify(life2))
+    await evaluate(ws, 'window.panel.exitPlugin()')
+    await new Promise((r) => setTimeout(r, 300))
+    pws.close()
+  }
+} finally {
+  server.close()
+  rmSync(PROBE_DIR, { recursive: true, force: true })
+  // 再次重扫，让探针从插件表消失（保持在 finally 里，断言失败也不留垃圾）
+  await evaluate(ws, 'window.panel.setPluginDisabled("com.launcher.notepad", true)').catch(() => {})
+  await evaluate(ws, 'window.panel.setPluginDisabled("com.launcher.notepad", false)').catch(() => {})
+}
+if (!probeOk) check('net/lifecycle 探针未运行', false, '探针插件未加载，后续断言跳过')
+
+// 6.6 内联结果：声明 features:["inline"] 的计算器在后台接查询，输入算式直接出结果
+const inlineProbe = async (q) =>
+  JSON.parse(await evaluate(ws, `window.panel.inline(${JSON.stringify(q)}).then((r) => JSON.stringify(r))`))
+
+/** 首次查询会顺手把插件视图拉起来（页面还在加载时本轮返回空），所以轮询几次 */
+let inlineHit = null
+for (let i = 0; i < 20; i++) {
+  const hits = await inlineProbe('2+3')
+  if (hits.length) {
+    inlineHit = hits[0]
+    break
+  }
+  await new Promise((r) => setTimeout(r, 300))
+}
+check(
+  '内联结果(2+3 → 5)',
+  inlineHit?.title === '5' && inlineHit?.pluginId === 'com.launcher.calculator',
+  JSON.stringify(inlineHit)
+)
+check(
+  '内联结果默认动作来自插件(copy)',
+  inlineHit?.action?.type === 'copy' && inlineHit.action.text === '5',
+  JSON.stringify(inlineHit?.action)
+)
+const inlineNone = await inlineProbe('hello')
+check('非算式不产生内联结果', inlineNone.length === 0, JSON.stringify(inlineNone))
+check(
+  '内联插件在后台预热(未打开也加载)',
+  (await targets()).some((t) => isPluginPage(t, 'calculator'))
+)
+
+// 面板里的真实链路：输入 → 防抖 140ms → 内联 120ms → 渲染 → 回车复制
+await evaluate(ws, `(() => {
+  const input = document.querySelector('.search')
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+  setter.call(input, '7*8')
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  return true
+})()`)
+await new Promise((r) => setTimeout(r, 800))
+const inlineRows = await evaluate(ws, `document.querySelectorAll('.hit-entry.inline').length`)
+const inlineTitle = await evaluate(ws, `document.querySelector('.hit-entry.inline .hit-title')?.textContent ?? ''`)
+check('面板渲染内联结果行', inlineRows >= 1 && inlineTitle === '56', `${inlineRows} 行 / ${inlineTitle}`)
+await evaluate(
+  ws,
+  `document.querySelector('.search').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))`
+)
+await new Promise((r) => setTimeout(r, 400))
+const toast = await evaluate(ws, `document.querySelector('.n-message')?.textContent ?? ''`)
+check('回车执行内联动作(复制)', toast.includes('已复制') && toast.includes('56'), toast)
+// 复位搜索框：后续断言依赖主页默认状态
+await evaluate(ws, `(() => {
+  const input = document.querySelector('.search')
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+  setter.call(input, '')
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  return true
+})()`)
+await new Promise((r) => setTimeout(r, 300))
+
 // 7. 窗口管理：置顶钉住
 const pinOn = await evaluate(ws, 'window.panel.togglePinned()')
 const pinOff = await evaluate(ws, 'window.panel.togglePinned()')
@@ -222,7 +517,7 @@ check('置顶按钮渲染', await evaluate(ws, '!!document.querySelector(".searc
 const det = await evaluate(ws, 'window.panel.detachPlugin("com.launcher.calculator")')
 await new Promise((r) => setTimeout(r, 1200))
 const afterDetach = await targets()
-const calcStill = afterDetach.some((t) => t.url.includes('plugins/calculator/dist/index.html'))
+const calcStill = afterDetach.some((t) => isPluginPage(t, 'calculator'))
 check('分离为独立窗口', det?.ok === true && calcStill, JSON.stringify(det))
 const det2 = await evaluate(ws, 'window.panel.detachPlugin("com.launcher.calculator")')
 check('重复分离=聚焦已有窗口', det2?.ok === true)
@@ -231,7 +526,7 @@ check('重复分离=聚焦已有窗口', det2?.ok === true)
 await evaluate(ws, 'window.panel.openPlugin("com.launcher.calculator")')
 await new Promise((r) => setTimeout(r, 1500))
 const list3 = await targets()
-const calcPage = list3.find((t) => t.url.includes('plugins/calculator/dist/index.html'))
+const calcPage = list3.find((t) => isPluginPage(t, 'calculator'))
 if (calcPage) {
   const cws = await connect(calcPage.webSocketDebuggerUrl)
   await send(cws, 'Runtime.enable')
@@ -239,15 +534,198 @@ if (calcPage) {
   check('权限模型生效(未声明即拒绝)', denied === 'denied', String(denied))
   const docsDenied = await evaluate(cws, 'window.appapi.docs.list().then(() => "leak").catch(e => String(e).includes("docs") ? "denied" : "other")')
   check('docs 权限未声明即拒绝', docsDenied === 'denied', String(docsDenied))
+  const netDenied = await evaluate(
+    cws,
+    'window.appapi.net.request({ url: "https://example.com/" }).then(() => "leak").catch(e => String(e).includes("net") ? "denied" : "other")'
+  )
+  check('net 权限未声明即拒绝', netDenied === 'denied', String(netDenied))
   // 已分离窗口内退出 → 窗口关闭、视图销毁
   send(cws, 'Runtime.evaluate', { expression: 'window.appapi.exit()' }).catch(() => {})
   await new Promise((r) => setTimeout(r, 1500))
   const afterExit = await targets()
-  check('分离窗口内退出即关窗', !afterExit.some((t) => t.url.includes('plugins/calculator/dist/index.html')))
+  check('分离窗口内退出即关窗', !afterExit.some((t) => isPluginPage(t, 'calculator')))
 } else {
   check('权限模型生效(未声明即拒绝)', false, 'calculator 页面未找到')
   check('分离窗口内退出即关窗', false, 'calculator 页面未找到')
 }
+
+// 11. 冷启动路径：视图已被销毁（上一段退出即关窗）后只敲一次，结果要自己补上来
+await evaluate(ws, `(() => {
+  const input = document.querySelector('.search')
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+  setter.call(input, '8*8')
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  return true
+})()`)
+let coldTitle = ''
+for (let i = 0; i < 15; i++) {
+  await new Promise((r) => setTimeout(r, 300))
+  coldTitle = await evaluate(ws, `document.querySelector('.hit-entry.inline .hit-title')?.textContent ?? ''`)
+  if (coldTitle === '64') break
+}
+check('插件页冷启动后单次输入自动补结果', coldTitle === '64', coldTitle || '(无)')
+await evaluate(ws, `(() => {
+  const input = document.querySelector('.search')
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+  setter.call(input, '')
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  return true
+})()`)
+await new Promise((r) => setTimeout(r, 300))
+
+// 12. 插件目录监听 + 视图 LRU + 存储配额：一次建 7 个临时探针，把常驻上限顶满
+const LRU_IDS = Array.from({ length: 7 }, (_, i) => `com.smoke.lru${i + 1}`)
+const LRU_DIRS = LRU_IDS.map((_, i) => join(process.cwd(), 'plugins', `lru-probe-${i + 1}`))
+const probeUrl = (id) => `plugin://${id}/`
+const probeTarget = async (id) => (await targets()).find((t) => t.url.startsWith(probeUrl(id)))
+
+/** 轮询到条件成立或超时：插件目录监听、页面加载、落盘都是异步的，不能靠固定 sleep */
+async function waitFor(fn, timeout = 8000, interval = 250) {
+  const deadline = Date.now() + timeout
+  for (;;) {
+    const value = await fn()
+    if (value) return value
+    if (Date.now() > deadline) return null
+    await new Promise((r) => setTimeout(r, interval))
+  }
+}
+
+function writeLruProbe(index, name) {
+  const dir = LRU_DIRS[index]
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'plugin.json'),
+    JSON.stringify(
+      {
+        id: LRU_IDS[index],
+        name,
+        version: '0.0.0',
+        type: 'web',
+        entry: 'index.html',
+        keywords: [`lru-${index + 1}`],
+        permissions: ['storage']
+      },
+      null,
+      2
+    )
+  )
+  writeFileSync(
+    join(dir, 'index.html'),
+    `<!doctype html><meta charset="utf-8"><title>lru-${index + 1}</title><body>lru-${index + 1}
+<script>
+  window.appapi.onDestroy(() => {
+    // 收尾窗口只有 400ms：这次 set 能落盘，说明 destroy 来得够早
+    window.appapi.storage.set('destroyed-at', Date.now())
+  })
+</script></body>`
+  )
+}
+
+for (const dir of LRU_DIRS) rmSync(dir, { recursive: true, force: true })
+try {
+  for (let i = 0; i < LRU_IDS.length; i++) writeLruProbe(i, `LRU 探针 ${i + 1}`)
+  const registered = await waitFor(async () => {
+    const ids = await evaluate(ws, 'window.panel.getPlugins().then((l) => l.map((p) => p.id))')
+    return LRU_IDS.every((id) => ids.includes(id)) ? ids : null
+  })
+  check('插件目录监听(新目录免重启)', !!registered, registered ? `${LRU_IDS.length} 个探针已注册` : '超时未注册')
+
+  // 改 plugin.json 也要免重启生效：改个名字，插件表应跟着变
+  writeLruProbe(LRU_IDS.length - 1, 'LRU 探针 7 改名')
+  const renamed = await waitFor(async () => {
+    const name = await evaluate(ws, `window.panel.getPlugins().then((l) => l.find((p) => p.id === "${LRU_IDS[6]}")?.name ?? "")`)
+    return name === 'LRU 探针 7 改名' ? name : null
+  })
+  check('plugin.json 改动免重启生效', renamed === 'LRU 探针 7 改名', String(renamed ?? '(未变)'))
+
+  // 依次打开 7 个 → 超过常驻上限 5，最久未用的几个被回收
+  let openedCount = 0
+  for (const id of LRU_IDS) {
+    await evaluate(ws, `window.panel.openPlugin("${id}")`)
+    if (await waitFor(() => probeTarget(id), 6000)) openedCount++
+  }
+  check('探针插件页全部打开', openedCount === LRU_IDS.length, `${openedCount}/${LRU_IDS.length}`)
+
+  // 宽限 400ms 之后才关页面；回收可能分几轮发生，轮询到 target 消失为准
+  const oldestGone = await waitFor(
+    async () => !(await targets()).some((t) => t.url.startsWith(probeUrl(LRU_IDS[0]))),
+    6000
+  )
+  check('常驻上限外的旧视图被回收(最久未用先走)', oldestGone === true, `${LRU_IDS[0]} ${oldestGone ? '已关闭' : '仍在'}`)
+  const aliveAfterEvict = await targets()
+  check(
+    '最近使用的视图仍然常驻',
+    LRU_IDS.slice(-2).every((id) => aliveAfterEvict.some((t) => t.url.startsWith(probeUrl(id))))
+  )
+
+  // 重新打开被回收的那个：新页面，但要能读回 onDestroy 时写下的时间戳
+  await evaluate(ws, `window.panel.openPlugin("${LRU_IDS[0]}")`)
+  const revived = await waitFor(() => probeTarget(LRU_IDS[0]), 6000)
+  const destroyedAt = revived
+    ? await waitFor(async () => {
+        try {
+          const rws = await connect(revived.webSocketDebuggerUrl)
+          await send(rws, 'Runtime.enable')
+          const value = await evaluate(rws, `window.appapi.storage.get('destroyed-at')`)
+          rws.close()
+          return typeof value === 'number' ? value : null
+        } catch {
+          return null // 页面还没加载完，preload 未注入
+        }
+      })
+    : null
+  check('淘汰前收到 onDestroy 并完成落盘', typeof destroyedAt === 'number' && destroyedAt > 0, String(destroyedAt))
+
+  // 13. 存储总量配额：单个值 2MB 上限挡不住"多存几个大键"，总量封顶后必须拒绝并说明原因
+  const quotaLog = revived
+    ? await (async () => {
+        const rws = await connect(revived.webSocketDebuggerUrl)
+        await send(rws, 'Runtime.enable')
+        try {
+          const raw = await evaluate(
+            rws,
+            `(async () => {
+              const big = 'x'.repeat(1900000)
+              const out = []
+              for (let i = 0; i < 8; i++) {
+                try {
+                  await window.appapi.storage.set('big-' + i, big)
+                  out.push('ok')
+                } catch (e) {
+                  out.push(String(e && e.message ? e.message : e))
+                }
+              }
+              return JSON.stringify(out)
+            })()`
+          )
+          return JSON.parse(raw)
+        } finally {
+          rws.close()
+        }
+      })()
+    : []
+  const accepted = quotaLog.filter((r) => r === 'ok').length
+  const rejected = quotaLog.filter((r) => r !== 'ok')
+  check(
+    '存储总量配额生效(超限拒绝并说明原因)',
+    accepted >= 1 && rejected.length >= 1 && String(rejected[0]).includes('配额'),
+    `${accepted} 次成功 / 拒绝：${String(rejected[0] ?? '(无)').slice(0, 70)}`
+  )
+} finally {
+  await evaluate(ws, 'window.panel.exitPlugin()').catch(() => {})
+  await new Promise((r) => setTimeout(r, 400))
+  // 先清数据再删目录：插件消失后 clearPluginData 会找不到记录
+  for (const id of LRU_IDS) {
+    await evaluate(ws, `window.panel.clearPluginData("${id}")`).catch(() => {})
+  }
+  for (const dir of LRU_DIRS) rmSync(dir, { recursive: true, force: true })
+}
+
+const unregistered = await waitFor(async () => {
+  const ids = await evaluate(ws, 'window.panel.getPlugins().then((l) => l.map((p) => p.id))')
+  return LRU_IDS.some((id) => ids.includes(id)) ? null : true
+})
+check('插件目录删除后自动下架(免重启)', unregistered === true)
 
 const failed = results.filter((r) => !r.ok)
 console.log(`\n=== 冒烟结果: ${results.length - failed.length}/${results.length} 通过 ===`)

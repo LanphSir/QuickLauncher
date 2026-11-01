@@ -39,6 +39,43 @@ const blockCache = new Map<string, Block[]>()
 let searchIndex: SearchEntry[] = []
 let toastTimer: ReturnType<typeof setTimeout> | undefined
 
+/** 每本手册的匹配词覆盖（按 manual.id 存，空 = 沿用 manual.json 的默认值） */
+const keywordOverrides = ref<Record<string, string[]>>({})
+/** 管理页输入框草稿（逗号/空格分隔，失焦或回车时才落库） */
+const keywordDraft = ref<Record<string, string>>({})
+
+/** 生效的匹配词 = 内置关键词 + 用户补充（去重） */
+function keywordsOf(manual: Manual): string[] {
+  const base = manual.keywords ?? []
+  const extra = keywordOverrides.value[manual.id] ?? []
+  return extra.length ? [...new Set([...base, ...extra])] : base
+}
+
+function draftText(manual: Manual): string {
+  return (keywordOverrides.value[manual.id] ?? []).join('，')
+}
+
+function syncDrafts(): void {
+  const drafts: Record<string, string> = {}
+  for (const manual of allManuals.value) drafts[manual.id] = draftText(manual)
+  keywordDraft.value = drafts
+}
+
+/** 保存某本手册的匹配词：清空即恢复内置默认 */
+async function saveKeywords(manual: Manual): Promise<void> {
+  const raw = keywordDraft.value[manual.id] ?? ''
+  const list = [...new Set(raw.split(/[,，、;；\s]+/).map((s) => s.trim()).filter(Boolean))].slice(0, 20)
+  const next: Record<string, string[]> = { ...keywordOverrides.value }
+  if (list.length) next[manual.id] = list
+  else delete next[manual.id]
+  keywordDraft.value = { ...keywordDraft.value, [manual.id]: list.join('，') }
+  if (JSON.stringify(next) === JSON.stringify(keywordOverrides.value)) return
+  keywordOverrides.value = next
+  await window.appapi.storage.set('keywords', plain(next))
+  void publishSearch()
+  showToast(list.length ? `已更新「${manual.title}」的匹配词` : `「${manual.title}」已恢复默认匹配词`)
+}
+
 /** contextBridge 传参会做结构化克隆，Vue 响应式 Proxy 不能直接传 */
 function plain<T>(value: T): T {
   return JSON.parse(JSON.stringify(value))
@@ -129,6 +166,44 @@ function rebuildIndex(): void {
     }
   }
   searchIndex = entries
+  void publishSearch()
+}
+
+/**
+ * 把手册/章节注册到主面板搜索（权限 search）。
+ * 手册级条目 weight 0、章节级 10，所以搜 "linux" 先出整本手册，再出 grep/ls 这些章节。
+ * 停用的手册不推送；送达失败（宿主未授 search 权限）静默跳过，插件内搜索不受影响。
+ */
+async function publishSearch(): Promise<void> {
+  const entries: Array<Record<string, unknown>> = []
+  for (const manual of enabledManuals.value) {
+    const chapterTitles = manual.chapters.map((c) => c.title).slice(0, 40)
+    entries.push({
+      id: `manual:${manual.id}`,
+      title: manual.title,
+      subtitle: `${manual.chapters.length} 章`,
+      keywords: [...keywordsOf(manual), manual.title, ...chapterTitles],
+      group: '程序员手册',
+      weight: 0,
+      intent: { manualId: manual.id }
+    })
+    for (const chapter of manual.chapters) {
+      entries.push({
+        id: `chapter:${manual.id}/${chapter.id}`,
+        title: chapter.title,
+        subtitle: manual.title,
+        keywords: [chapter.title],
+        group: '程序员手册',
+        weight: 10,
+        intent: { manualId: manual.id, chapterId: chapter.id }
+      })
+    }
+  }
+  try {
+    await window.appapi.search.set(plain(entries))
+  } catch {
+    /* 宿主未提供搜索贡献能力时忽略 */
+  }
 }
 
 async function loadCustomDocs(): Promise<void> {
@@ -300,12 +375,24 @@ function onKeydown(e: KeyboardEvent): void {
 
 onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
-  const [savedDisabled, savedPos] = await Promise.all([
+  const [savedDisabled, savedPos, savedKeywords] = await Promise.all([
     window.appapi.storage.get('disabled-ids'),
-    window.appapi.storage.get('last-position')
+    window.appapi.storage.get('last-position'),
+    window.appapi.storage.get('keywords')
   ])
   if (Array.isArray(savedDisabled)) disabledIds.value = savedDisabled as string[]
+  if (savedKeywords && typeof savedKeywords === 'object') {
+    const map: Record<string, string[]> = {}
+    for (const [id, value] of Object.entries(savedKeywords as Record<string, unknown>)) {
+      if (Array.isArray(value)) {
+        const list = value.filter((k): k is string => typeof k === 'string' && k.trim() !== '')
+        if (list.length) map[id] = list
+      }
+    }
+    keywordOverrides.value = map
+  }
   await loadCustomDocs()
+  syncDrafts()
   rebuildIndex()
 
   const pos = savedPos as { manualId?: string; chapterId?: string } | null
@@ -316,8 +403,24 @@ onMounted(async () => {
     }
   }
 
-  // 面板搜索词透传：进来直接搜
+  // 面板搜索词透传：带 intent 则直达手册/章节，否则按关键词搜
   window.appapi.onQuery((payload) => {
+    const manualId = typeof payload?.intent?.manualId === 'string' ? payload.intent.manualId : ''
+    if (manualId) {
+      const manual = allManuals.value.find((m) => m.id === manualId)
+      if (manual && !disabledIds.value.includes(manual.id)) {
+        // 从面板直接跳进来时，先把管理模式/搜索态收掉，否则用户看到的是管理页
+        view.value = 'browse'
+        search.value = ''
+        const chapterId = typeof payload.intent?.chapterId === 'string' ? payload.intent.chapterId : ''
+        if (chapterId && manual.chapters.some((c) => c.id === chapterId)) {
+          void openChapter(manual.id, chapterId)
+        } else {
+          selectManual(manual.id)
+        }
+        return
+      }
+    }
     const q = payload?.query?.trim()
     if (q) search.value = q
   })
@@ -350,12 +453,26 @@ onUnmounted(() => {
       <aside class="side">
         <!-- 管理：启用/停用 + 自定义文档 -->
         <template v-if="view === 'manage'">
-          <p class="side-title">启用手册</p>
-          <label v-for="m in allManuals" :key="m.id" class="m-row">
-            <input type="checkbox" :checked="!disabledIds.includes(m.id)" @change="toggleEnabled(m.id)" />
-            <span class="m-name">{{ m.title }}</span>
-            <span class="m-count">{{ m.chapters.length }} 章</span>
-          </label>
+          <p class="side-title">启用手册 · 匹配词</p>
+          <div v-for="m in allManuals" :key="m.id" class="m-block">
+            <label class="m-row">
+              <input type="checkbox" :checked="!disabledIds.includes(m.id)" @change="toggleEnabled(m.id)" />
+              <span class="m-name">{{ m.title }}</span>
+              <span class="m-count">{{ m.chapters.length }} 章</span>
+            </label>
+            <input
+              v-model="keywordDraft[m.id]"
+              class="kw"
+              type="text"
+              :placeholder="`补充匹配词（默认：${(m.keywords ?? []).join('、') || '无'}）`"
+              spellcheck="false"
+              @keydown.enter="($event.target as HTMLInputElement).blur()"
+              @blur="saveKeywords(m)"
+            />
+          </div>
+          <p class="hint">
+            匹配词决定主面板搜索能否命中这本手册：用逗号/空格分隔，留空用默认值。章节名始终参与匹配。
+          </p>
 
           <p class="side-title mt">自定义文档</p>
           <div class="m-actions">
@@ -695,6 +812,39 @@ body {
 
 .m-row input {
   accent-color: #6366f1;
+}
+
+/* 管理页每本手册一块：启用开关 + 匹配词输入 */
+.m-block {
+  padding-bottom: 6px;
+  border-bottom: 1px dashed #f2f3f5;
+  margin-bottom: 4px;
+}
+
+.m-block:last-of-type {
+  border-bottom: none;
+}
+
+.kw {
+  display: block;
+  width: calc(100% - 18px);
+  margin: 0 9px 2px 27px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: #4e5969;
+  background: #f7f8fa;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  outline: none;
+}
+
+.kw:focus {
+  border-color: #c7d2fe;
+  background: #fff;
+}
+
+.kw::placeholder {
+  color: #b4b8bf;
 }
 
 .m-name {

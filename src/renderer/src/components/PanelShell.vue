@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useMessage } from 'naive-ui'
 import { useLauncherStore } from '../stores/launcher'
+import { useSearch } from '../composables/useSearch'
+import { useKeyboardNav } from '../composables/useKeyboardNav'
+import { RESIZE_HANDLES, useWindowResize } from '../composables/useWindowResize'
 import AppTile from './AppTile.vue'
 import AppIcon from './AppIcon.vue'
 import AppManage from './AppManage.vue'
@@ -14,6 +17,11 @@ import SettingsView from './SettingsView.vue'
 const store = useLauncherStore()
 const message = useMessage()
 const searchRef = ref<HTMLInputElement | null>(null)
+
+/** 搜索/结果/回车分发（组合式，见 composables/useSearch.ts） */
+const { flat, inlineCount, resultCount, open, openEntry, runInline, openCurrent } = useSearch()
+const { onKeydown } = useKeyboardNav(resultCount, openCurrent)
+const { startResize } = useWindowResize()
 
 const ctx = ref<{ plugin: PluginSummary; x: number; y: number } | null>(null)
 const detail = ref<PluginSummary | null>(null)
@@ -55,6 +63,11 @@ onMounted(async () => {
   window.panel.onPinnedChanged((value) => {
     pinned.value = value
   })
+  // 内联插件页刚加载完（首次输入时它还在启动）：用当前词补查一次，用户不用再敲键
+  window.panel.onInlineReady(() => {
+    if (!store.query.trim() || activePlugin.value) return
+    void store.search(store.query)
+  })
   // 弹层优先吃掉 Esc（capture 阶段），避免同时触发面板隐藏
   window.addEventListener('keydown', onGlobalKeydown, true)
   triggerPulse()
@@ -93,39 +106,6 @@ function focusSearch(): void {
   requestAnimationFrame(() => searchRef.value?.focus())
 }
 
-const flat = computed(() => store.visiblePlugins)
-
-watch(
-  () => store.query,
-  () => {
-    store.selIndex = 0
-  }
-)
-
-function onKeydown(e: KeyboardEvent): void {
-  if (e.key === 'ArrowDown') {
-    e.preventDefault()
-    if (flat.value.length) store.selIndex = (store.selIndex + 1) % flat.value.length
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault()
-    if (flat.value.length) store.selIndex = (store.selIndex - 1 + flat.value.length) % flat.value.length
-  } else if (e.key === 'Enter') {
-    e.preventDefault()
-    const target = flat.value[store.selIndex] ?? flat.value[0]
-    if (target) void open(target)
-  } else if (e.key === 'Escape') {
-    e.preventDefault()
-    void window.panel.hidePanel()
-  } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
-    store.selIndex = 0
-  }
-}
-
-async function open(plugin: PluginSummary): Promise<void> {
-  const result = await window.panel.openPlugin(plugin.id, store.query.trim() || undefined)
-  if (!result.ok && result.message) message.error(result.message)
-}
-
 /** 插件外框：返回主界面（主进程摘掉插件视图并还原主页尺寸） */
 async function backToHome(): Promise<void> {
   activePlugin.value = null
@@ -154,57 +134,6 @@ async function detach(plugin: PluginSummary): Promise<void> {
   const r = await window.panel.detachPlugin(plugin.id)
   if (!r.ok && r.message) message.error(r.message)
 }
-
-// —— 自实现窗口缩放：透明无边框窗口不支持系统边缘缩放 ——
-const MIN_W = 520
-const MIN_H = 400
-
-async function startResize(e: PointerEvent, handle: string): Promise<void> {
-  e.preventDefault()
-  const el = e.currentTarget as HTMLElement
-  const start = await window.panel.getWindowBounds()
-  if (!start) return
-  const sx = e.screenX
-  const sy = e.screenY
-  let raf = 0
-  const apply = (ev: PointerEvent): void => {
-    if (raf) return
-    raf = requestAnimationFrame(() => {
-      raf = 0
-      const dx = ev.screenX - sx
-      const dy = ev.screenY - sy
-      let { x, y, width, height } = start
-      if (handle.includes('e')) width = Math.max(MIN_W, start.width + dx)
-      if (handle.includes('s')) height = Math.max(MIN_H, start.height + dy)
-      if (handle.includes('w')) {
-        width = Math.max(MIN_W, start.width - dx)
-        x = start.x + (start.width - width)
-      }
-      if (handle.includes('n')) {
-        height = Math.max(MIN_H, start.height - dy)
-        y = start.y + (start.height - height)
-      }
-      void window.panel.setWindowBounds({
-        x: Math.round(x),
-        y: Math.round(y),
-        width: Math.round(width),
-        height: Math.round(height)
-      })
-    })
-  }
-  const up = (): void => {
-    el.removeEventListener('pointermove', apply)
-    el.removeEventListener('pointerup', up)
-    el.removeEventListener('pointercancel', up)
-    void window.panel.saveWindowBounds()
-  }
-  el.setPointerCapture(e.pointerId)
-  el.addEventListener('pointermove', apply)
-  el.addEventListener('pointerup', up)
-  el.addEventListener('pointercancel', up)
-}
-
-const RESIZE_HANDLES = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const
 
 const ctxItems = computed<ContextMenuItem[]>(() => {
   if (!ctx.value) return []
@@ -283,19 +212,62 @@ function onTileCtx(plugin: PluginSummary, pos: { x: number; y: number }): void {
       <main class="body">
         <template v-if="store.query.trim()">
           <h3 class="section-title">搜索结果</h3>
+          <!-- 内联结果：输入即得，永远排第一（2+3 → 5、汇率换算、Base64 等） -->
+          <div v-if="store.inline.length" class="hits">
+            <button
+              v-for="(h, i) in store.inline"
+              :key="h.pluginId + ':inline:' + h.id"
+              class="hit-entry inline"
+              :class="{ selected: i === store.selIndex }"
+              @click="runInline(h)"
+              @mouseenter="store.selIndex = i"
+            >
+              <span class="hit-icon" :class="{ badge: !!h.badge }">
+                <span v-if="h.badge" class="hit-badge">{{ h.badge }}</span>
+                <img v-else-if="h.icon" :src="h.icon" alt="" draggable="false" />
+                <AppIcon v-else name="search" :size="15" />
+              </span>
+              <span class="hit-main">
+                <span class="hit-title">{{ h.title }}</span>
+                <span class="hit-sub">{{ h.subtitle ? h.subtitle + ' · ' : '' }}{{ h.pluginName }}</span>
+              </span>
+              <span class="hit-hint">{{ h.action?.type === 'copy' ? '复制' : '打开' }}</span>
+            </button>
+          </div>
+          <div v-if="store.entries.length" class="hits">
+            <button
+              v-for="(h, i) in store.entries"
+              :key="h.pluginId + ':' + h.id"
+              class="hit-entry"
+              :class="{ selected: i + inlineCount === store.selIndex }"
+              @click="openEntry(h)"
+              @mouseenter="store.selIndex = i + inlineCount"
+            >
+              <span class="hit-icon">
+                <img v-if="h.icon" :src="h.icon" alt="" draggable="false" />
+                <AppIcon v-else name="search" :size="15" />
+              </span>
+              <span class="hit-main">
+                <span class="hit-title">{{ h.title }}</span>
+                <span class="hit-sub">{{ h.subtitle ? h.subtitle + ' · ' : '' }}{{ h.pluginName }}</span>
+              </span>
+              <AppIcon class="hit-go" name="chevron-right" :size="13" />
+            </button>
+          </div>
+          <h3 v-if="store.entries.length" class="section-title">应用</h3>
           <div class="grid">
             <AppTile
               v-for="(p, i) in flat"
               :key="p.id"
               :plugin="p"
-              :selected="i === store.selIndex"
+              :selected="i + store.entries.length + inlineCount === store.selIndex"
               @open="open(p)"
-              @hover="store.selIndex = i"
+              @hover="store.selIndex = i + store.entries.length + inlineCount"
               @pin="togglePin(p)"
               @ctx="(pos) => onTileCtx(p, pos)"
             />
           </div>
-          <p v-if="!flat.length" class="empty">没有匹配的功能，换个关键词试试（支持通配符 * 与 re: 正则）</p>
+          <p v-if="!resultCount" class="empty">没有匹配的功能，换个关键词试试（支持通配符 * 与 re: 正则）</p>
         </template>
         <template v-else>
           <section v-if="store.pinned.length">
@@ -336,7 +308,7 @@ function onTileCtx(plugin: PluginSummary, pos: { x: number; y: number }): void {
         </template>
       </main>
 
-      <footer class="foot">↑↓ 选择 · Enter 打开 · 右键 更多操作 · Esc 隐藏</footer>
+      <footer class="foot">↑↓ 选择 · Enter 执行 · 右键 更多操作 · Esc 隐藏</footer>
     </template>
 
     <AppManage
@@ -589,6 +561,111 @@ function onTileCtx(plugin: PluginSummary, pos: { x: number; y: number }): void {
   grid-template-columns: repeat(auto-fill, minmax(86px, 1fr));
   gap: 6px 4px;
   margin-bottom: 10px;
+}
+
+/* 搜索贡献条目：手册章节等，选中态与 AppTile 一致，视觉上先于应用网格 */
+.hits {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 0 12px;
+}
+
+.hit-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 9px;
+  text-align: left;
+}
+
+.hit-entry:hover,
+.hit-entry.selected {
+  background: #f2f3f5;
+}
+
+.hit-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: #f5f6f7;
+  color: #8f959e;
+  overflow: hidden;
+}
+
+.hit-icon img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+
+.hit-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.hit-title {
+  font-size: 13px;
+  line-height: 1.35;
+  color: #1f2329;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hit-sub {
+  font-size: 11px;
+  line-height: 1.3;
+  color: #8f959e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hit-go {
+  flex: none;
+  color: #c2c6cc;
+}
+
+/* 内联结果：一眼可用的「答案」，字号/字重比普通条目更强，右侧标出回车会做什么 */
+.hit-entry.inline .hit-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+}
+
+.hit-icon.badge {
+  background: #e8f2ff;
+  color: #1668dc;
+}
+
+.hit-badge {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.hit-hint {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: #f2f3f5;
+  color: #a1a6ad;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.hit-entry.inline.selected .hit-hint {
+  background: #e4e6eb;
+  color: #61666d;
 }
 
 .empty {

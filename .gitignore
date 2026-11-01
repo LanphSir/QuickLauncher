@@ -12,3 +12,9 @@ Thumbs.db
 
 # 本地工作记忆与 IDE 会话数据，不上传
 .workbuddy/
+
+# 手册插件构建期生成的搜索索引（pnpm build:plugins 会重建）
+plugins/handbook/public/search-index.json
+
+# 插件 dev server 登记表（pnpm dev:plugin 维护，本地开发用）
+.dev-plugins.json

@@ -27,12 +27,38 @@
 - [ ] v0.3.4 **主题**：深色模式跟随系统；设置页补充
 - [ ] v0.3.5 **面板细节**：搜索支持文件/图片粘贴（uTools 式"粘贴即动作"）；窗口尺寸记忆
 
-## v0.4.x — 内置应用：本地文档
+## v0.4.x — 本地文档与检索
 
 - [x] v0.4.0 **本地程序员手册**（已交付：手册包协议 `manual.json` + 构建期打包、手册启用开关、全文搜索、自定义文档导入（走网关，`docs` 权限）、TypeScript / Linux 命令两套中文手册）
   - 验收：✅ 面板搜"手册/命令"命中；✅ 停用某手册后不再出现在列表与搜索；✅ 导入本地 md 后即时可读；✅ typecheck 零错误 + 插件构建通过
 - [x] v0.4.1 **插件页外框**（已交付：进插件自动伸展窗口（默认 980×720，只放大不缩小）、外框工具条（返回主界面 / 独立窗口 / 关闭）、四周 8px 留白让缩放热区与边缘控件可用、退出还原主页尺寸）
   - 验收：✅ 主页 772×579 → 插件页 980×720 且视图随之适配；✅ 插件页可继续拉伸，视图跟随；✅ 点外框"主界面"回到主页并还原尺寸；✅ 手册插件顶栏按钮不再贴窗口边缘
+
+- [x] v0.4.2 **搜索贡献协议 + 手册匹配词**（已交付：`search` 权限与 `appapi.search.set/clear`、条目三级索引（运行时 / 落盘 / 插件目录静态 `search-index.json`）、面板"文档与内容"分组直达 `intent`、手册管理页按本编辑匹配词）
+  - 验收：✅ 面板搜 linux 只命中《Linux 命令手册》，回车直达该手册；✅ 自填"运维"后搜运维命中；✅ 停用该手册后条目消失；✅ 清空运行时索引后搜 grep 仍能靠静态索引命中；✅ smoke 30/30
+
+- [x] v0.4.3 **插件能力契约 + 注册表网关**（已交付：`shared/pluginApi.ts` 契约（通道类型/权限表/appapi 形状）、`plugin/api/*` 一能力一文件、网关只做身份+权限+入参校验、五个内置插件删除重复 appapi 声明、入参上限硬化）
+  - 验收：✅ typecheck 零错误；✅ 三端构建通过；✅ smoke 30/30（含权限拒绝、docs、storage、搜索 intent）
+
+- [x] v0.4.4 **插件开发热更新**（已交付：`pnpm dev:plugin <name>` 起 vite dev server、`.dev-plugins.json` 登记、主进程自动换源/重载、dev server 失效回退构建产物；冒烟兼容 dev 入口并可从任意状态重跑）
+  - 验收：✅ 改 `.vue` 2s 内 HMR 生效且页面状态保留；✅ 启停 dev server 时已打开的视图自动换源；✅ dev 地址失效时回退 dist；✅ smoke 30/30
+
+- [x] v0.4.5 **插件专属协议 + 独立分区**（已交付：`plugin://<id>/…` 自定义协议替换 `file://`、每插件 `persist:plugin:<id>` 分区、跨插件读取在 session 层拦截、路径越界/隐藏文件守卫、权限默认拒绝、清数据同时清浏览器存储）
+  - 验收：✅ 插件页 origin 为 `plugin://<id>`；✅ 同源 fetch 本地 json 可用、跨插件 fetch 被拦、`..%2f` 越界 403；✅ 各插件 localStorage 互不可见且重进保留；✅ 清数据后 localStorage 为空；✅ 翻译插件 webview 正常挂载；✅ dev 热更新失效时回退 `plugin://`；✅ smoke 35/35
+
+- [x] v0.4.6 **网络能力 + 可见性事件**（已交付：`appapi.net.request`（`net` 权限 + manifest `hosts` 白名单 + 重定向逐跳校验 + 4MB 截断）、`appapi.onShow/onHide` 生命周期、剪贴板插件改为按可见性轮询、`validate.ts` 补 `int`/`oneOf`/`stringRecord`）
+  - 验收：✅ 临时探针插件经主进程转发 GET/POST 成功；✅ 白名单外域与 `file://` 被拒；✅ 跨域 302 被拦、同域 302 自动跟随；✅ 未声明 `net` 即拒绝；✅ `show=1 → hide=1 → show=2` 计数正确；✅ smoke 47/47
+
+- [x] v0.4.7 **内联结果面板**（已交付：manifest `features: ["inline"]` + `appapi.onInlineQuery` / `appapi.inline.set`（原名 `result.set`，落定时改成语义更准的 `inline`）、后台视图调度（120ms 超时 / 不排队 / 就绪补查）、面板首段渲染与回车动作（copy/open）、计算器接入）
+  - 验收：✅ 输入 `2+3` 面板首行出「5」；✅ 回车复制并 toast，面板不关；✅ 非算式不产生条目；✅ 未声明 `features` 即拒绝；✅ 视图被销毁后单次输入也能自动补结果；✅ smoke 55/55
+
+- [x] v0.4.8 **常驻成本收敛**（已交付：视图 LRU（上限 5，保护激活/分离/内联）+ `onDestroy` 收尾事件（400ms 宽限、宽限内重开撤销淘汰）、存储按 key 分片 + 原子写 + 250ms 写盘合并 + 旧 `store.json` 自动迁移、`PanelShell` 拆为 `useSearch`/`useKeyboardNav`/`useWindowResize`、vitest 单测 44 项 + GitHub Actions CI）
+  - 验收：✅ 上限=1 时打开第二个插件，首个插件收到 `destroy` 并在宽限内落盘（重开读到时间戳）；✅ 旧 `store.json` 迁移后分片含原值；✅ typecheck 零错误；✅ `pnpm test` 44/44；✅ build 通过；✅ smoke 55/55
+
+- [x] v0.4.9 **技术债收尾**（已交付：插件目录监听（`plugin/watcher.ts`，`plugin.json`/`dist` 变更 300ms 合并重扫）、重扫后刷新已打开视图的 manifest 与身份锚定、存储总量配额 8MB（环境变量可改，超限抛错说明原因）、LRU/监听/配额三条链路进冒烟（临时探针，无需环境变量与人工步骤））
+  - 验收：✅ 新建/修改/删除插件目录均免重启生效；✅ 依次打开 7 个插件后最久未用的被回收、最近两个仍常驻、重开读到 `destroyed-at`；✅ 1.9MB × 8 连续写入在第 5 次被拒并提示已用/上限；✅ `pnpm test` 58/58；✅ smoke 63/63
+- [x] v0.4.10 **细节优化**（已交付：插件页窗口居中到屏幕中心（尺寸/居中逻辑抽为 `panelLayout.ts` 纯函数）、外部程序型启动命令支持「浏览…」选文件并补齐 `.bat`/`.cmd`/`.lnk` 的拉起方式、原生对话框期间屏蔽失焦自动收起）
+  - 验收：✅ 打开插件后窗口中心与工作区中心偏移 0px（smoke 断言）；✅ 选 `.bat`/`.lnk` 不再"点了没反应"；✅ 文件对话框打开时面板保持可见，选完焦点回到面板；✅ `pnpm test` 67/67；✅ smoke 64/64
 
 ## v0.5.x — 发布能力
 
@@ -45,13 +71,16 @@
 
 - 插件级快捷键（manifest `hotkey` 直接唤起某插件）
 - 多视图尺寸：插件可申请不同面板尺寸（`appapi.window.setSize`，需权限）
-- 插件视图缓存 LRU 上限
 - 手册：整目录导入（当前为多选文件）、在线手册源（远程拉取 + 校验 + 缓存）
+- 搜索：跨插件全文检索（正文入索引，需分词 + 增量更新）；条目规模上来后把线性扫描换前缀索引
 - 跨平台（macOS：快捷键/托盘/通知 API 差异盘点）
 - 兼容 uTools 插件协议的适配层（视用户量再评估）
 
 ## 技术债清单（随手修）
 
-- [ ] 网关 payload `any` 收紧为逐通道类型
-- [ ] `scanPlugins` 支持监听目录变化（chokidar 或 fs.watch）免重启
+- [x] 网关 payload `any` 收紧为逐通道类型（v0.4.3 完成：契约 + `defineApi` 泛型，`any` 仅剩注册表内部一处）
+- [x] `scanPlugins` 支持监听目录变化（v0.4.9 完成：`plugin/watcher.ts` + `watchPlan.ts`，打包版只监听用户安装目录）
+- [x] LRU 淘汰链路纳入 `smoke`（v0.4.9 完成：7 个临时探针顶满上限，断言 target 消失 + `destroyed-at` 落盘）
+- [x] 存储总量配额（v0.4.9 完成：单插件 8MB，`QUICKLAUNCHER_PLUGIN_STORE_LIMIT_MB` 可改，超限抛错）
 - [ ] smoke 测试覆盖 external 型拉起（mock 命令避免真开记事本）
+- [ ] 存储配额只按字节数计，未区分"关键配置"与"可重建缓存"；后续可给 `storage.set(key, value, { cache: true })` 让缓存类数据可被自动清理

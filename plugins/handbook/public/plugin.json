@@ -20,5 +20,5 @@
     "命令",
     "shell"
   ],
-  "permissions": ["storage", "docs", "clipboard"]
+  "permissions": ["storage", "docs", "clipboard", "search"]
 }

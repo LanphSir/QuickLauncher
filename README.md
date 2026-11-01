@@ -10,11 +10,13 @@
 - **窗口管理**：面板可拖动/8 向缩放（位置尺寸记忆）、可置顶钉住（点击外部不收起）、插件可**分离为独立窗口**（状态保留、任务栏快速切换）
 - **插件页外框**：进插件自动伸展到适合阅读的尺寸并可继续拉伸，顶栏一键回主界面 / 甩到独立窗口 / 关闭，退出还原主页尺寸
 - **搜索 + 已固定网格 + 全部应用**，键盘 ↑↓ 选择、Enter 打开
+- **内联结果**：插件声明 `features: ["inline"]` 后可"输入即得"——敲 `2+3` 面板首行直接出 `5`，回车复制，不用打开插件
+- **搜索贡献**：插件可把内部条目（如手册章节）注册给面板，搜「linux」直接出《Linux 命令手册》，回车直达；每本手册还能自定义匹配词
 - **关键词通配/正则匹配**：`*`/`?` 通配与 `re:` 正则，让任意英文输入命中翻译类应用
 - **内置应用自设计**：web 技术开发的插件（每插件独立渲染进程，互不干扰）
 - **外部程序集成**：一个 manifest 即可把任意 exe / 文件夹 / 网址接入面板；启动命令可在面板中改
 - **右键应用**：详情（权限/目录/命令）、编辑启动命令、清除插件数据
-- **插件权限模型**：storage / clipboard / notify / shell 按需声明，网关逐调用校验
+- **插件权限模型**：storage / clipboard / notify / shell / docs / search / net 按需声明，网关逐调用校验；`net` 还有 manifest `hosts` 域白名单
 - 插件数据按插件 id 强制隔离；单个插件崩溃不影响主面板与其他插件
 - 插件可接收面板搜索词（`appapi.onQuery`），实现"输入即动作"
 - **本地手册库**：内置 TypeScript / Linux 命令中文手册，可按需启用/停用、全文搜索；支持导入自己的 Markdown 文档
@@ -32,7 +34,7 @@
 ## 安装第三方插件
 
 - 面板 → 全部应用 → "从目录安装 / 从 ZIP 安装"
-- 或手动把含 `plugin.json` 的目录放入 `%APPDATA%/quick-launcher/plugins/installed/`，重启生效
+- 或手动把含 `plugin.json` 的目录放入 `%APPDATA%/quick-launcher/plugins/installed/`，放进去即生效（目录监听，无需重启）
 - 设置 → 插件管理：启用/停用/卸载/打开目录
 
 ## 快速开始
@@ -48,8 +50,10 @@ pnpm dev        # 构建内置插件并启动开发模式
 
 | 命令 | 作用 |
 |---|---|
-| `pnpm dev` | 开发模式（主面板热更新；插件改动需重跑 `pnpm build:plugins`） |
+| `pnpm dev` | 开发模式（主面板热更新；插件默认走构建产物） |
+| `pnpm dev:plugin <name>` | 单个插件走 vite dev server（HMR），改插件代码即时生效 |
 | `pnpm typecheck` | main/preload/renderer 三端类型检查 |
+| `pnpm test` | 单元测试（校验器、内联归一化、存储分片、视图 LRU） |
 | `pnpm smoke` | CDP 功能冒烟测试（需先另起 `npx electron . --remote-debugging-port=9222`） |
 | `pnpm dist` | 打包 Windows 安装包 → `release/<version>/` |
 | `pnpm icons` | 重新生成应用/托盘图标 |

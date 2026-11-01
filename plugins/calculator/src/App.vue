@@ -24,8 +24,45 @@ const KEY_MAP: Record<string, string> = {
   C: 'C'
 }
 
-onMounted(() => window.addEventListener('keydown', onKeydown))
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+  setupInline()
+})
 onUnmounted(() => window.removeEventListener('keydown', onKeydown))
+
+/**
+ * 内联结果：manifest 声明 features:["inline"] 后，面板每敲一次键就把查询推过来。
+ * 这里只认「像算式」的输入（含运算符、且只由数字/运算符/括号组成），算得出就回一条，
+ * 回车复制；算不出就回空数组，面板不会显示任何东西。
+ */
+function setupInline(): void {
+  window.appapi.onInlineQuery(({ seq, query }) => {
+    const raw = query.trim().replace(/[÷×−]/g, (m) => DISPLAY_TO_OP[m] ?? m)
+    const looksLikeExpression = /[-+*/%()]/.test(raw) && /^[\d.+\-*/%()\s]+$/.test(raw)
+    if (!looksLikeExpression) {
+      void window.appapi.inline.set({ seq, items: [] })
+      return
+    }
+    try {
+      const text = format(evaluate(raw))
+      void window.appapi.inline.set({
+        seq,
+        items: [
+          {
+            id: `${raw}=${text}`,
+            title: text,
+            subtitle: `${query.trim()} =`,
+            badge: '=',
+            action: { type: 'copy', text }
+          }
+        ]
+      })
+    } catch {
+      // 除零、括号不配对等：这次没有结果，面板照常显示其他内容
+      void window.appapi.inline.set({ seq, items: [] })
+    }
+  })
+}
 
 function exit(): void {
   void window.appapi.exit()

@@ -152,6 +152,40 @@ lines.push('')
 
 writeFileSync(outFile, lines.join('\n'), 'utf-8')
 
+/**
+ * 同时产出主面板的「冷启动搜索索引」：public/search-index.json 会随 vite build
+ * 复制到 dist 根目录，主进程扫描插件时直接读取。
+ *
+ * 为什么需要它：插件没被打开过时，运行时条目还不存在，主面板搜 "linux" 就找不到
+ * 这本手册。静态索引补上这一段；插件一旦运行，会用自己的动态条目（含停用状态与
+ * 用户改过的匹配词）整体覆盖。
+ */
+const searchEntries = []
+for (const m of manuals) {
+  searchEntries.push({
+    id: `manual:${m.id}`,
+    title: m.title,
+    subtitle: `${m.chapters.length} 章`,
+    keywords: [...m.keywords, m.title, ...m.chapters.map((c) => c.title).slice(0, 40)],
+    group: '程序员手册',
+    weight: 0,
+    intent: { manualId: m.id }
+  })
+  for (const c of m.chapters) {
+    searchEntries.push({
+      id: `chapter:${m.id}/${c.id}`,
+      title: c.title,
+      subtitle: m.title,
+      keywords: [c.title],
+      group: '程序员手册',
+      weight: 10,
+      intent: { manualId: m.id, chapterId: c.id }
+    })
+  }
+}
+writeFileSync(join(root, 'public', 'search-index.json'), `${JSON.stringify(searchEntries, null, 2)}\n`, 'utf-8')
+console.log(`[manuals] 搜索索引 ${searchEntries.length} 条 → public/search-index.json`)
+
 const totalCh = manuals.reduce((n, m) => n + m.chapters.length, 0)
 console.log(`[manuals] 打包 ${manuals.length} 本手册 / ${totalCh} 个章节 → src/data/manuals.generated.ts`)
 for (const m of manuals) console.log(`  - ${m.title}（${m.id}，${m.chapters.length} 章）`)

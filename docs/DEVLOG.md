@@ -11,6 +11,465 @@
 
 ---
 
+## v0.4.10 — 细节优化：插件页居中 / 外部程序可浏览选文件（2026-11-01）
+
+**目标**：两条用户反馈——"打开插件页时窗口应该端在屏幕正中"、"外部应用设启动命令要能浏览本地文件挑"。
+
+### 功能变更
+
+1. **插件页居中**（`windows/panel.ts` + 新增 `windows/panelLayout.ts`）
+   - 以前只把窗口左右居中、纵向保持原顶边；主页贴在 16% 处，插件页一变大下半截就偏下。
+   - 现在算完目标尺寸后直接摆到工作区正中（`getDisplayMatching` 决定用哪块屏），多屏也落在当前那块屏的中心。
+   - 尺寸与居中是纯算术，抽到 `panelLayout.ts`（`pluginSize` / `centerInWorkArea`），单测覆盖"只放大不缩小 / 94% 封顶 / 副屏偏移 / 半像素取整"。
+
+2. **外部程序型的启动命令可浏览选择**
+   - 详情页「编辑启动命令」的命令输入框旁加「浏览…」：原生文件对话框挑 `.exe/.com/.bat/.cmd/.lnk`，选完回填路径，不用手打带空格/中文的路径。
+   - 顺手补齐拉起方式（`services/external.ts`）：`.bat/.cmd` 经 `cmd` 解释（直接 spawn 是 EINVAL，用户只看到"点了没反应"）；`.lnk` 交给系统 ShellExecute（spawn 是 ENOENT），UI 里明确提示"快捷方式的启动参数不生效"。
+
+3. **原生对话框不再连面板一起收起**
+   - 面板是"失焦即隐藏"，而文件对话框会把焦点拿走。新增 `withPanelDialog()`：对话框期间屏蔽失焦隐藏，关闭后把焦点还给面板。
+   - 安装插件（目录/ZIP）用的也是这个包一层，之前的隐患一并修掉。
+
+### 关键文件
+
+`src/main/windows/panel.ts`、`src/main/windows/panelLayout.ts`（新）、`src/main/services/external.ts`、`src/main/index.ts`（`panel:pick-command`）、`src/preload/panel.ts`、`src/renderer/src/components/ExternalEdit.vue`、`src/renderer/src/env.d.ts`、`tests/panelLayout.test.ts`（新）、`scripts/smoke.mjs`
+
+### 验证
+
+- `pnpm typecheck` 零错误；`pnpm test` **67/67**（新增布局 9 项）
+- `pnpm build` 通过
+- `pnpm smoke` **64/64**，新增断言「插件页窗口居中于屏幕 — 偏移 0px / 0px」
+- 手动（CDP）：调 `window.panel.pickCommand()` 弹出系统文件对话框，期间 `document.visibilityState === 'visible'`（面板没被收起）
+
+### 备注
+
+对话框无法在自动化里点"确定"，所以"选中回填"这一步只做了代码路径检查；ESCAPE 取消路径与面板可见性已实测。
+
+---
+
+## v0.4.9 — 还清三笔技术债：目录监听 / 存储配额 / LRU 进冒烟（2026-11-01）
+
+**目标**：v0.4.8 收掉常驻成本后，技术债清单上还剩三条"知道有问题但没管"的：插件目录变了要重启、
+存储只限单值不限总量、LRU 淘汰链路靠人工临时探针验证。本版把这三条补上，**不新增用户可见功能**。
+
+### 功能变更
+
+1. **插件目录监听**：`fs.watch` 盯插件根目录 + 每个插件目录及其 `dist`，只看 `plugin.json` 与
+   `dist` 的增删（构建时刷 JS/CSS 不该触发重扫），事件 300ms 合并后重扫并通知面板/托盘。
+   新放一个插件目录进去、改个名字、加个权限，都不再需要重启。打包版只监听用户安装目录
+   （内置插件在安装目录里不会变）。
+2. **重扫后刷新缓存条目**：`refreshPluginRecords()` 把已打开视图的 `rec` 换成新记录、重新登记
+   身份锚定（权限/名称可能变了），入口 URL 变了就换源；插件目录被删掉的视图直接销毁。
+   以前重扫只更新注册表，缓存里还挂着旧 manifest，权限改了要等页面重载才生效。
+3. **存储总量配额**：单插件封顶 **8MB**（`QUICKLAUNCHER_PLUGIN_STORE_LIMIT_MB` 可改，`0` = 关闭）。
+   内存里维护每个键的分片字节数，写入前 O(1) 判断（覆盖已有键会先扣掉旧值）。
+   超限时 `storage.set` **抛错并说明已用/上限**——不能悄悄返回 false 让插件以为存上了。
+4. **三条链路进冒烟**：一次建 7 个临时探针插件把常驻上限顶满，断言目录监听（新增/改 manifest/删除）、
+   最久未用的视图被回收、`onDestroy` 在 400ms 宽限内落盘、重开能读回时间戳、存储配额拒绝并说明原因。
+
+### 关键文件
+
+- 新增 `src/main/plugin/watcher.ts`（watch + 防抖 + 重挂）、`src/main/plugin/watchPlan.ts`（待监听目录，纯函数）
+- `src/main/index.ts`：装配目录监听，与 dev server 监听共用"重扫 → 刷新条目 → 刷托盘 → 通知面板"
+- `src/main/windows/pluginHost.ts`：`refreshPluginRecords()`
+- `src/main/services/{storage,storageShards}.ts`：配额判定 `overQuota`、`formatBytes`、按 key 记账的字节数、
+  序列化文本复用（set 算过的文本直接用于落盘）
+- `src/main/plugin/api/storage.ts`：超限改为抛错（契约仍是 `res: boolean`）
+- `scripts/smoke.mjs`：第 12/13 段（监听 + LRU + 配额）；`tests/watchPlan.test.ts`、`tests/storageShards.test.ts` 扩测
+
+### 验证
+
+| 检查 | 结果 |
+|---|---|
+| `pnpm typecheck` | 零错误（含 tests） |
+| `pnpm test` | **58/58**（6 个文件，新增监听计划 7 项、配额判定 7 项） |
+| `pnpm build` | 通过 |
+| `pnpm smoke` | **63/63**（55 → 63：新增 8 项） |
+| 目录监听 | 建 7 个探针目录后插件表自动出现；改 `plugin.json` 名称自动生效；删目录自动下架 |
+| LRU 端到端 | 依次打开 7 个 → 最久未用的 target 消失；最近两个仍常驻；重开读到 `destroyed-at` |
+| 配额端到端 | 1.9MB × 8 次写入：前 4 次成功，第 5 次返回「存储配额已满（已用 7.x MB，上限 8.0 MB）」 |
+
+### 踩坑
+
+- **冒烟里的固定 sleep 不可靠**：第一版断言"打开完 7 个 + 900ms 后 lru1 已关闭"，实测偶发失败——
+  淘汰可能分几轮发生在最后几次打开里，900ms 恰好落在 400ms 宽限窗口内。改成**轮询 target 消失**
+  （上限 6s）后稳定；顺带发现宽限期内重开是"撤销淘汰"，同样的现象会被误判成"没被淘汰"。
+- **监听要按文件名过滤**：最初监听整个插件目录，`pnpm build:plugins` 期间每条 JS/CSS 写入都触发重扫，
+  日志刷屏且白耗 CPU。只认 `plugin.json` 与 `dist` 的增删即可。
+- **重扫不等于刷新**：注册表重建后，`viewCache` 里仍是旧 `rec`，权限/名称改动对已打开页面无效；
+  必须重新登记 `callerRegistry`，入口 URL 变了还要换源。
+- **配额要抛错不能返回 false**：`boolean` 兑现不了"为什么没存上"，插件只能靠猜；网关抛错后
+  插件侧 catch 到的是带数字的可读消息。
+
+---
+
+## v0.4.8 — 常驻成本收敛：视图 LRU / 存储分片 / 面板拆分 / 单测（2026-10-31）
+
+**目标**：v0.4.7 的内联结果把"插件常驻"变成常态，但视图缓存只增不减；存储每改一个键都要重写
+整个 `store.json`；`PanelShell.vue` 800 行把搜索、键盘、缩放、弹层混在一起；验证全靠 smoke，
+纯逻辑没有任何回归护栏。本版集中还这四笔债，**不新增用户可见功能**。
+
+### 功能变更
+
+1. **视图 LRU（上限 5）**：`viewCache` 按 LRU 保留最近 5 个插件视图，超出时淘汰最久未用的。
+   保护名单：当前激活的、分离到独立窗口的、`features: ["inline"]` 的（它们靠常驻换"输入即得"）。
+   淘汰不是"卸载"——下次打开重新加载页面。上限可用 `QUICKLAUNCHER_PLUGIN_VIEW_LIMIT` 覆盖（调试/验证用）。
+2. **`appapi.onDestroy`**：淘汰前先推 `plugin:lifecycle { state: 'destroy' }`，给插件 **400ms**
+   把内存里的草稿 `storage.set` 落盘，之后再关页面。宽限期内重新打开该插件会**撤销淘汰**，
+   页面状态完整保留。契约 `PluginLifecycleState` 扩为 `show | hide | destroy`。
+3. **存储分片 + 防抖**：`store.json` → `data/<pluginId>/shards/<hash>-<slug>.json`，一个 key 一个文件；
+   先写 `.tmp` 再 `rename`（原子）；同插件的写盘合并到 250ms 一次，`before-quit` 统一 flush。
+   旧 `store.json` 首次读取时自动迁移，原文件改名为 `store.json.migrated`（不删用户数据）。
+4. **面板拆分**：`PanelShell.vue` 的搜索/回车分发 → `composables/useSearch.ts`，
+   键盘导航 → `useKeyboardNav.ts`，8 向缩放 → `useWindowResize.ts`；组件只剩视图状态与事件接线。
+5. **单测 + CI**：引入 vitest（`pnpm test`），44 项覆盖校验器、内联归一化、分片命名/解析、LRU 策略、
+   契约表一致性；`.github/workflows/ci.yml` 跑 typecheck → test → build:plugins → build。
+
+### 关键文件
+
+- 新增 `src/main/windows/viewLru.ts`（纯函数淘汰策略）、`src/main/services/storageShards.ts`（分片命名/解析）
+- `src/main/windows/pluginHost.ts`：LRU 淘汰、`beginEvict`/`destroyTimer`、`activeId` 切换后回收
+- `src/main/services/storage.ts`：分片读写、原子写、写盘合并、迁移、`flushAll`
+- `src/shared/pluginApi.ts` + `src/preload/plugin.ts`：`PluginLifecycleState` / `onDestroy`
+- 新增 `src/renderer/src/composables/{useSearch,useKeyboardNav,useWindowResize}.ts`
+- 新增 `vitest.config.ts`、`tests/*.test.ts`、`.github/workflows/ci.yml`
+
+### 验证
+
+| 检查 | 结果 |
+|---|---|
+| `pnpm typecheck` | 零错误（含 tests） |
+| `pnpm test` | **44/44**（5 个文件） |
+| `pnpm build` | 通过 |
+| `pnpm smoke` | **55/55**（无回归） |
+| LRU 端到端 | 上限=1 启动 → 开探针（show=1）→ 开剪贴板 → 探针收到 `destroy` 并在宽限内写入 `destroyed-at` → 重开探针为新页面（show=1、destroy=0）且读到该时间戳 |
+| 存储迁移 | `com.launcher.handbook/store.json` → `shards/*-last-position.json`（原值 `{manualId,chapterId}` 完整）、旧文件改名 `.migrated` |
+
+### 踩坑
+
+- **淘汰时机**：第一版在 `ensureEntry` 里回收，结果把"刚建好的视图"自己淘汰了——那一刻旧插件
+  还是 `activeId`（受保护），唯一可淘汰的候选正是新视图。必须等 `activeId` 切换后再回收；
+  预热路径（`warmPluginContents`）不经过激活，才在创建后立即回收。
+- **销毁计时器别拖住退出**：`setTimeout` 一律 `unref()`，否则托盘常驻时会拦住 `before-quit`。
+- **删除键要先撤销排队写**：否则 `remove` 之后防抖定时器又把旧值写回去（分片文件复活）。
+
+---
+
+## v0.4.7 — 内联结果：输入 `2+3` 直接出 `5`（2026-10-31）
+
+**目标**：v0.4.2 的搜索贡献解决的是"插件里的内容能被搜到"，但插件始终是"打开一个 App"。
+uTools 最核心的体感是**输入即得**——`2+3` 在搜索框下方直接给 `5`，回车复制。本版补上这一层，
+让插件从"另一个窗口"变成"搜索结果的一部分"。
+
+### 功能变更
+
+1. **manifest `features: ["inline"]`**：与 `permissions` 分开的第二条轴——权限管"能调什么能力"，
+   功能管"以什么形态参与启动器"。未声明就调 `appapi.inline.set` 会被网关拒绝（错误信息提示补声明）。
+2. **`appapi.onInlineQuery` + `appapi.inline.set`**：面板每次输入（防抖 140ms）把 `{ seq, query }`
+   推给内联插件，插件在 **120ms** 内回 ≤2 条结果。
+3. **后台视图调度**（`plugin/inline.ts`）：内联插件视图由 `pluginHost.warmPluginContents` 拉起但
+   **不挂到面板**，同一份页面之后被用户正式打开时状态连续。三条约束：超时 120ms、不排队
+   （同插件只认最新 seq）、页面未就绪就不问。
+4. **冷启动补查**：页面加载完（`did-finish-load`）主进程发 `panel:inline-ready`，面板用当前搜索词
+   再查一次——否则首次输入会"没结果、再打一个字才有"。
+5. **面板渲染与动作**：内联结果排在搜索条目与应用之前，共用 ↑↓ 光标；右侧标出回车会做什么。
+   `copy` 写剪贴板且面板不关（连续取用），`open` 打开插件并透传 intent；不写 action 按 open。
+6. **计算器接上**（`plugins/calculator`）：只认"像算式"的输入，算得出回一条、算不出回空。
+
+### 关键文件
+
+- `src/shared/pluginApi.ts`（`PLUGIN_FEATURES` / `InlineItem` / `inline.set` 通道 / `onInlineQuery`）
+- `src/shared/inline.ts`（条目归一化：条数、文本长度、action 校验）
+- `src/main/plugin/inline.ts`（查询调度、seq 匹配、超时、就绪补查）
+- `src/main/plugin/api/inline.ts` + `gateway.ts`（`feature` 门禁）
+- `src/main/windows/pluginHost.ts`（`warmPluginContents`）
+- `src/renderer/src/components/PanelShell.vue`、`stores/launcher.ts`（两路并发查询 + 首段渲染）
+- `plugins/calculator/*`
+
+### 验证
+
+| 检查 | 结果 |
+|---|---|
+| `pnpm typecheck` / `pnpm build` / `pnpm build:plugins` | 零错误 / 通过 / 通过 |
+| `pnpm smoke` | **55/55**（新增 8 条内联断言） |
+| `window.panel.inline('2+3')` | `title:'5'`, `action:{type:'copy',text:'5'}`, `pluginId:com.launcher.calculator` |
+| 非算式 `hello` | `[]`（不产生噪音条目） |
+| 面板真实链路 | 输入 `7*8` → 800ms 内出「56」行（14px/600、蓝色 `=` 徽标、右侧「复制」）→ 回车 → toast「已复制：56」 |
+| 功能门禁 | 未声明 `features` 的探针插件调 `inline.set` → 拒绝（"缺少功能声明"） |
+| 冷启动 | 视图被销毁后只敲一次 `8*8`，无需再按键即自动补出「64」 |
+| 后台预热 | 面板没打开计算器时，其 `plugin://` target 已存在（视图在后台跑） |
+
+### 踩坑
+
+- **未挂到窗口的 `WebContentsView` 仍会正常加载并执行 JS**：一开始以为必须挂在 `BaseWindow` 上，
+  实测后台视图可用，内联才能做到"不打开插件也能算"。代价是内联插件一旦被唤醒就常驻一个渲染进程
+  （视图缓存无 LRU 的老问题，记在架构文档"已知边界"）。
+- **首屏加载期间输入会丢结果**：视图第一次创建要 300~800ms，而用户往往打一个词就停。补了
+  `panel:inline-ready` 回环后，第一次输入也能等到结果，不必再敲一个字。
+
+---
+
+## v0.4.6 — 插件能用网了 + 可见性事件：`net.request` / `onShow` / `onHide`（2026-10-31）
+
+**目标**：v0.4.5 把插件页搬到 `plugin://` 后，跨域 `fetch` 仍然被 CORS 拦——插件等于不能调任何
+HTTP API，这是"自由度"最大的一道墙。同时视图是缓存不是销毁，`onUnmounted` 永不触发，
+剪贴板插件退出后仍在后台每 800ms 读一次剪贴板。本版补上这两块：**网络能力**与**生命周期事件**。
+
+### 功能变更
+
+1. **`appapi.net.request`**（`net` 权限）：主进程转发 HTTP，插件页不再受 CORS 限制。
+   授权两层——先要 `net` 权限，再要 manifest `hosts` 里有目标域；**重定向逐跳校验**，
+   302 到白名单外会被拒绝，避免被一跳带走。
+   - `hosts` 支持精确域 / `*.example.com`（含裸域）/ 可选端口；缺省为空 = 一个都不许
+   - 方法限 7 个动词（大小写不敏感），`host`/`cookie`/`content-length` 等受控头由主进程接管被丢弃
+   - `credentials: 'omit'`：插件拿不到主面板与其他分区的登录态
+   - 响应体 ≤4MB（超出截断并置 `truncated`）、请求体 ≤2MB、超时 1~60s（默认 15s）
+   - 语义对齐 `fetch`：4xx/5xx 正常返回（`ok:false`），网络错误/超时/白名单外才 reject
+2. **`appapi.onShow` / `onHide`**（无需权限）：主进程在可见性**真正变化**时推 `plugin:lifecycle`。
+   触发点覆盖：面板内切插件、返回主界面、面板收起（Esc/失焦/快捷键）、分离窗口隐藏/恢复；
+   分离为独立窗口本身不推（一直可见）。preload 初始态为 `show`，且 `onShow` 注册时若已可见
+   会立即回调一次——启动轮询可以直接写进 `onShow`。
+3. **剪贴板插件改为按可见性轮询**：`onShow` 启动 + 补一次，`onHide` 停止，`onUnmounted` 兜底。
+4. **校验器补齐**：`validate.ts` 新增 `int` / `oneOf`（可 `upper` 归一）/ `stringRecord`。
+5. **manifest 增 `hosts` 字段**：非法项只丢弃并告警（不整插件拒载），因为缺项等于少给权限。
+
+### 关键文件
+
+- 新增 `src/main/plugin/api/net.ts`（白名单匹配 + `net.request` 逐跳重定向 + 响应截断）
+- `src/shared/pluginApi.ts`：`net` 权限、`NetRequest`/`NetResponse`、`plugin:net.request`、`PluginLifecycleState`、`onShow`/`onHide`
+- `src/preload/plugin.ts`：`net.request` 桥 + `plugin:lifecycle` 订阅（状态去重）
+- `src/main/windows/pluginHost.ts`：`CacheEntry.visible` + `emitLifecycle`（面板显隐、切插件、分离窗口 hide/show）
+- `src/main/plugin/manager.ts`：`hosts` 校验与归一化
+- `plugins/clipboard/src/App.vue`：轮询跟随可见性
+- `scripts/smoke.mjs`：临时探针插件 + 本地 HTTP 服务，覆盖 net 与 lifecycle 共 11 条断言
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `pnpm typecheck` / `pnpm build` / `pnpm build:plugins` | 零错误 / 通过 / 通过 |
+| `pnpm smoke` | **47/47** |
+| net 正常路径 | `GET http://127.0.0.1:<port>/ok` → 200 + JSON；`method: 'post'`（小写）正确归一为 POST |
+| net 白名单 | `127.0.0.2` → 拒绝并列出已声明的域；`file://` → "仅允许 http(s)" |
+| net 重定向 | 同域 302 自动跟随（`url` 为最终地址）；跨域 302 → 拒绝（`example.com 不在 manifest.hosts 白名单内`） |
+| net 权限 | 未声明 `net` 的插件（calculator）调用 → 网关拒绝 |
+| 生命周期 | 探针页计数：加载即 `show=1` → 退出后 `hide=1` → 重进 `show=2` |
+| 无残留 | 探针插件在 `finally` 里删除并重扫，`plugins/` 干净 |
+
+### 坑
+
+- **`net.fetch` 不支持"先看 302 再决定"**：`redirect: 'manual'` 在 Electron 里直接以
+  `Redirect was cancelled` 失败，拿不到响应头。第一版就是这么写的，同域重定向都过不去。
+  改用 `net.request` 的 `redirect` 事件 + `followRedirect()` 才能逐跳裁定。
+- **在 `redirect` 事件里 `abort()` 不会触发 `error`**：Promise 会一直悬到超时才结束。
+  策略性拒绝必须自己 `reject`，再 `abort()`（第一版跨域重定向因此报"请求超时"）。
+- 冒烟怎么测一个"需要新权限 + 指定域"的能力：脚本在 `plugins/` 下临时生成探针插件，
+  借 `panel:setPluginDisabled` 的副作用触发 `scanPlugins()` 让它无需重启就出现，
+  断言完在 `finally` 删目录再重扫。不需要为测试在生产代码里加调试接口。
+
+---
+
+## v0.4.5 — 插件专属协议 + 独立分区：origin 与存储都按插件切开（2026-10-31）
+
+**目标**：插件页此前用 `file://` 加载，且全部插件共用 `defaultSession`。两个后果是真实的：
+① 翻译插件内嵌第三方站点拿到的 cookie，别的插件（及其 `<webview>`）能读到；② `file://` 的
+origin 语义不透明，`localStorage` 边界不可靠，运行时 `fetch('xx.json')` 还会被 CORS 拦掉——
+为了读自己目录里的文本，手册插件不得不在构建期用 `?raw` 把正文打进 bundle。
+本版把插件页换成自定义标准协议 `plugin://<插件 id>/…`，并给每个插件一个独立 session。
+
+### 功能变更
+
+1. **自定义协议**：`plugin://<id>/<相对路径>`。scheme 以 `standard + secure + supportFetchAPI +
+   corsEnabled + stream` 注册（必须在 app ready 前）；请求由 `protocol.handle` 处理，按 host 找插件、
+   解析到 `rec.dir` 内后交给 `net.fetch(file://…)` 读盘，MIME / Range / 流式都交给 Chromium。
+2. **来源隔离**：每个插件页拿到真实 origin（`plugin://com.launcher.handbook`），`localStorage` /
+   IndexedDB 天然按插件分开，同时 `postMessage`、`window.opener` 这类 origin 判定也有了意义。
+3. **分区隔离**：插件视图带 `partition: persist:plugin:<id>`，cookie / 缓存 / 站点数据各归各的，
+   内嵌 `<webview>` 继承同一分区；分区级权限策略默认拒绝摄像头/麦克风/定位/通知/串口等
+   （只放行 `clipboard-sanitized-write` / `fullscreen` / `pointerLock`），要弹通知请走 `appapi.notify`。
+4. **跨插件拦截**：自定义协议的响应由主进程直接产生、Chromium 不做 CORS 校验，因此
+   `fetch('plugin://别的插件/…')` 原本能成功。改为在分区上挂 `webRequest.onBeforeRequest`，
+   非本插件 host 的 `plugin://` 请求直接取消；handler 内再按 `referrer` 复核一次。
+5. **路径守卫**：解析后必须仍在插件目录内（越界 403）、拒绝 `.` 开头的路径段（403）、
+   目录请求补 `index.html`；响应统一 `cache-control: no-store`（插件升级后不会跑旧缓存）+ `nosniff`。
+6. **「清除插件数据」补全**：原来只删 `store.json`，现在同时 `clearStorageData() + clearCache()`，
+   设置页点一下真的把这个插件清干净。
+7. **dev 热更新回退目标**：`did-fail-load` 的回退从 `file://…/dist/index.html` 改为 `plugin://<id>/index.html`。
+
+### 关键文件
+
+- 新增 `src/main/plugin/protocol.ts`（scheme 特权 + 请求处理 + 路径守卫）、`src/main/plugin/sessions.ts`
+  （分区、权限策略、跨插件拦截、清数据）、`src/main/plugin/urls.ts`（地址构造与 host 解析，避免 manager↔protocol 循环依赖）
+- `src/main/plugin/manager.ts`：`pluginBuiltUrl` 改为返回 `plugin://` 地址
+- `src/main/windows/pluginHost.ts`：视图加 `partition`
+- `src/main/index.ts`：ready 前注册 scheme 特权、ready 后装协议；清数据接口改为异步并清分区
+- `scripts/smoke.mjs`：插件页判定改为 `plugin://com.launcher.<name>/`，新增 5 条隔离断言
+
+### 验证
+
+| 项 | 结果 |
+|---|---|
+| `pnpm typecheck` / `pnpm build` | 零错误 / 通过 |
+| `pnpm smoke` | **35/35**（新增：origin 为 `plugin://<id>`、localStorage 可用、同源 fetch `plugin.json` 成功、跨插件 fetch 被拦、`..%2f` 越界 403） |
+| 分区真实落地 | `%APPDATA%/quick-launcher/Partitions/` 下按插件生成 `plugin%3Acom.launcher.{calculator,clipboard,handbook}` |
+| 存储隔离 | clipboard 写 `localStorage.iso='clipboard'` → calculator 读到 `null`、自己写 `calc` → 重进 clipboard 仍读到 `clipboard`（互不覆盖） |
+| 清数据 | 调 `clearPluginData('com.launcher.clipboard')` 后重开插件，`localStorage.iso` 为 `null` |
+| webview 不被破坏 | 翻译插件带查询词打开 → `webview` 正常挂载，guest 为 `https://fanyi.baidu.com/...`，未崩溃 |
+| dev 热更新未回退 | `pnpm dev:plugin handbook` → 视图切到 `http://localhost:5173/?__plugin=…`；登记项失效 → `did-fail-load` 回退到 `plugin://com.launcher.handbook/index.html`（日志有 warn） |
+
+### 坑
+
+- `protocol.handle` 只注册在 `defaultSession` 上；插件各自有分区，**必须**对 `session.fromPartition(...)`
+  再注册一次，否则插件页直接 `ERR_UNKNOWN_URL_SCHEME`。
+- 自定义协议响应不经 CORS：`corsEnabled: true` 只影响 http(s) 资源，跨插件读取必须用 session 层
+  `webRequest` 兜（第一版就是靠 CORS 想当然，冒烟立刻判为 ALLOWED）。
+- 迁移提示：0.4.5 之前写进 `file://` 的 `localStorage` 在新 origin 下读不到。内置插件没用浏览器存储
+  （全走 `appapi.storage`），第三方插件若用过需自行迁移。
+
+---
+
+## v0.4.4 — 插件开发热更新：改一行不用重构建重启（2026-10-31）
+
+**目标**：插件开发最慢的一环是反馈循环——改一行 `.vue` 要 `pnpm build:plugins`、重启应用、
+再重进插件。本版给插件加一条只在开发期生效的旁路：入口切到 vite dev server，页面拿到 HMR，
+主进程负责在启停 dev server 时自动换源，不重启应用。
+
+### 功能变更
+
+| 模块 | 变更 |
+|---|---|
+| dev 入口登记 | 新增 `.dev-plugins.json`（仓库根、gitignore）：`{ "<pluginId>": "http://localhost:<port>/" }`；`src/main/plugin/devServers.ts` 负责读取、只认本机地址、打包版直接返回 `{}` |
+| 插件记录 | `PluginRecord.devUrl`；`scanPlugins` 命中登记项时写入；`pluginEntryUrl` 优先返回 dev 地址（附 `?__plugin=<id>` 标记） |
+| 视图换源 | `pluginHost.reloadPluginViews()`：dev 入口变化后对已缓存视图 `loadURL` 换源，页面与应用都不重启 |
+| 自动跟随 | `watchDevServers` 轮询 `.dev-plugins.json` **文件原文**（400ms），变化即重扫 + 换源 + 刷新托盘；脚本退出时清理登记项，视图自动切回构建产物 |
+| 失败兜底 | `did-fail-load` 时若当前是 dev 入口，回退到 `dist/index.html` 并打 warn——dev server 被强杀留下的死地址不会把用户卡在错误页 |
+| 脚本 | 新增 `scripts/dev-plugin.mjs` + `pnpm dev:plugin <name>`：起 vite dev server、解析真实端口（默认端口占用会自增）、登记/清理、透传 HMR 日志 |
+| 冒烟硬化 | 插件页识别从"路径含 `plugins/<name>/dist`"改为 `isPluginPage()`（兼容 dev 标记）；手册页断言改为轮询等待渲染（避免 dev 失效回退期间读到空 DOM）；开跑前先 `exitPlugin()` 复位到主页，可从任意状态重跑 |
+
+### 关键决策
+
+1. **dev 入口不进 manifest**：manifest 是随插件发布的产物，塞本地端口会污染协议、也会被打进安装包；用一个 gitignore 的本机文件，打包版完全不可见。
+2. **比较文件原文而不是解析后的映射**：同端口重启 dev server 时 URL 不变（只更新 `_updatedAt` 时间戳），比映射会漏掉这次变化，页面就切不回 dev——这是实测踩出来的。
+3. **URL 带 `?__plugin=<id>`**：dev 页面地址不再包含插件名，调试时认不出 target，冒烟也会全挂；标记让目标自描述。
+4. **失败回退而不是报错**：脚本被强杀时登记项会残留，插件页必须还能用——回退构建产物，代价只是少了 HMR。
+5. **不改 `pnpm dev` 的默认行为**：常规开发仍走构建产物（快、与发布一致），要热更新显式开 `dev:plugin`，避免每个插件都常驻一个 dev server。
+
+### 关键文件
+
+- `src/main/plugin/devServers.ts`（新增）、`scripts/dev-plugin.mjs`（新增）
+- `src/main/plugin/manager.ts`（`devUrl` + `pluginBuiltUrl`）、`src/main/windows/pluginHost.ts`（入口标记、换源、失败回退）
+- `src/main/index.ts`（监听挂载）、`scripts/smoke.mjs`（dev 入口识别 + 复位 + 轮询等待）、`package.json`（`dev:plugin`）、`.gitignore`
+
+### 验证
+
+- `pnpm typecheck` 零错误；`pnpm build` 通过；`pnpm build:plugins` 通过
+- `pnpm smoke` **30/30**（两种状态：dev server 在线时手册页为 `http://localhost:5173/?__plugin=...`；dev 地址失效时自动回退为 `file://.../dist/index.html`）
+- HMR 实测：改 `plugins/handbook/src/App.vue` 的 `.side-title` 颜色 → 2s 内页面计算样式变为 `rgb(255, 0, 0)`（无刷新、手册阅读状态保留）；还原后同样 2s 内回到 `rgb(161, 166, 173)`
+- 换源链路实测：新增登记项 → 已打开的手册页自动切到 dev server；移除登记项（等同脚本 Ctrl+C）→ 3s 内自动切回构建产物
+- 失效地址实测：`ERR_CONNECTION_REFUSED` → 日志 `dev server 不可用(ERR_CONNECTION_REFUSED)，回退到构建产物`，页面可用
+
+### 遗留事项
+
+- 硬杀（SIGKILL）脚本仍会留下登记项，靠加载失败兜底恢复；正常 Ctrl+C 会清理
+- 插件页还没有 DevTools 快捷键（现在只能靠 CDP），下一步可加 dev 模式的 F12
+- 下一步按评审顺序：自定义协议 + 独立 session → net / events / inline 结果
+
+---
+
+## v0.4.3 — 插件能力契约 + 注册表网关：加一个 API 只改一处（2026-10-31）
+
+**目标**：插件系统此前每加一个 API 要同步改四处（网关通道、`PERMS` 表、preload 暴露、
+每个插件的 `env.d.ts`），且已经开始漂移——渲染层 `env.d.ts` 的 `PluginApi` 少了 `docs`/`search`，
+handbook 与 translator 各自重写了一份 appapi 接口。本版把"通道、权限、入参/返回值"
+收敛成一份契约，并让网关从"手写分发"变成"遍历注册表"，把新能力的接入成本压到一处。
+
+### 功能变更
+
+| 模块 | 变更 |
+|---|---|
+| 能力契约 | 新增 `src/shared/pluginApi.ts`：`PluginApiTypes`（通道 → req/res）、`PLUGIN_PERMS`（通道 → 权限）、`PluginApiSurface`（`window.appapi` 形状）、`PluginPermission` 常量表。纯类型/常量，不依赖 electron/node，四端共用 |
+| 能力定义 | 新增 `src/main/plugin/api/`：`define.ts`（`defineApi` 泛型 + 注册表类型擦除）、`validate.ts`（5 个校验组合子），能力按域拆成 `meta` / `storage` / `system` / `docs` / `search` 五个模块 |
+| 网关 | `gateway.ts` 从 91 行硬编码降到 40 行：遍历 `apiDefs` 统一做身份锚定 → 权限（查 `PLUGIN_PERMS`）→ 入参校验 → handler；文件里不再出现任何通道名；重复通道在启动期直接抛错 |
+| 入参硬化 | `storage.set` value ≤2MB 且 key 禁用 `__proto__` 等保留名；`notify` title ≤120 / body ≤2000；`clipboard.writeText` ≤2MB；`shell.openExternal` 仅 http(s) ≤2048；`docs` 句柄 ≤255 且不含路径分隔符。超限一律 reject，不再静默截断 |
+| 类型同源 | `preload/plugin.ts` 标注 `api: PluginApiSurface` + `invoke<C>` 泛型；渲染层 `env.d.ts` 删除手写 `PluginApi`（改由 `shared/appapi.global.d.ts` 提供）；5 个内置插件统一改为一行 reference，删除各自的 `TranslatorApi` / `HandbookApi` 重写 |
+| 安全 | `__proto__`/`constructor`/`prototype` 作为 storage key 直接拒绝（避免原型污染面） |
+
+### 关键决策
+
+1. **契约放 shared 而不是 main**：preload、渲染层、插件都要用同一份类型，放 main 会把 electron 依赖带进渲染层与插件；shared 只放纯类型与常量。
+2. **权限表只留一份**：`Record<PluginChannel, PluginPermission | null>` 强制穷尽——新增通道忘了标权限，编译就过不去，比"记得改 PERMS"可靠。
+3. **入参校验放定义里而不是网关里**：`parse` 与 `handle` 写在一起，读一个文件就知道这个通道收什么、怎么归一化；网关保持与业务无关。
+4. **保留 `any` 一处并说明理由**：注册表要按通道批量注册，运行时无法保留每个通道的类型；`any` 只出现在 `define.ts` 的 `RegisteredApiDef`，对外类型由 `defineApi` 泛型锚定。
+5. **上限宁可 reject 也不静默截断**：静默截断会让插件以为写成功了，排查成本更高；错误信息带上限值，插件作者能直接改。
+
+### 关键文件
+
+- `src/shared/pluginApi.ts`（新增）、`src/shared/appapi.global.d.ts`（新增）
+- `src/main/plugin/api/{index,define,validate,meta,storage,system,docs,search}.ts`（新增）
+- `src/main/plugin/gateway.ts`（重写为注册表驱动）、`src/preload/plugin.ts`（契约化）
+- `src/renderer/src/env.d.ts`、`plugins/*/src/env.d.ts`（删除重复的 appapi 声明）
+
+### 验证
+
+- `pnpm typecheck` 零错误（main + renderer 两套 tsconfig，含 shared 新契约）
+- `pnpm build:plugins` 通过；`pnpm build` 三端产物通过（main 52.57 kB / preload plugin.js 1.82 kB）
+- `pnpm smoke` **30/30 通过**：插件桥注入、storage 读写、插件身份、`docs` 通道、权限模型（storage/clipboard 未声明即拒绝）、搜索条目 intent 直达手册等均不受重构影响
+
+### 遗留事项
+
+- 网关只做了同步/异步统一包装，还没有单测；校验组合子的边界（超长、非对象、保留 key）建议补 vitest
+- 插件 SDK 仍是仓库内相对引用（`../../../src/shared/appapi.global.d.ts`），第三方插件开发者拿不到，待抽 `@launcher/plugin-sdk` 包
+- 下一步按评审顺序：插件 dev HMR → 自定义协议 + 独立 session → net / events / inline 结果
+
+---
+
+## v0.4.2 — 搜索贡献协议 + 手册匹配词：面板直搜手册内容（2026-10-31）
+
+**目标**：主面板搜索原本只认插件 manifest 的关键词，搜「linux」只能出「程序员手册」这个
+**整包应用**，进去还得自己找那本手册。这一版让插件把**内部条目**注册给启动器，做到
+「搜 linux → 直接出现《Linux 命令手册》→ 回车落到该手册章节」，并允许用户给每本手册
+补自己的匹配词。
+
+### 功能变更
+
+| 模块 | 变更 |
+|---|---|
+| 搜索贡献协议 | 新增 `search` 权限与 `appapi.search.set/clear`；条目字段 `id/title/subtitle/keywords/group/weight/intent`，全量覆盖语义 |
+| 主进程索引 | 新增 `services/searchIndex.ts`：运行时条目 + 落盘 `userData/search/<pluginId>.json` + 插件目录 `search-index.json` 三级来源；校验裁剪（≤300 条 / 关键词 ≤40 / 文本 ≤120 字 / intent ≤800 字节） |
+| 面板检索 | 新增 `panel:search`；`panel:open-plugin` 支持第三个参数 `intent`，经 `plugin:query` 送到插件的 `onQuery` |
+| 面板 UI | 搜索结果拆成「文档与内容」条目区 + 「应用」网格，两区共用 ↑↓ 光标；条目显示插件图标、标题、副标题（章节数 · 来源） |
+| 匹配规则 | 提取到 `src/shared/search.ts`，渲染层的 `utils/match.ts` 改为复用，主进程与面板同一份实现 |
+| 手册插件 | 推送「手册级（weight 0）+ 章节级（weight 10）」条目；管理页每本手册新增「匹配词」输入（逗号/空格分隔，存 storage，留空恢复默认）；`onQuery` 支持 `intent` 直达手册/章节 |
+| 冷启动 | `build-manuals.mjs` 额外产出 `public/search-index.json`（随 vite 复制进 dist），插件没打开过也能被搜到 |
+
+### 关键决策
+
+1. **条目检索放主进程，不放渲染层**：条目落盘在 userData，插件没启动也要能读；渲染层只有 `panel:search` 一个入口。
+2. **三级来源、运行时覆盖静态**：静态索引解决冷启动，但没有"停用某本手册""用户改过关键词"这些状态；插件一启动就用自己的动态条目整体覆盖。
+3. **副标题不参与匹配**：第一版把 subtitle（手册名）也纳入匹配，结果搜「linux」把 35 个章节全刷了出来——每个章节的副标题都是「Linux 命令手册」。
+4. **单插件限 4 条**：手册类插件一次能命中几十章，不设限会把其他插件的结果挤没。
+5. **用户关键词用"补充"而非"替换"**：手册自带关键词（`ts`/`linux`）不该被用户误删清空，用户填的追加在默认值之后。
+
+### 关键文件
+
+- `src/shared/search.ts`（新增）、`src/main/services/searchIndex.ts`（新增）
+- `src/main/plugin/gateway.ts`（`plugin:search.set/clear` + `search` 权限）、`src/main/index.ts`（`panel:search`、intent 透传、卸载清索引）
+- `src/preload/plugin.ts` / `src/preload/panel.ts` / `src/renderer/src/env.d.ts` / `stores/launcher.ts` / `PanelShell.vue`
+- `plugins/handbook/src/App.vue`（条目推送、匹配词编辑、intent 直达）、`scripts/build-manuals.mjs`（静态索引）、`public/plugin.json`（`search` 权限）
+
+### 验证
+
+- `pnpm typecheck` 零错误；`pnpm build` 通过；`pnpm build:plugins` 通过
+- `pnpm smoke` **30/30 通过**（新增：搜索贡献命中手册条目、手册级条目排在章节之前、条目 intent 直达手册）
+- 人工 CDP 实测：搜「linux」只出 1 条手册条目（对照组：搜索前为 35 条章节噪音）→ 回车落到《Linux 命令手册》35 章列表；管理页填「运维」后搜「运维」命中该手册；停用该手册后条目消失；清空运行时索引后搜「grep」仍能靠静态索引命中
+- 截图核对搜索结果区：「文档与内容」「应用」两段、条目图标/标题/副标题/箭头对齐正常
+
+### 遗留事项
+
+- 静态索引不感知"用户停用了哪本手册"，需插件启动后推送动态条目才准确（首次安装的下一轮打开即修正）
+- 章节正文不参与匹配（只匹配标题与关键词），全文检索仍在插件内做；跨插件全文检索见 ROADMAP v0.6
+- 条目检索是线性扫描，单插件几百条内没问题；插件数量上来后需要换成前缀索引
+
 ## v0.4.1 — 插件页外框：自适应窗口 / 可缩放 / 一键回主页（2026-10-31）
 
 **目标**：修掉实测暴露的三个体验缺陷——插件页继承主页的小尺寸且无法拉伸、插件内容贴边导致边缘控件不好点、
