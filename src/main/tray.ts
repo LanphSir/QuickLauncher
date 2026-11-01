@@ -29,8 +29,10 @@ function buildMenu(): Menu {
   const pinnedPlugins = cfg.pinnedIds
     .map((id) => getPlugin(id))
     .filter((rec): rec is NonNullable<typeof rec> => Boolean(rec) && rec!.manifest.type === 'web')
+  // 解绑唤起键后 hotkey 是空串：别在标签末尾留一个空 tab（看着像渲染坏了）
+  const toggleLabel = cfg.hotkey ? `⚡  显示 / 隐藏面板\t${cfg.hotkey}` : '⚡  显示 / 隐藏面板'
   return Menu.buildFromTemplate([
-    { label: `⚡  显示 / 隐藏面板\t${cfg.hotkey}`, click: () => handlers?.onToggle() },
+    { label: toggleLabel, click: () => handlers?.onToggle() },
     { type: 'separator' },
     {
       label: '📌  常用插件',
@@ -73,6 +75,7 @@ export function createTray(handlers_: TrayHandlers): void {
 /** 配置/插件列表变化后重建托盘菜单（快捷键提示、常用插件子菜单） */
 export function refreshTray(): void {
   if (!tray) return
-  tray.setToolTip(`QuickLauncher（${getConfig().hotkey}）`)
+  const hotkey = getConfig().hotkey
+  tray.setToolTip(hotkey ? `QuickLauncher（${hotkey}）` : 'QuickLauncher')
   tray.setContextMenu(buildMenu())
 }

@@ -11,9 +11,10 @@ Electron 38 + TypeScript(strict) + Vue 3 + Pinia + electron-vite + pnpm workspac
 pnpm dev              # 开发模式（会先构建内置插件再启动 electron-vite dev）
 pnpm dev:plugin <name> # 单个插件改走 vite dev server（HMR），改插件代码不用重构建/重启
 pnpm typecheck        # 三端类型检查（tsconfig.json + tsconfig.web.json）
-pnpm test             # 单元测试（纯逻辑：校验器/内联归一化/存储分片与配额/LRU 策略/监听计划）
+pnpm test             # 单元测试（纯逻辑：校验器/内联归一化/存储分片与配额/LRU 策略/监听计划/失焦判定/面板布局/快捷键计划与注册表/自定义应用模型）
 pnpm build:plugins    # 仅构建内置插件（plugins/*/dist）
-pnpm smoke            # CDP 功能冒烟 63 项（需先另起: npx electron . --remote-debugging-port=9222）
+pnpm smoke            # CDP 功能冒烟 86 项（需先另起: npx electron . --remote-debugging-port=9222）
+                      # 注意本机 shell 里若带 ELECTRON_RUN_AS_NODE=1，electron 会当 node 跑，启动前 unset
 pnpm dist             # 打包 Windows 安装包 → release/<version>/
 node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 ```
@@ -29,7 +30,8 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 3. **调用方身份锚定**：网关通过 `callerRegistry`（webContents.id → 插件）识别调用方，不信任 payload 里自带的插件 id。
 4. **数据强制命名空间**：插件存储只能落在 `userData/data/<pluginId>/`（`services/storage.ts`）。不允许给插件暴露任何路径能力。
 5. **插件扫描只认固定目录**（`plugin/manager.ts` 的 `getPluginRoots()`）：builtin（dev 项目 `plugins/`、打包 `resources/plugins/builtin/`）+ installed（`userData/plugins/installed/`）。manifest 校验失败即跳过，id 冲突 builtin 优先。
-6. **`<webview>` 必须有权限门禁**：插件宿主虽开 `webviewTag`，但 `will-attach-webview` 只放行声明了 `webview` 权限的插件，且强制 guest 沙箱（删 preload、禁 nodeIntegration）。不要绕过这道门禁。
+6. **自定义外部应用与插件同一张注册表**：`userData/shortcuts.json` 的条目在扫描时翻译成 `PluginRecord`（`source='shortcut'`，`type` 固定 `external`），不得为它单开启动/搜索/固定路径；配置只能由 `shortcuts.json` 一份承载。
+7. **`<webview>` 必须有权限门禁**：插件宿主虽开 `webviewTag`，但 `will-attach-webview` 只放行声明了 `webview` 权限的插件，且强制 guest 沙箱（删 preload、禁 nodeIntegration）。不要绕过这道门禁。
 
 ## 3. 代码规范
 
@@ -56,6 +58,7 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 - 要让插件**输入即得**（`2+3 → 5`、汇率换算）→ manifest 声明 `features: ["inline"]`（功能声明，不是权限），`onInlineQuery` 里收到 `{ seq, query }`，用 `appapi.inline.set({ seq, items })` 回 ≤2 条、**120ms 内**返回；动作 `copy`（面板不关）或 `open`（缺省）。参考 `plugins/calculator/`
 - 内联插件视图会被后台拉起但**不挂到面板**（`pluginHost.warmPluginContents`）：不要在这里做重活，慢数据自己缓存；页面未加载完时面板会在 `did-finish-load` 后自动补查一次
 - 改插件后：日常用 `pnpm dev:plugin <name>`（vite dev server + HMR，启动器自动切入口、改代码即时生效，manifest 改动仍需 `pnpm build:plugins` 并重开插件）；没起 dev server 时一律 `pnpm build:plugins`
+- 想给插件配一个**建议启动键** → manifest 写 `hotkey`（accelerator，如 `Alt+Shift+V`）：只作设置页提示，**不会自动注册**；实际生效值在 `config.pluginHotkeys`
 - external 型插件 = 目录里一个 `plugin.json` + 图标，零代码
 - 加一个 API 的落点：`src/shared/pluginApi.ts`（契约：通道类型 + 权限）→ `src/main/plugin/api/<域>.ts`（`defineApi` + 入参校验）→ `src/preload/plugin.ts`（桥方法）。插件的 `window.appapi` 类型统一从 `src/shared/appapi.global.d.ts` 引用，**不要在各插件里手写一份 appapi 接口**
 
@@ -75,8 +78,10 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 | dev 与打包版 userData 同为 `%APPDATA%/quick-launcher` | 联调时配置会互相影响，注意清理或区分 |
 | `WebContents` 用 `.id` 属性，没有 `getId()` | 类型定义如此 |
 | 开机自启 | 仅 `app.isPackaged` 时调用 `setLoginItemSettings`，避免开发期写用户登录项 |
-| 面板 blur 隐藏 | DevTools 打开时不隐藏（`panel.ts` 已处理），调试面板 UI 不要关这个分支 |
-| 面板里开原生对话框（选文件/选目录）会先被失焦隐藏 | 一律走 `withPanelDialog()` 包一层（挡 blur + 事后还焦点），别直接 `dialog.showOpenDialog` |
+| 面板 blur 隐藏 | 别在 `panel.on('blur')` 里直接 `hidePanel()`：先过 `blurDecision()`（设置档位 / 置顶 / DevTools / 可见性令牌），延迟到期还要 `shouldHideAfterDelay()` 复检焦点。调试面板 UI 时 DevTools 打开着本就不会收 |
+| 面板里开原生对话框（选文件/选目录）会先被失焦隐藏 | 一律走 `withPanelDialog()` 包一层（登记可见性 + 事后还焦点），别直接 `dialog.showOpenDialog` |
+| 渲染层新增弹窗别自己画 backdrop | 必须走 `openOverlay()` / `OverlayHost`：否则不会被登记可见性（鼠标移出去一瞬面板连弹窗一起消失），也拿不到统一的 Esc / 点遮罩关闭 / 焦点困住与还原 |
+| 靠 `watch(浮层栈长度)` 触发聚焦会漏 | 菜单→详情是同一 tick 内 pop+push，长度不变、watch 不跑；聚焦在 `openOverlay` 里 `nextTick` 调度。焦点还原目标也要向上追溯（`resolvePreviousFocus`），"详情→编辑"先开新层再关旧层 |
 | `spawn` 起 `.bat` / `.cmd` 是 EINVAL、起 `.lnk` 是 ENOENT | 批处理必须经 `cmd` 解释，快捷方式交给 `shell.openPath`（`services/external.ts`）；spawn 的 `error` 事件是异步的，别指望同步 catch 到"启动失败" |
 | Vue 模板里的 `<webview>` 被当作组件解析报错 | 插件 vite 配置需 `vue({ compilerOptions: { isCustomElement: (tag) => tag === 'webview' } })`，见 plugins/translator |
 | zip 安装 | 只能用 `manager.ts` 的手工解包（防 zip-slip），不要换 `extractAll` |
@@ -87,6 +92,18 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 | 重扫后已打开视图仍用旧 manifest | 只更新注册表不够，必须 `pluginHost.refreshPluginRecords()` 重新登记 `callerRegistry`（权限/名称变了）并按需换源，否则改了权限仍被拒 |
 | 存储配额超限别返回 `false` | 插件会把 `false` 当"已存上"，静默丢数据；`pluginStorage.set` 返回 `{ok,message}`，API 层抛错让插件侧 catch 到原因 |
 | 渲染层根容器 `height:100%` 失效 | naive-ui Provider 包裹 div 无高度会逐层塌缩；PanelShell 的 `.shell` 用 `100vh` 锚定窗口视口，勿改回 100% |
+| 全局快捷键别各自维护状态 | 唤起键与插件键共用 `hotkey.ts` 的 owner 表，一律经 `syncHotkeys()` 差量同步；直接在别处调 `globalShortcut.register` 会和这张表打架（表现为"有时能按、有时不能"） |
+| 改快捷键失败不能留下旧配置 | `panel:set-plugin-hotkey` 是先写配置再注册的，注册失败必须回滚并再同步一次；否则界面显示设上了、实际没生效 |
+| 插件键冲突的提示要指认对方 | 全局键改成插件已用的键时，`register` 只会返回"可能被其他程序占用"——先过 `pluginHotkeyHolder()`，把话说到具体插件名上 |
+| 自定义应用不要另开一套打开逻辑 | `shortcuts.json` 里的条目在 `scanPlugins()` 时注入注册表（`source='shortcut'`、type 固定 external），启动/搜索/固定/快捷键全部复用插件链路；新增能力时改公共路径，别在 shortcut 分支里复制一遍 |
+| `app.getFileIcon` 是异步的 | 扫描是同步的，所以图标只能"先读缓存再异步补"（`shortcutIcons.ts` + `shortcut-icons.json`）。别在 `scanPlugins()` 里 await，会拖住启动 |
+| 删自定义应用要清引用 | `pinnedIds` / `disabledPluginIds` / `pluginHotkeys` / `pluginOverrides` 都按 id 索引，`deleteShortcut()` 必须一起清；否则同 id 再新建会"继承"上次的固定位 |
+| 自定义应用的启动命令只有一处可写 | 它存在 `shortcuts.json`，所以 `panel:save-plugin-override` 对 `source='shortcut'` 直接拒绝；两处都写必然打架 |
+| 遮罩必须显式压在弹窗下面 | `.overlay-backdrop` 是 absolute、`.modal` 是静态定位，同级时遮罩会盖住整个弹窗（点哪都触发"点外面关闭"）。内容必须包在 `.overlay-content`（`position: relative; z-index: 1`）；别用 `z-index: -1` 压遮罩（点击会穿透到 layer，`click.self` 失效），也别给内容加 `transform`（右键菜单是 fixed 定位会跑偏） |
+| 默认唤起键别用 `Alt+Space` | Windows 把它留给窗口系统菜单，`globalShortcut.register` 直接失败，"恢复默认"会报"可能被其他程序占用"。默认值走 `config.ts` 的 `DEFAULT_HOTKEY`，经 `panel:get-config` 的 `defaultHotkey` 下发，前端不要自己写一份 |
+| 空快捷键 = 主动解绑，不是失败 | `registerHotkey('')` 要返回成功、`flush()` 遇空 accelerator 不 restore；旧逻辑报失败又把旧键接回去，用户看到"清了还生效"。托盘标签在空键时不要拼后缀 |
+| 矮窗口里长表单别用整体滚动 | 面板默认 560 高，表单用「头部固定 + 中间 `overflow-y:auto` + 底部固定」三段式（见 `ShortcutEdit.vue`），否则"保存"会被滚出视口，或被 sticky 页脚压住字段 |
+| CDP 截图前先让窗口可见 | 面板失焦会自动收起，`Page.captureScreenshot` 在隐藏窗口上会一直挂着（表现为脚本被 kill）。先起第二个实例触发 `second-instance → showPanel`（或 `Page.bringToFront`），再截图 |
 
 ## 6. Git 与迭代流程
 

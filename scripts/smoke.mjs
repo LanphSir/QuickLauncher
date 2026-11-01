@@ -92,6 +92,18 @@ await send(ws, 'Runtime.enable')
 //    后续 setter 会报 Illegal invocation）。冒烟应可从任意状态重跑。
 await evaluate(ws, 'window.panel.exitPlugin()')
 await new Promise((r) => setTimeout(r, 400))
+// 设置页/全部应用页同理：它们是 store.view，不是插件视图，exitPlugin 不会退出来
+const backHome = await evaluate(
+  ws,
+  `(() => {
+    if (!document.querySelector('.settings, .manage')) return 'already-home'
+    const back = document.querySelector('.settings-header .back, .manage .back')
+    if (!back) return 'no-back'
+    back.click()
+    return 'clicked'
+  })()`
+)
+if (backHome === 'clicked') await new Promise((r) => setTimeout(r, 400))
 
 // 1. 面板桥存在
 const hasBridge = await evaluate(ws, 'typeof window.panel === "object" && typeof window.panel.openPlugin === "function"')
@@ -107,12 +119,12 @@ check(
 )
 check('插件图标 dataURL 化', plugins.every((p) => p.icon))
 
-// 3. 配置读取（快捷键可能被用户改过，只验证格式合法：至少一个修饰键 + 主键）
+// 3. 配置读取（快捷键可能被用户改过，只验证格式合法：空 = 主动解绑，或至少一个修饰键 + 主键）
 const cfg = await evaluate(ws, 'window.panel.getConfig().then(c => c.hotkey)')
 check(
   '全局配置读取(快捷键格式合法)',
-  typeof cfg === 'string' && /^[A-Za-z0-9]+(\+[A-Za-z0-9]+)+$/.test(cfg),
-  String(cfg)
+  typeof cfg === 'string' && (cfg === '' || /^[A-Za-z0-9]+(\+[A-Za-z0-9]+)+$/.test(cfg)),
+  cfg === '' ? '(未绑定)' : String(cfg)
 )
 
 // 3.5 通配/正则关键词：英文输入应命中快速翻译（re: 正则）
@@ -133,6 +145,247 @@ await evaluate(ws, `(() => {
   input.dispatchEvent(new Event('input', { bubbles: true }))
   return true
 })()`)
+
+// 3b. 浮层（弹窗/菜单）：统一宿主、只关栈顶、焦点不外逃
+// 先清掉上一轮或手动调试留下的浮层，否则下面数层数会从 1 起步直接判失败
+for (let i = 0; i < 5; i++) {
+  if ((await evaluate(ws, `document.querySelectorAll('[data-overlay-id]').length`)) === 0) break
+  await evaluate(ws, `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
+  await new Promise((r) => setTimeout(r, 200))
+}
+await evaluate(ws, `(() => {
+  const tile = document.querySelector('.tile')
+  const r = tile.getBoundingClientRect()
+  tile.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: r.x + 20, clientY: r.y + 20 }))
+  return true
+})()`)
+await new Promise((r) => setTimeout(r, 300))
+const menuLayers = await evaluate(ws, `Array.from(document.querySelectorAll('[data-overlay-id]')).map(e => e.dataset.overlay)`)
+check('右键菜单经统一浮层渲染', menuLayers.length === 1 && menuLayers[0] === 'context-menu', menuLayers.join(','))
+
+await evaluate(ws, `(() => {
+  const item = Array.from(document.querySelectorAll('.ctx-item')).find((e) => e.textContent.includes('应用详情'))
+  if (!item) return false
+  item.click()
+  return true
+})()`)
+await new Promise((r) => setTimeout(r, 400))
+const detailLayers = await evaluate(ws, `Array.from(document.querySelectorAll('[data-overlay-id]')).map(e => e.dataset.overlay)`)
+check(
+  '菜单→详情只留一层（不是叠两层）',
+  detailLayers.length === 1 && detailLayers[0] === 'plugin-detail',
+  detailLayers.join(',')
+)
+check(
+  '详情浮层打开后焦点进浮层',
+  (await evaluate(ws, `!!document.querySelector('[data-overlay-id]')?.contains(document.activeElement)`)) === true
+)
+
+// 遮罩必须压在内容下面：遮罩是 absolute，弹窗是静态定位，不显式分层就会把弹窗整个盖住
+// （表现是弹窗灰蒙蒙一层、点哪都触发"点外面关闭"，输入框根本点不进去）
+const layerHit = await evaluate(
+  ws,
+  `(() => {
+    const modal = document.querySelector('[data-overlay-id] .modal')
+    if (!modal) return { ok: false, top: 'no modal' }
+    const r = modal.getBoundingClientRect()
+    const el = document.elementFromPoint(r.x + r.width / 2, r.y + 12)
+    return { ok: !!el && modal.contains(el), top: el ? (el.className || el.tagName) : '' }
+  })()`
+)
+check('遮罩不遮挡弹窗内容', layerHit.ok === true, String(layerHit.top))
+
+// Tab 必须困在浮层里：第一版没做，Tab 会跑到遮罩下面的磁贴上
+for (let i = 0; i < 8; i++) {
+  await send(ws, 'Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'Tab',
+    code: 'Tab',
+    windowsVirtualKeyCode: 9,
+    nativeVirtualKeyCode: 9
+  })
+  await send(ws, 'Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'Tab',
+    code: 'Tab',
+    windowsVirtualKeyCode: 9,
+    nativeVirtualKeyCode: 9
+  })
+}
+check(
+  'Tab 焦点困在浮层内',
+  (await evaluate(ws, `!!document.querySelector('[data-overlay-id]')?.contains(document.activeElement)`)) === true
+)
+
+await evaluate(ws, `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
+await new Promise((r) => setTimeout(r, 350))
+check(
+  'Esc 关闭浮层（回到主页而不是隐藏面板）',
+  (await evaluate(ws, `document.querySelectorAll('[data-overlay-id]').length`)) === 0 &&
+    (await evaluate(ws, 'document.visibilityState')) === 'visible'
+)
+
+// 失焦策略走配置链路：能改、能读回、脏值被拒
+const blurBefore = await evaluate(ws, 'window.panel.getConfig().then((c) => c.blurBehavior)')
+const blurSet = await evaluate(ws, `window.panel.updateConfig({ blurBehavior: 'never' }).then((r) => r.config.blurBehavior)`)
+const blurBad = await evaluate(ws, `window.panel.updateConfig({ blurBehavior: 'later' }).then((r) => r.config.blurBehavior)`)
+await evaluate(ws, `window.panel.updateConfig({ blurBehavior: ${JSON.stringify(blurBefore)} })`)
+check(
+  '失焦策略可配置且拒绝脏值',
+  Boolean(blurBefore) && blurSet === 'never' && blurBad === 'never',
+  `${blurBefore} -> ${blurSet} / 脏值后 ${blurBad}`
+)
+
+// 设置页分组侧栏：卡片多了以后靠侧栏切换，不用一路滚着找
+await evaluate(ws, `document.querySelector('button[title="设置"]').click()`)
+await new Promise((r) => setTimeout(r, 500))
+const navCount = await evaluate(ws, `document.querySelectorAll('.settings-nav .nav-item').length`)
+const navActive = await evaluate(ws, `document.querySelector('.nav-item.active')?.textContent?.trim() ?? ''`)
+await evaluate(
+  ws,
+  `Array.from(document.querySelectorAll('.nav-item')).find((e) => e.textContent.includes('应用'))?.click()`
+)
+await new Promise((r) => setTimeout(r, 260))
+const appCard = await evaluate(ws, `!!document.querySelector('.settings-body .card-head')`)
+await evaluate(ws, `document.querySelector('.settings-header .back')?.click()`)
+await new Promise((r) => setTimeout(r, 360))
+check(
+  '设置页有分组侧栏且可切换',
+  navCount === 4 && navActive.includes('快捷键') && appCard === true,
+  `${navCount} 项 / 默认 ${navActive}`
+)
+
+// 快捷键解绑：允许"不用全局快捷键"，清掉后要能干净读回空串（不能报注册失败又把旧键接回去）
+let toggleBefore = await evaluate(ws, 'window.panel.getConfig().then((c) => c.hotkey)')
+if (!toggleBefore) {
+  await evaluate(ws, 'window.panel.getConfig().then((c) => window.panel.updateConfig({ hotkey: c.defaultHotkey }))')
+  toggleBefore = await evaluate(ws, 'window.panel.getConfig().then((c) => c.hotkey)')
+}
+const toggleCleared = await evaluate(
+  ws,
+  `window.panel.updateConfig({ hotkey: '' }).then((r) => ({ ok: r.ok, hotkey: r.config.hotkey, msg: r.message || '' }))`
+)
+const toggleRestored = await evaluate(
+  ws,
+  `window.panel.updateConfig({ hotkey: ${JSON.stringify(toggleBefore)} }).then((r) => ({ ok: r.ok, hotkey: r.config.hotkey }))`
+)
+check(
+  '唤起快捷键可解绑并能恢复',
+  toggleCleared.ok === true &&
+    toggleCleared.hotkey === '' &&
+    toggleRestored.ok === true &&
+    toggleRestored.hotkey === toggleBefore,
+  `${toggleBefore} -> '' -> ${toggleRestored.hotkey}`
+)
+
+// 3c. 插件快捷启动键：建议值只作提示、能设能清、冲突拒绝
+const suggest = await evaluate(
+  ws,
+  `window.panel.getPlugins().then(l => l.find(p => p.id === 'com.launcher.clipboard')?.hotkeySuggestion ?? null)`
+)
+check('插件可声明建议快捷键(仅提示)', suggest === 'Alt+Shift+V', String(suggest))
+
+const hkKey = 'Ctrl+Alt+Shift+F9'
+const hkSet = await evaluate(
+  ws,
+  `window.panel.setPluginHotkey('com.launcher.calculator', ${JSON.stringify(hkKey)}).then(r => r)`
+)
+const hkStored = await evaluate(
+  ws,
+  `window.panel.getPlugins().then(l => { const p = l.find(x => x.id === 'com.launcher.calculator'); return { hotkey: p?.hotkey, error: p?.hotkeyError ?? null } })`
+)
+check(
+  '插件快捷键设置并落配置',
+  hkSet?.ok === true && hkStored.hotkey === hkKey && !hkStored.error,
+  `${JSON.stringify(hkSet)} / ${JSON.stringify(hkStored)}`
+)
+
+const dup = await evaluate(
+  ws,
+  `window.panel.setPluginHotkey('com.launcher.clipboard', ${JSON.stringify(hkKey)}).then(r => r)`
+)
+check('两个插件抢同一个键被拒', dup?.ok === false && String(dup.message).includes('冲突'), String(dup?.message))
+
+const globalCfg = await evaluate(ws, 'window.panel.getConfig().then(c => c.hotkey)')
+const vsGlobal = await evaluate(
+  ws,
+  `window.panel.setPluginHotkey('com.launcher.clipboard', ${JSON.stringify(globalCfg)}).then(r => r)`
+)
+check(
+  '插件快捷键不能占用唤起键',
+  vsGlobal?.ok === false && String(vsGlobal.message).includes('全局'),
+  String(vsGlobal?.message)
+)
+
+const noMod = await evaluate(
+  ws,
+  `window.panel.setPluginHotkey('com.launcher.clipboard', 'K').then(r => r)`
+)
+check('单键被拒(需修饰键)', noMod?.ok === false, String(noMod?.message))
+
+const hkCleared = await evaluate(
+  ws,
+  `window.panel.setPluginHotkey('com.launcher.calculator', '').then(r => r.ok).then(ok => window.panel.getPlugins().then(l => ({ ok, hotkey: l.find(x => x.id === 'com.launcher.calculator')?.hotkey })))`
+)
+check('插件快捷键可清除', hkCleared.ok === true && hkCleared.hotkey === '', JSON.stringify(hkCleared))
+
+// 3d. 自定义外部应用：保存 → 进插件表（带系统图标）→ 校验 → 启动 → 导入候选 → 清理
+const scSaved = await evaluate(
+  ws,
+  `window.panel.saveShortcut({ name: '冒烟应用', command: 'C:/Windows/System32/cmd.exe', args: '/c exit', keywords: 'smoke 冒烟' }).then(r => ({ ok: r.ok, id: r.entry?.id, message: r.message }))`
+)
+check(
+  '自定义应用可保存并生成 id',
+  scSaved?.ok === true && /^com\.launcher\.shortcut\./.test(String(scSaved.id)),
+  JSON.stringify(scSaved)
+)
+// 图标是异步补的（getFileIcon），等它落到插件表里
+await new Promise((r) => setTimeout(r, 1200))
+const scList = await evaluate(
+  ws,
+  `window.panel.getPlugins().then(l => l.filter(p => p.source === 'shortcut').map(p => ({ id: p.id, name: p.name, type: p.type, icon: !!p.icon })))`
+)
+check(
+  '自定义应用进入插件表(含系统图标)',
+  scList.some((p) => p.id === scSaved?.id && p.type === 'external' && p.icon),
+  JSON.stringify(scList)
+)
+
+const scBad = await evaluate(ws, `window.panel.saveShortcut({ name: '  ', command: 'x.exe' }).then(r => r)`)
+check('名称为空被拒', scBad?.ok === false, String(scBad?.message))
+
+const scLaunch = await evaluate(ws, `window.panel.openPlugin(${JSON.stringify(scSaved?.id)}).then(r => r)`)
+check('自定义应用可启动(external 直接拉起)', scLaunch?.ok === true, JSON.stringify(scLaunch))
+
+const cands = await evaluate(ws, `window.panel.scanShortcutCandidates()`)
+check(
+  '开始菜单/桌面候选可扫描',
+  Array.isArray(cands) && cands.every((c) => c.path && c.name && c.group),
+  `${cands?.length ?? 0} 个候选`
+)
+
+const imported = await evaluate(
+  ws,
+  `window.panel.importShortcuts([{ path: 'C:/Windows/System32/cmd.exe', name: '冒烟导入项' }]).then(r => r)`
+)
+check('批量导入可用', imported?.ok === true && imported.created === 1, JSON.stringify(imported))
+
+// 清理：删掉本轮造的条目（删除会同时清 pin/快捷键等引用）
+const cleaned = await evaluate(
+  ws,
+  `(async () => {
+    const list = await window.panel.getShortcuts()
+    const mine = list.filter((x) => x.name.startsWith('冒烟'))
+    for (const item of mine) await window.panel.deleteShortcut(item.id)
+    const after = await window.panel.getPlugins()
+    return { removed: mine.length, left: after.filter((p) => p.source === 'shortcut' && p.name.startsWith('冒烟')).length }
+  })()`
+)
+check(
+  '自定义应用可删除并立即下架',
+  cleaned.removed === 2 && cleaned.left === 0,
+  JSON.stringify(cleaned)
+)
 
 // 4. 打开 web 插件 → 出现独立插件进程页面
 const homeBounds = await evaluate(ws, 'window.panel.getWindowBounds()')

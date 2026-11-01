@@ -21,7 +21,8 @@
 │ config.ts       全局配置（userData/config.json）      │
 │ hotkey.ts       全局快捷键注册/冲突回滚               │
 │ tray.ts         托盘菜单（显示/自启/退出）             │
-│ windows/panel      无边框透明主面板（失焦隐藏）         │
+│ windows/panel      无边框透明主面板（失焦策略见下）      │
+│ windows/panelVisibility  失焦是否收起的判定（纯函数）    │
 │ windows/pluginHost 每插件一个 WebContentsView 宿主      │
 │ plugin/manager     扫描插件目录、校验 manifest、注册表   │
 │ plugin/gateway     插件 API 网关（身份+权限+入参校验）  │
@@ -319,11 +320,188 @@ reloadPluginViews()           # 已缓存的视图换源重载，不重启应用
 
 打包版只监听用户安装目录：内置插件躺在安装目录里不会变，少两个句柄也少两条噪声事件。
 
+## 面板浮层与失焦收起（v0.4.11）
+
+面板是"失焦即隐藏"的悬浮窗，但**渲染层的弹窗不算失焦**。以前只有原生对话框挡了一下，
+所以"在应用详情里选启动命令，鼠标移出去一瞬，面板连弹窗一起消失"是每天都在踩的坑。
+
+### 三层判定（`windows/panelVisibility.ts`）
+
+| 顺序 | 条件 | 结论 |
+|---|---|---|
+| 1 | 设置里选了"不自动收起" | 不收起 |
+| 2 | 置顶钉住 / DevTools 打开 | 不收起 |
+| 3 | 有可见性令牌（`holds` 非空） | 不收起，等最后一个令牌释放再补判 |
+| 4 | "立即收起" | 立刻收起 |
+| 5 | "延迟收起"（默认） | 160ms 后复检：期间拿回焦点 / 新开浮层 / 被钉住 → 都不收 |
+
+判定抽成纯函数而不是写在 `panel.on('blur')` 里：这段有三层条件，写在回调里只能靠手动点窗口验，
+改一次要试五遍。`tests/panelVisibility.test.ts` 覆盖了每个分支。
+
+### 可见性令牌
+
+`panel.ts` 维护一个 `Set<string>`，登记期间失焦不收起：
+
+- 渲染层每个浮层打开时调 `panel:hold-visible`，关闭时 `panel:release-visible`（同一个 token，幂等）；
+- 原生对话框走 `withPanelDialog()`，内部就是登记/释放；
+- 最后一个令牌释放时补一次判定——用户可能是先点到面板外面、再回来关浮层，不补判会留下一个悬空窗口。
+
+用集合而不是计数器：重复登记同一个 token 不会把计数搞坏，漏释放也只影响自己那一条。
+
+### 渲染层统一浮层（`composables/useOverlay.ts` + `components/OverlayHost.vue`）
+
+以前三个浮层各写一套 backdrop：详情 z-index 70、编辑 80、右键菜单 60（且透明无遮罩），
+遮罩色 / Esc / 点击关闭 / 焦点管理全不一致。现在收口成栈：
+
+| 关注点 | 统一后的行为 |
+|---|---|
+| 遮罩与层级 | 60 起，每层 +2；遮罩与面板同 16px 圆角（方块遮罩会在圆角处露色块） |
+| 遮罩 vs 内容 | 遮罩 `z-index: 0`、内容包一层 `.overlay-content`（`z-index: 1`）——两者同级时 absolute 遮罩会盖住弹窗 |
+| Esc | 只关栈顶，capture 阶段 `stopPropagation`，不会同时触发"隐藏面板" |
+| 点遮罩 | `click.self` 关闭；`backdrop: 'transparent'` 用于右键菜单（不可见但接点击） |
+| 焦点 | 打开时移进浮层首个可聚焦元素，Tab/Shift+Tab 困在层内，关闭后还给原元素 |
+
+两个踩过的坑写在 `useOverlay.ts` 注释里，别改回去：
+
+1. **不能靠"监听栈长度变化"来触发聚焦**：点菜单里的"应用详情"是同一 tick 内 pop 菜单 + push 详情，
+   长度回到原值，`watch` 新旧值相等、回调根本不跑——表现是弹窗开了但焦点还在搜索框，Tab 跑到遮罩下面。
+   改为在 `openOverlay` 里 `nextTick` 调度。
+2. **焦点还原目标要向上追溯**：详情层的 previousFocus 是菜单项，而菜单马上被移除，
+   `focus()` 落到已不在 DOM 的按钮上 → 焦点掉到 body。所以取 activeElement 时若它属于某个浮层，
+   就继承那一层的还原目标。同理"详情→编辑"要**先开新层再关旧层**。
+3. **遮罩必须显式压在内容下面**：`.overlay-backdrop` 是 `position: absolute`，而各弹窗的 `.modal`
+   是静态定位——同一层里 positioned 元素一律画在静态内容之上，于是遮罩把弹窗整个盖住：
+   看着是"弹窗灰蒙蒙一层"，实际点哪里都命中遮罩、直接触发"点外面关闭"，输入框根本点不进去。
+   处理是把内容包进 `.overlay-content`（`position: relative; z-index: 1`）。
+   **不能给内容加 transform/filter**：右键菜单是 `position: fixed` 按视口坐标定位的，
+   祖先一旦有 transform 就会变成相对该祖先定位，菜单会跑偏。
+
+## 插件快捷启动键（v0.4.12）
+
+全局快捷键从「一个 `current` 变量」改成「一张 owner → 绑定的表」：`src/main/hotkey.ts` 里
+`TOGGLE_OWNER` 是唤起面板，其余 owner 就是插件 id。加第二个用途不必再复制一份状态。
+
+### 差量同步（`syncHotkeys`）
+
+- 期望表 vs 已注册表逐项比对：**键没变就一个系统调用都不发**。插件表重扫、启停插件、
+  改唤起键都会触发一次同步，不能每次都 unregister/register 一遍（会抖、也会短暂丢键）。
+- 每项独立成败：插件 A 的键被别的程序占了，不影响插件 B 和唤起键。
+- 改键失败时把该 owner 原来的键接回去（`restore`）——"改坏了连旧键都没了"是最糟的结果。
+- 注册给系统的是一个**稳定的转发函数** `() => registered.get(owner)?.action()`，不是 `action` 本身。
+  系统侧记住的是注册那一刻的闭包，只改表里的 action 对它无效；而插件每次重扫都会重建闭包，
+  靠"回调变了就重注册"更新会让键每扫一次短暂失效。转发函数两头都占。
+
+### 解绑（v0.4.14）
+
+空串 = **主动解绑**，不是"注册失败"：
+
+- `registerHotkey('')` 把该项从期望表删掉再 flush，返回成功；
+- `flush()` 遇到空 accelerator 时报 `ok: true` 且**不 restore**——旧版这里报失败并 restore，
+  结果"清除唤起键"会被判成失败、旧键又接回去，用户看到的是"清了但还生效"；
+- `syncHotkeys()` 跳过滤空项，所以配置被清空后整表同步也会解绑；
+- 配置里 `hotkey: ''` 是合法值（`loadConfig` 的 `{...DEFAULTS, ...raw}` 不会用默认值盖掉）；
+- 托盘菜单与 tooltip 在空键时不显示快捷键后缀（否则标签末尾挂一个空 tab）。
+
+默认唤起键是 `CommandOrControl+Shift+Space`（`config.ts` 的 `DEFAULT_HOTKEY`），
+**不用 `Alt+Space`**：Windows 把它留给窗口系统菜单，`globalShortcut.register` 直接失败——
+表现是点「恢复默认」就提示"可能被其他程序占用"，而那个键从头到尾都用不了。
+该常量经 `panel:get-config` 的 `defaultHotkey` 下发给设置页，前端不再自己写一份。
+
+### 绑定计划（`plugin/hotkeyPlan.ts`，纯函数）
+
+配置说「用户想让哪个插件用哪个键」，能不能真注册是另一回事。进系统之前先过一遍计划表：
+
+| 情况 | 处理 |
+|---|---|
+| 正常 | `active`，去注册 |
+| 插件已停用 | `skipped: disabled`（配置保留，重新启用即恢复） |
+| 与全局唤起键同键 | `skipped: reserved` |
+| 与另一个插件同键 | `skipped: duplicate`，按插件 id 排序先到先得（结果确定，不随扫描顺序变） |
+| 没有修饰键（如 `K`） | `skipped: invalid` |
+| 插件已卸载、配置残留 | 既不入 `active` 也不报错，直接忽略 |
+
+`panel:get-plugins` 把 `hotkey`（生效值）与 `hotkeyError`（没生效的原因）一起下发，
+设置页直接显示红字，不需要再猜。
+
+### 触发行为
+
+按下插件键 = `activatePlugin(id)`，与托盘菜单、面板点击同一条路径：
+web 型唤起面板并进插件页，external 型直接拉起程序。不为快捷键另写一套打开逻辑。
+
+### 两道冲突关卡
+
+1. **写配置前**：静态判定（同键 / 占用唤起键 / 非法格式），直接拒绝，消息里带占用者名字。
+2. **注册之后**：真被别的程序占 → 回滚配置再同步一次，界面留红字。
+   宁可"没设上"，也不要留一个看着有、按了没反应的键。
+
+manifest 里的 `hotkey` 只是**建议值**（设置页显示成可点的小标签），不自动注册——
+全局键是稀缺资源，替用户默认占一个很容易撞车。
+
+## 自定义外部应用（v0.4.13）
+
+用户不必写 `plugin.json` 也能把任意程序接进来：设置 → 外部应用 → 添加 / 从系统导入。
+数据落在 `userData/shortcuts.json`（独立文件，带 `schemaVersion`），扫描时**注入同一张插件注册表**，
+`source` 标成 `shortcut`，`type` 固定 `external`——因此启动、搜索、固定、快捷键、启用/停用
+全部复用现有链路，没有第二套逻辑。
+
+```
+表单/导入 → shortcuts.json → scanPlugins() 注入 registry → PluginRecord(source='shortcut')
+                                                        ├─ 启动：launchExternalPlugin（沿用 external）
+                                                        ├─ 搜索：pluginMatch（name/keywords）
+                                                        └─ 图标：见下
+```
+
+### id 生成
+
+`com.launcher.shortcut.<命令文件名>`（如 `...shortcut.code`）：可读、稳定、不会和插件 id 撞。
+中文名/中文路径 slug 后为空时落到 `...shortcut.app`，再撞就加 `-2`、`-3`。
+**创建时生成后不再变**——固定列表、快捷键、停用名单都按 id 索引，变了等于把它们全丢掉。
+
+### 图标四级回退（`services/shortcutIcons.ts`）
+
+| 顺序 | 来源 | 说明 |
+|---|---|---|
+| 1 | 用户选的图 | 保存时复制进 `userData/shortcuts/icons/<id>.<ext>`，不引用原路径 |
+| 2 | `app.getFileIcon` | 系统 Shell 解析，exe 与 `.lnk` 都能拿到真实图标 |
+| 3 | 站点 favicon | 网址类应用抓 `origin/favicon.ico`，限 2 秒 / 64KB |
+| 4 | 首字母/分类 + 渐变 | 渲染层兜底（`utils/appFallback.ts`），与插件一致，不会留空白 |
+
+`getFileIcon` 是异步的，所以**扫描只同步读缓存**（`shortcut-icons.json`），缺的图标异步补、
+并发上限 4，每完成一个就通知一次渲染层（200ms 合并），首屏不用等所有图标都好。
+
+### 从系统导入
+
+扫 `%APPDATA%` / `%PROGRAMDATA%` 的开始菜单 Programs 与桌面、公共桌面，认 `.lnk` 与 `.url`
+（`.url` 是 INI，地址在 `URL=` 行）。按来源分组建候选、按 `command` 去重（已导入的不再出现）、
+**默认一个都不勾**——候选动辄上百个，全选等于把开始菜单复制一遍。
+
+### 与插件的关系
+
+- 启动命令只在 `shortcuts.json` 里改：`panel:save-plugin-override` 对 `source='shortcut'` 直接拒绝，
+  否则 config 与 shortcuts.json 两处配置会打架。
+- 没有插件目录：`panel:reveal-plugin-dir` 与"卸载"都给出针对性提示，不会去 `openPath('')`。
+- 停用/固定/快捷键仍走通用配置（`disabledPluginIds` / `pinnedIds` / `pluginHotkeys`），
+  删除自定义应用时会把这几处引用一并清掉，不留悬空 id。
+
+## 设置页分组（v0.4.14）
+
+设置卡片涨到 6 张，一屏放不下、找一项得滚半天。改成「左侧分组 + 右侧滚动」：
+快捷键 / 面板 / 应用 / 关于。
+
+- 分组只是 `v-if` 切换，不拆子组件——各卡片共享同一份 `config` 与 `store`，
+  拆出去要传一堆 props 或再引 store，收益不抵成本。
+- 「应用」带数量徽标（`store.plugins.length`），侧栏宽度按"应用 + 徽标"不截断定成 118px。
+- 切分组要 `scrollTo(0, 0)`：上一个分组滚到一半，切过去会停在空白处。
+- 唤起键那一行在 520px（面板最小宽度）下会换行，不换行时按钮会压在按键标签上。
+
 ## 数据与配置
 
 ```
 <userData>/                       %APPDATA%/quick-launcher/
-├─ config.json                    全局配置（hotkey/autostart/pinnedIds）
+├─ config.json                    全局配置（hotkey/autostart/pinnedIds/pluginHotkeys）
+├─ shortcuts.json                 自定义外部应用（schemaVersion + items；可备份/手改）
+├─ shortcut-icons.json            自定义应用的图标缓存（按 id + 指纹）
+├─ shortcuts/icons/<id>.<ext>     用户选的自定义图标（复制进 userData）
 ├─ data/<pluginId>/shards/*.json  各插件独立数据（一 key 一片）
 ├─ data/<pluginId>/docs/          各插件文档库（documents API，手动拖文件也可）
 ├─ search/<pluginId>.json         插件推送的搜索条目（重启后仍可搜）
@@ -348,3 +526,6 @@ node scripts/gen-icons.mjs   # 重新生成 build/icon.ico 与托盘图标
   安装/卸载仍会显式重扫，只是"手改文件"需要重启一次
 - 内联结果单次只有 120ms 预算：需要网络/重计算的结果应自己缓存（如汇率先拉一次再本地换算）
 - 开机自启仅在打包版生效（`applyAutostart` 判断 `app.isPackaged`）
+- 自定义应用刻意**不解析 `.lnk` 的目标与参数**（所以给 `.lnk` 配的参数不会生效，界面上有提示），
+  也**不走注册表 App Paths**——这两条都要处理一堆 Windows 边角情况，
+  而"选 exe / 从开始菜单导入"已经覆盖绝大多数场景；真要参数就直接选目标程序

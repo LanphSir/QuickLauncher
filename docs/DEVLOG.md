@@ -11,6 +11,251 @@
 
 ---
 
+## v0.4.14 — 遮罩层级、设置分组侧栏、快捷键可解绑（2026-11-01）
+
+**来源**：三条实测反馈——① 弹窗"遮罩压在弹窗上面，挡住实际操作"；② 设置想有侧栏，方便分离和快速导航；
+③ 希望允许清除已绑定的快捷键。
+
+### 1. 遮罩盖住弹窗（真 bug）
+
+上一版把三个浮层的 backdrop 收口到 `OverlayHost`，遮罩是 `position: absolute`，
+而各弹窗的 `.modal` 是静态定位。同一层级里 positioned 元素画在静态内容之上，
+于是遮罩把弹窗整个盖住：视觉上是"弹窗蒙了一层灰"，交互上点哪里都命中遮罩、
+直接触发 `click.self` 关闭，输入框根本点不进去。
+
+修法：内容包一层 `.overlay-content`（`position: relative; z-index: 1`），遮罩 `z-index: 0`。
+**没有**用 `z-index: -1` 压遮罩——那样点击会穿透到 layer 本身，`click.self` 就永远不触发；
+也**没有**给内容加 `transform`，右键菜单是 `position: fixed` 按视口定位，加了会跑偏。
+
+### 2. 设置页分组侧栏
+
+6 张卡片改成「左侧 4 个分组（快捷键 / 面板 / 应用 / 关于）+ 右侧滚动」。
+「应用」带插件数徽标；切分组自动回到顶部；侧栏宽 118px（"应用 + 徽标"不截断的下限）。
+
+### 3. 快捷键可解绑
+
+- `hotkey: ''` 现在表示**主动解绑**：`registerHotkey('')` 删除期望项再 flush 并返回成功；
+  `flush()` 遇到空 accelerator 报 ok 且**不再 restore**（旧逻辑会报失败并把旧键接回去，
+  表现是"清了还生效"）。
+- 设置页：唤起键行加「清除」×，退格也能清空、按钮文案随之变成「清除」；
+  清空后显示橙色警告"当前没有全局唤起键，只能托盘打开"。插件键本就有退格 + ×。
+- 托盘菜单/tooltip 在无键时不再显示空 tab。
+
+### 顺手修的两个坑
+
+1. **默认唤起键 `Alt+Space` 在本机根本注册不上**（Windows 留给窗口系统菜单），
+   所以「恢复默认」点了就报"可能被其他程序占用"。默认值改为 `CommandOrControl+Shift+Space`，
+   并抽成 `config.ts` 的 `DEFAULT_HOTKEY`，经 `panel:get-config` 的 `defaultHotkey` 下发给前端，
+   避免前后端各写一份。
+2. **注册给系统的回调不会随表更新**：`flush()` 只改 `registered` 里的 action，系统侧闭包还是旧的。
+   改为注册稳定的转发函数 `() => registered.get(owner)?.action()`，换回调不必重注册（不用抖键）。
+
+### 关键文件
+
+`components/OverlayHost.vue`、`main/hotkey.ts`、`main/config.ts`、`main/index.ts`、`main/tray.ts`、
+`components/SettingsView.vue`、`components/HotkeyInput.vue`、`components/icons.ts`、
+`renderer/env.d.ts`、`tests/hotkeyRegistry.test.ts`、`scripts/smoke.mjs`
+
+### 验证
+
+- `pnpm typecheck` 零错误
+- `pnpm test` 123/123（新增 10 项：注册表解绑/幂等/差量/失败回滚/回调转发）
+- `pnpm build` 通过
+- `pnpm smoke` 86/86（新增 3 项：遮罩不遮挡弹窗内容、设置页分组侧栏可切换、唤起键可解绑并能恢复），连续两轮
+- 交互实测：点弹窗内部输入框可聚焦（`elementFromPoint` 命中 input 而非遮罩）；
+  清除唤起键 → 配置读回空串 + 橙色警告 + toast；「恢复默认」回到 `CommandOrControl+Shift+Space`；
+  520px 窄宽下唤起键按钮自动换行、不重叠
+
+---
+
+## v0.4.13 — 自定义外部应用：不写 manifest 也能把程序接进来（2026-11-01）
+
+**目标**：接一个程序不该需要"写 plugin.json + 准备图标 + 重启"，也不该只支持手填路径。
+用户要的是「添加 / 从开始菜单导入 / 改一改」，外加一个像样的图标。
+
+### 功能变更
+
+1. **数据层**（新增 `services/shortcutModel.ts` 纯函数 + `services/shortcuts.ts` IO）
+   - `userData/shortcuts.json`（`schemaVersion: 1` + `items[]`）：字段 id/name/command/args/workDir/
+     keywords/description/icon{kind:auto|file|none}/createdAt。
+   - id 由命令文件名生成（`com.launcher.shortcut.code`），撞了加 `-2`；**创建后不变**。
+   - `parseShortcutList` 逐条洗数据：坏一条只丢这条；`buildShortcut` 负责表单校验与默认值。
+
+2. **接入注册表**（`plugin/manager.ts`）
+   - `PluginSource` 增加 `'shortcut'`；`scanPlugins()` 末尾把自定义应用翻译成 `PluginRecord`（type 固定
+     external），启动/搜索/固定/快捷键全部复用现有链路，没有第二套打开逻辑。
+   - manifest 增加 `workDir`，`launchExternalPlugin` 真正把 cwd 传给 spawn（绿色软件常要求从自己目录起）。
+
+3. **图标**（新增 `services/shortcutIcons.ts`）
+   - 四级回退：用户图 → `app.getFileIcon`（exe 与 .lnk 都行）→ 网址抓 favicon（2s/64KB）→ 渲染层分类图标+渐变。
+   - 磁盘缓存 `shortcut-icons.json`（按 `kind|path|command` 指纹）：扫描同步读缓存出首屏，缺的异步补，
+     并发 4，每完成一个 200ms 合并通知一次。
+
+4. **导入**（`services/shortcuts.ts` 的扫描 + `components/ShortcutImport.vue`）
+   - 扫开始菜单（用户 + 公共）、桌面、公共桌面的 `.lnk` / `.url`；`.url` 解析 `URL=` 行。
+   - 按来源分组、按 command 去重（已导入的不出现）、默认不勾选，支持过滤/选本组/全选。
+
+5. **界面**
+   - 设置页新增「外部应用」卡片：列表（图标/名称/命令/编辑/删除/启停）+ 添加 + 从系统导入。
+   - 新增 `ShortcutEdit.vue`：名称、命令（可浏览选文件）、参数、工作目录（可浏览）、关键词、描述、
+     图标（自动/自定义/不用）。表单高时**只让中间滚动**，保存按钮常驻——否则矮窗口里要点"保存"
+     得先找它在哪。
+   - 全部应用页给自定义应用加「自定义」徽标；右键菜单与详情页的编辑入口按来源分流
+     （插件改启动命令、自定义应用改整张表单，两处配置各归各的）。
+
+### 三个坑
+
+1. **配置两处写会打架**：自定义应用的启动命令若还能被 `savePluginOverride` 改，config 与
+   shortcuts.json 就各存一份。处理是 IPC 层直接拒绝并提示"在该应用的编辑表单里改"。
+2. **`getFileIcon` 是异步的**，而 `scanPlugins()` 是同步的——图标只能在扫描后补，
+   所以必须有磁盘缓存，否则每次启动都要"看着图标一个个弹出来"。
+3. **删条目不能只删文件**：pinnedIds / disabledPluginIds / pluginHotkeys / pluginOverrides 都按 id 索引，
+   删除时要一并清理，否则留着悬空 id，下次同 id 新建会"继承"上次的固定位置。
+
+### 关键文件
+
+`services/shortcutModel.ts`、`services/shortcuts.ts`、`services/shortcutIcons.ts`、
+`plugin/manager.ts`、`services/external.ts`、`main/index.ts`、`preload/panel.ts`、
+`components/ShortcutEdit.vue`、`components/ShortcutImport.vue`、`components/SettingsView.vue`、
+`components/PanelShell.vue`、`tests/shortcuts.test.ts`、`scripts/smoke.mjs`
+
+### 验证
+
+- `pnpm typecheck` 零错误
+- `pnpm test` 113/113（新增 20 项：id 生成/参数拆分/关键词与图标归一化/文件读取容错/`.url` 解析/候选去重分组）
+- `pnpm build` 通过
+- `pnpm smoke` 83/83（新增 7 项：保存并生成 id、进插件表且带系统图标、名称为空被拒、external 直接拉起、
+  候选可扫描（本机 182 个）、批量导入、删除后立即下架），连续两轮通过
+- 交互实测：设置页「添加」表单可填可存，图标自动提取到记事本图标；「从系统导入」列出 182 个候选并按
+  桌面/公共桌面/开始菜单分组；表单在 560 高的窗口里改为中间滚动、保存按钮常驻
+- 未验证：`.lnk` 参数透传（有意不做）；favicon 抓取只在无网环境外未单独构造用例
+
+---
+
+## v0.4.12 — 插件快捷启动键：按一下直达某个插件（2026-11-01）
+
+**目标**：给常用插件挂一个全局键，按下直接打开（外部程序型直接启动），不用"唤起面板 → 再搜一次"。
+同时把快捷键注册从"单键 + 复制状态"重构成一张表，为以后更多全局键留位置。
+
+### 功能变更
+
+1. **注册表重构**（`src/main/hotkey.ts`）
+   - 原来只有 `current` 一个变量 + `toggle` 回调，加第二个用途就得再复制一份。
+     现在统一成 `owner → { accelerator, action }`：`TOGGLE_OWNER` 是唤起面板，插件用自身 id。
+   - `syncHotkeys()` 差量同步：键没变就一个系统调用都不发（插件重扫/启停都会调它）；
+     每项独立成败；某项改键失败时把原键接回去，不连带弄丢旧键。
+
+2. **绑定计划**（新增 `src/main/plugin/hotkeyPlan.ts`，纯函数）
+   - `buildPluginHotkeyPlan(map, plugins, reserved)` 先判定"该不该注册"：停用插件保留配置但不注册、
+     与唤起键同键报 `reserved`、两个插件抢同一个键按 id 排序先到先得（结果确定）、
+     没修饰键报 `invalid`、已卸载插件的残留配置直接忽略。
+   - `sanitizeHotkeyMap()` 洗配置（非字符串/空串/非法 id 丢弃），`loadConfig()` 与 IPC 共用。
+
+3. **配置与状态**（`config.ts` / `main/index.ts`）
+   - `AppConfig.pluginHotkeys: Record<pluginId, accelerator>`；停用/卸载的插件保留配置。
+   - 新增 `panel:set-plugin-hotkey`：静态冲突预检在写配置之前；真注册失败（被别的程序占用）
+     则回滚配置再同步一次，返回原因。
+   - `panel:get-plugins` 增加 `hotkey` / `hotkeyError` / `hotkeySuggestion`，设置页直接显示"没生效的原因"。
+   - 唤起键变更时先查是否被某个插件键占着，给出"与「计算器」的插件快捷键冲突"而不是
+     系统那句"可能已被其他程序占用"（那句话会把人引向错误方向）。
+
+4. **触发**：按下插件键 = `activatePlugin(id)`，与托盘菜单/面板点击同一条路径（web 唤起面板进插件页，
+   external 直接拉起程序）。
+
+5. **设置页**（`SettingsView.vue` + 新增 `components/HotkeyInput.vue`）
+   - 抽出 `HotkeyInput` 复用原 `captureHotkey`：退格清除、Esc 只退出捕获（不顺手收面板）、
+     只按修饰键不算组合键。唤起键与插件键共用一个控件。
+   - 新增「插件快捷键」卡片：每行插件图标 + 名称 + 捕获框，未设置时显示作者建议值（可点即用），
+     失败原因红字显示，停用插件的输入框置灰。
+   - manifest 新增 `hotkey` 字段（仅建议值，校验格式后保留，不自动注册）；内置的剪贴板/计算器/翻译
+     各补了一个建议值。
+
+### 两个坑
+
+1. **停止注册也要"显示得出来"**：只把没注册上的键写进日志等于没做——设置页必须能说清
+   "是这个键被别人占了，还是和另一个插件撞了"。所以 `hotkeyError` 直接随 `getPlugins` 下发。
+2. **失败不能留下"看着有"的配置**：注册失败仍把配置写进去，用户下次会以为键坏了。
+   处理是回滚配置 + 再同步一次，界面显示旧值。
+
+### 关键文件
+
+`src/main/hotkey.ts`、`src/main/plugin/hotkeyPlan.ts`、`src/main/index.ts`、`src/main/config.ts`、
+`src/main/plugin/manager.ts`、`src/preload/panel.ts`、`src/renderer/src/env.d.ts`、
+`components/HotkeyInput.vue`、`components/SettingsView.vue`、`tests/pluginHotkeys.test.ts`、`scripts/smoke.mjs`
+
+### 验证
+
+- `pnpm typecheck` 零错误
+- `pnpm test` 93/93（新增 13 项：归一化/合法性/配置清洗/计划表各分支）
+- `pnpm build` 通过
+- `pnpm smoke` 76/76（新增 6 项：建议值下发、设置并落配置、两插件抢键被拒、占用唤起键被拒、
+  单键被拒、可清除），连续两轮通过
+- 交互实测：设置页真按键 `Ctrl+Alt+K` → 计算器行显示为分段标签并 toast 成功；同一键设给剪贴板
+  → toast「与「计算器」的快捷键冲突」、剪贴板配置不变；改唤起键为插件已用键 → 提示指向具体插件
+- 未验证：真按下插件键触发打开（全局热键无法经 CDP 注入），需人工按一次确认
+
+---
+
+## v0.4.11 — 浮层统一：遮罩、层级、焦点与失焦收起（2026-11-01）
+
+**目标**：用户反馈"应用的弹窗设置缺少遮罩，而且总是在移出弹窗返回时收起"。
+排查下来是**两个根因**，不是零散的三个 bug：
+
+1. `panel.on('blur')` 只认"置顶/DevTools"两个例外，**渲染层模态完全没登记**——
+   以前只有原生对话框靠 `withPanelDialog()` 挡了一下，所以 HTML 弹窗一律一移出去就整个面板消失。
+2. 三个浮层各写各的 backdrop：详情 z-index 70、编辑 80、右键菜单 60（透明无遮罩），
+   遮罩色 / Esc / 点击关闭 / 焦点管理全不一致；"详情→编辑"切换时还有一帧焦点掉到 body。
+
+### 功能变更
+
+1. **主进程：可见性令牌 + 延迟收起**（`windows/panel.ts` + 新增 `windows/panelVisibility.ts`）
+   - `dialogDepth` 泛化成 `Set<string>` 令牌：渲染层浮层与原生对话框共用一套登记，
+     最后一个令牌释放时补一次判定（用户先点到外面、再回来关浮层，不留悬空窗口）。
+   - 新增 `blurBehavior` 配置：`immediate` / `delay`（默认，160ms）/ `never`。
+     延迟到期后复检焦点——点托盘、输入法候选窗、二级弹窗切换都不再误收。
+   - 判定抽成纯函数 `blurDecision` / `shouldHideAfterDelay`，9 项单测覆盖每个分支。
+
+2. **渲染层：统一浮层宿主**（新增 `composables/useOverlay.ts` + `components/OverlayHost.vue`）
+   - 栈式：Esc 只关栈顶（capture 阶段 `stopPropagation`，不会同时"隐藏面板"）；
+     点遮罩关闭；遮罩与面板同 16px 圆角。
+   - 焦点：打开时移进浮层首个可聚焦元素，Tab/Shift+Tab 困在层内，关闭后还给原元素。
+   - `PluginDetail` / `ExternalEdit` / `ContextMenu` 去掉各自的 backdrop 与 z-index，
+     变成纯内容组件；`PanelShell` 里三个 `ref` 与 `onGlobalKeydown` 一并删掉。
+
+3. **设置页新增「面板行为 · 点到面板外面时」**三档，即时生效（`panel:update-config` 走白名单，脏值不落库）。
+
+### 踩到的两个坑
+
+- **别用 `watch(栈长度)` 触发聚焦**：点菜单里的"应用详情"是同一 tick 内 pop 菜单 + push 详情，
+  长度回到原值，`watch` 新旧值相等、回调根本不跑——弹窗开了但焦点还在搜索框，Tab 直接跑到遮罩下面。
+  改为 `openOverlay` 里 `nextTick` 调度。
+- **焦点还原目标要向上追溯**：详情层的 previousFocus 是菜单项，而菜单马上被移除，
+  `focus()` 落到已不在 DOM 的按钮上 → 焦点掉到 body。取 activeElement 时若它属于某层浮层就继承那层的还原目标；
+  "详情→编辑"同时改成**先开新层再关旧层**。
+
+### 关键文件
+
+`src/main/windows/panel.ts`、`src/main/windows/panelVisibility.ts`（新）、`src/main/config.ts`、`src/main/index.ts`、`src/preload/panel.ts`、`src/renderer/src/composables/useOverlay.ts`（新）、`src/renderer/src/components/OverlayHost.vue`（新）、`PluginDetail.vue`、`ExternalEdit.vue`、`ContextMenu.vue`、`PanelShell.vue`、`SettingsView.vue`、`tests/panelVisibility.test.ts`（新）、`scripts/smoke.mjs`
+
+### 验证
+
+- `pnpm typecheck` 零错误；`pnpm test` **80/80**（新增失焦判定 9 项）
+- `pnpm build` 通过
+- `pnpm smoke` **70/70**（64 → 70）：右键菜单经统一浮层渲染、菜单→详情只留一层、
+  详情打开后焦点进浮层、Tab 焦点困在浮层内（真 `Input.dispatchKeyEvent`，不是合成事件）、
+  Esc 关浮层后仍在主页、失焦策略可配置且拒绝脏值
+- CDP 手动核对："详情→编辑"切换后层级为 1、输入框可聚焦；关闭后焦点回到触发元素
+
+### 备注
+
+"真失焦"（点桌面/别的窗口）无法在自动化里触发：`window.blur()` 只让页面失焦，
+不改变窗口焦点；而用脚本切前台的两种常规手段都被本机安全策略拦了（运行时编译代码、实例化 shell 对象）。
+所以这条链路靠 `blurDecision` 单测 + 代码路径审查兜底，交互效果由人工确认；
+冒烟里那条"浮层打开期间 `window.blur()` 后面板仍可见"保留着——它至少能挡住
+"某天有人把可见性登记删了"这类回归。
+
+---
+
 ## v0.4.10 — 细节优化：插件页居中 / 外部程序可浏览选文件（2026-11-01）
 
 **目标**：两条用户反馈——"打开插件页时窗口应该端在屏幕正中"、"外部应用设启动命令要能浏览本地文件挑"。
