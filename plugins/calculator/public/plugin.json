@@ -7,5 +7,6 @@
   "entry": "index.html",
   "keywords": ["calc", "calculator", "计算", "计算器", "数学"],
   "features": ["inline"],
-  "permissions": []
+  "permissions": [],
+  "hotkey": "Alt+Shift+C"
 }

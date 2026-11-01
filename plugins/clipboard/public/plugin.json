@@ -6,5 +6,6 @@
   "type": "web",
   "entry": "index.html",
   "keywords": ["clip", "clipboard", "剪贴板", "粘贴", "复制", "历史"],
-  "permissions": ["storage", "clipboard", "notify"]
+  "permissions": ["storage", "clipboard", "notify"],
+  "hotkey": "Alt+Shift+V"
 }

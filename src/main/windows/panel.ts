@@ -2,6 +2,7 @@ import { BrowserWindow, screen } from 'electron'
 import { join } from 'node:path'
 import { getConfig, updateConfig, type WindowRect } from '../config'
 import { centerInWorkArea, pluginSize } from './panelLayout'
+import { blurDecision, shouldHideAfterDelay } from './panelVisibility'
 
 export const PANEL_DEFAULT_WIDTH = 760
 export const PANEL_DEFAULT_HEIGHT = 560
@@ -16,8 +17,15 @@ const DEFAULT_PLUGIN_SIZE = { width: PLUGIN_DEFAULT_WIDTH, height: PLUGIN_DEFAUL
 let panel: BrowserWindow | null = null
 /** 置顶钉住模式：失焦不自动隐藏（Esc/快捷键仍可隐藏） */
 let pinned = false
-/** 正在打开的原生对话框数量：dialog 会抢焦点，这期间不能把面板当"失焦"收起 */
-let dialogDepth = 0
+/**
+ * 可见性令牌：登记期间失焦不收起。
+ * 两类持有者：渲染层的浮层（详情/编辑/右键菜单）与原生对话框（会抢焦点）。
+ * 用集合而不是计数器——重复登记同一个 token 不会把计数搞坏，漏释放也只影响自己。
+ */
+const holds = new Set<string>()
+let holdSeq = 0
+/** 失焦延迟收起的定时器（用户可以在这段时间里点回来） */
+let hideTimer: ReturnType<typeof setTimeout> | null = null
 /** 启动时是否恢复了上次的位置尺寸（决定 show 时要不要重新定位） */
 let restoredBounds = false
 /** 进插件页前的窗口边界：返回主页时原样还原，避免主页被撑成大窗口 */
@@ -92,17 +100,24 @@ export function createPanelWindow(): BrowserWindow {
   panel.setAlwaysOnTop(true, 'screen-saver')
 
   panel.on('blur', () => {
-    // 原生对话框（安装插件、挑可执行文件）自己会抢焦点，别把它连面板一起收起
-    if (dialogDepth > 0) return
-    // 置顶钉住或开着 DevTools 调试时不自动隐藏
-    if (pinned || panel?.webContents.isDevToolsOpened()) return
-    hidePanel()
+    const decision = blurDecision({
+      behavior: getConfig().blurBehavior ?? 'delay',
+      holds: holds.size,
+      pinned,
+      devTools: panel?.webContents.isDevToolsOpened() ?? false
+    })
+    if (!decision.hide) return
+    scheduleHide(decision.delay)
   })
   panel.on('close', () => {
     savePanelBounds()
   })
   panel.on('closed', () => {
     panel = null
+    if (hideTimer) {
+      clearTimeout(hideTimer)
+      hideTimer = null
+    }
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -121,6 +136,11 @@ export function savePanelBounds(): void {
 
 export function showPanel(): void {
   if (!panel) return
+  // 重新唤起时撤销排队中的收起，否则刚显示出来又会被上一次 blur 拽回去
+  if (hideTimer) {
+    clearTimeout(hideTimer)
+    hideTimer = null
+  }
   if (panel.isVisible()) {
     panel.focus()
     return
@@ -157,17 +177,62 @@ export function togglePinned(): boolean {
 }
 
 /**
+ * 安排一次延迟收起。同一时间只保留最后一个定时器——
+ * 用户快速点进点出（或输入法候选窗反复抢焦点）不该攒出一串 setTimeout。
+ */
+function scheduleHide(delay: number): void {
+  if (hideTimer) clearTimeout(hideTimer)
+  hideTimer = setTimeout(() => {
+    hideTimer = null
+    if (!panel || panel.isDestroyed() || !panel.isVisible()) return
+    const stillAway = shouldHideAfterDelay({
+      holds: holds.size,
+      pinned,
+      focused: panel.isFocused()
+    })
+    if (stillAway) hidePanel()
+  }, delay)
+}
+
+/**
+ * 登记"这期间别因为失焦收起面板"。
+ * 渲染层的浮层（应用详情、编辑命令、右键菜单）打开时登记，关闭时释放；
+ * 原生对话框同理——它自己会抢焦点，不登记的话面板会先被 blur 收起，
+ * 对话框就成了没有爹的孤儿窗口（选完文件回来，面板已经不见了）。
+ *
+ * 返回 token，释放时原样传回；不传则自动生成（调用方也可以只依赖 release 前的返回值）。
+ */
+export function holdPanelVisible(token?: string): string {
+  const key = token ?? `hold-${++holdSeq}`
+  holds.add(key)
+  // 已经排上队的收起要撤销：浮层刚打开，用户显然还在用面板
+  if (hideTimer) {
+    clearTimeout(hideTimer)
+    hideTimer = null
+  }
+  return key
+}
+
+export function releasePanelVisible(token: string): void {
+  if (!holds.delete(token)) return
+  if (holds.size > 0) return
+  // 最后一个浮层关掉了：如果这时面板已经不在前台，补一次判定
+  // （用户可能是先点到面板外面，再回来关的浮层；不补判会留下一个悬空的窗口）
+  scheduleHide(0)
+}
+
+/**
  * 以面板为父窗口开原生对话框。
- * 对话框会把焦点从面板拿走，不挡一下的话面板会先被 blur 收起，对话框就成了没爹的孤儿窗口
+ * 对话框会把焦点从面板拿走，不挡一下的话面板会先被 blur 收起
  * （选完文件回来，面板已经不见了）。结束后把焦点还给面板。
  */
 export async function withPanelDialog<T>(open: () => Promise<T>): Promise<T> {
-  dialogDepth++
+  const token = holdPanelVisible()
   try {
     return await open()
   } finally {
-    dialogDepth--
     if (panel && !panel.isDestroyed() && panel.isVisible()) panel.focus()
+    releasePanelVisible(token)
   }
 }
 

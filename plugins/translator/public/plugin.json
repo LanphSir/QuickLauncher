@@ -11,5 +11,6 @@
     "fy",
     "re:^[a-zA-Z][a-zA-Z0-9@._\\- ]{1,120}$"
   ],
-  "permissions": ["storage", "webview", "shell"]
+  "permissions": ["storage", "webview", "shell"],
+  "hotkey": "Alt+Shift+T"
 }
