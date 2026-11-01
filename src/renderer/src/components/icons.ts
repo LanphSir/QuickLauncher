@@ -40,7 +40,10 @@ export const ICONS = {
   ],
   file: ['M6 3h8l4 4v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z', 'M14 3v5h5', 'M9 12h6', 'M9 16h6'],
   grid: ['M4 4h7v7H4Z', 'M13 4h7v7h-7Z', 'M4 13h7v7H4Z', 'M13 13h7v7h-7Z'],
-  check: ['M5 13l4 4L19 7']
+  check: ['M5 13l4 4L19 7'],
+  plus: ['M12 5v14', 'M5 12h14'],
+  // 闪电：设置页「快捷键」分组
+  zap: ['M13 2 4 14h6l-1 8 9-12h-6l1-8Z']
 } as const
 
 export type IconName = keyof typeof ICONS

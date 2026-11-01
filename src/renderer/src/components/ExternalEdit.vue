@@ -49,59 +49,48 @@ async function save(): Promise<void> {
 </script>
 
 <template>
-  <div class="modal-backdrop" @click.self="emit('close')">
-    <div class="modal">
-      <header class="head">
-        <h2>编辑启动命令</h2>
-        <button class="close" title="关闭" @click="emit('close')">
-          <AppIcon name="x" :size="16" />
-        </button>
-      </header>
-      <p class="desc">
-        覆盖「{{ plugin.name }}」的启动配置（保存在全局配置中，插件文件不会被修改）。命令留空保存即恢复默认。
-      </p>
-      <div class="form">
-        <label>启动命令（exe 路径、命令或 http(s) 链接）</label>
-        <div class="field-row">
-          <input
-            v-model="command"
-            class="field mono"
-            type="text"
-            spellcheck="false"
-            placeholder="C:/Program Files/.../app.exe"
-          />
-          <NButton size="small" :loading="picking" class="browse" @click="browse">
-            <template #icon><AppIcon name="folder" :size="13" /></template>
-            浏览…
-          </NButton>
-        </div>
-        <label>启动参数（空格分隔）</label>
-        <input v-model="argsText" class="field mono" type="text" spellcheck="false" placeholder="--new-window" />
-        <p v-if="isShortcut" class="hint">快捷方式会由系统打开，上面的启动参数不会生效；需要参数请直接选目标程序。</p>
-        <p v-else class="hint">支持 .exe / .bat / .cmd / .lnk，也可以填命令名（如 <code>notepad</code>）或网址。</p>
-      </div>
-      <footer class="foot">
-        <NButton size="small" type="primary" @click="save">保存</NButton>
-        <NButton size="small" quaternary @click="emit('close')">取消</NButton>
-        <span class="spacer" />
-        <NButton v-if="command.trim()" size="small" quaternary @click="command = ''; argsText = ''">
-          恢复默认
+  <div class="modal">
+    <header class="head">
+      <h2>编辑启动命令</h2>
+      <button class="close" title="关闭" @click="emit('close')">
+        <AppIcon name="x" :size="16" />
+      </button>
+    </header>
+    <p class="desc">
+      覆盖「{{ plugin.name }}」的启动配置（保存在全局配置中，插件文件不会被修改）。命令留空保存即恢复默认。
+    </p>
+    <div class="form">
+      <label>启动命令（exe 路径、命令或 http(s) 链接）</label>
+      <div class="field-row">
+        <input
+          v-model="command"
+          class="field mono"
+          type="text"
+          spellcheck="false"
+          placeholder="C:/Program Files/.../app.exe"
+        />
+        <NButton size="small" :loading="picking" class="browse" @click="browse">
+          <template #icon><AppIcon name="folder" :size="13" /></template>
+          浏览…
         </NButton>
-      </footer>
+      </div>
+      <label>启动参数（空格分隔）</label>
+      <input v-model="argsText" class="field mono" type="text" spellcheck="false" placeholder="--new-window" />
+      <p v-if="isShortcut" class="hint">快捷方式会由系统打开，上面的启动参数不会生效；需要参数请直接选目标程序。</p>
+      <p v-else class="hint">支持 .exe / .bat / .cmd / .lnk，也可以填命令名（如 <code>notepad</code>）或网址。</p>
     </div>
+    <footer class="foot">
+      <NButton size="small" type="primary" @click="save">保存</NButton>
+      <NButton size="small" quaternary @click="emit('close')">取消</NButton>
+      <span class="spacer" />
+      <NButton v-if="command.trim()" size="small" quaternary @click="command = ''; argsText = ''">
+        恢复默认
+      </NButton>
+    </footer>
   </div>
 </template>
 
 <style scoped>
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 80;
-  background: rgba(15, 18, 25, 0.32);
-  display: grid;
-  place-items: center;
-}
-
 .modal {
   width: 440px;
   max-width: calc(100vw - 48px);
