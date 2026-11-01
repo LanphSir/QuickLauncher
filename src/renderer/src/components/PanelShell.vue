@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useMessage } from 'naive-ui'
 import { useLauncherStore } from '../stores/launcher'
 import { useSearch } from '../composables/useSearch'
@@ -12,7 +12,10 @@ import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
 import PluginDetail from './PluginDetail.vue'
 import PluginFrame from './PluginFrame.vue'
 import ExternalEdit from './ExternalEdit.vue'
+import ShortcutEdit from './ShortcutEdit.vue'
+import OverlayHost from './OverlayHost.vue'
 import SettingsView from './SettingsView.vue'
+import { closeAllOverlays, closeOverlay, openOverlay } from '../composables/useOverlay'
 
 const store = useLauncherStore()
 const message = useMessage()
@@ -23,9 +26,6 @@ const { flat, inlineCount, resultCount, open, openEntry, runInline, openCurrent 
 const { onKeydown } = useKeyboardNav(resultCount, openCurrent)
 const { startResize } = useWindowResize()
 
-const ctx = ref<{ plugin: PluginSummary; x: number; y: number } | null>(null)
-const detail = ref<PluginSummary | null>(null)
-const edit = ref<PluginSummary | null>(null)
 const pulse = ref(false)
 const pinned = ref(false)
 /** 面板里正在打开的插件（null = 主页）；外框由启动器提供，插件自己不用画窗口控件 */
@@ -35,6 +35,8 @@ let pulseTimer: ReturnType<typeof setTimeout> | undefined
 onMounted(async () => {
   await store.load()
   window.panel.onShown(() => {
+    // 重新唤起是"从零开始"：上次留下的弹窗/菜单不该跟着回来
+    closeAllOverlays()
     activePlugin.value = null
     store.resetHome()
     triggerPulse()
@@ -69,29 +71,14 @@ onMounted(async () => {
     void store.search(store.query)
   })
   // 弹层优先吃掉 Esc（capture 阶段），避免同时触发面板隐藏
-  window.addEventListener('keydown', onGlobalKeydown, true)
   triggerPulse()
   focusSearch()
 })
 
 onUnmounted(() => {
-  window.removeEventListener('keydown', onGlobalKeydown, true)
+  closeAllOverlays()
   if (pulseTimer) clearTimeout(pulseTimer)
 })
-
-function onGlobalKeydown(e: KeyboardEvent): void {
-  if (e.key !== 'Escape') return
-  if (edit.value) {
-    e.stopPropagation()
-    edit.value = null
-  } else if (detail.value) {
-    e.stopPropagation()
-    detail.value = null
-  } else if (ctx.value) {
-    e.stopPropagation()
-    ctx.value = null
-  }
-}
 
 function triggerPulse(): void {
   pulse.value = false
@@ -135,9 +122,7 @@ async function detach(plugin: PluginSummary): Promise<void> {
   if (!r.ok && r.message) message.error(r.message)
 }
 
-const ctxItems = computed<ContextMenuItem[]>(() => {
-  if (!ctx.value) return []
-  const p = ctx.value.plugin
+function ctxItemsFor(p: PluginSummary): ContextMenuItem[] {
   const items: ContextMenuItem[] = [
     { key: 'open', label: '打开', icon: 'play', action: () => void open(p) },
     {
@@ -155,9 +140,14 @@ const ctxItems = computed<ContextMenuItem[]>(() => {
       action: () => void detach(p)
     })
   }
-  items.push({ key: 'detail', label: '应用详情…', icon: 'info', action: () => (detail.value = p) })
+  items.push({ key: 'detail', label: '应用详情…', icon: 'info', action: () => openDetail(p) })
   if (p.type === 'external') {
-    items.push({ key: 'edit', label: '编辑启动命令…', icon: 'pencil', action: () => (edit.value = p) })
+    items.push({
+      key: 'edit',
+      label: p.source === 'shortcut' ? '编辑应用…' : '编辑启动命令…',
+      icon: 'pencil',
+      action: () => void openEdit(p)
+    })
   }
   items.push({
     key: 'search-web',
@@ -169,10 +159,97 @@ const ctxItems = computed<ContextMenuItem[]>(() => {
     }
   })
   return items
-})
+}
 
+/** 右键菜单：透明点击层（不画遮罩），点了就走 */
 function onTileCtx(plugin: PluginSummary, pos: { x: number; y: number }): void {
-  ctx.value = { plugin, x: pos.x, y: pos.y }
+  let id = 0
+  id = openOverlay({
+    component: ContextMenu,
+    backdrop: 'transparent',
+    autoFocus: false,
+    label: 'context-menu',
+    props: {
+      x: pos.x,
+      y: pos.y,
+      items: ctxItemsFor(plugin),
+      onClose: () => closeOverlay(id)
+    }
+  })
+}
+
+function openDetail(plugin: PluginSummary): void {
+  let id = 0
+  id = openOverlay({
+    component: PluginDetail,
+    label: 'plugin-detail',
+    props: {
+      plugin,
+      onClose: () => closeOverlay(id),
+      onOpen: () => {
+        closeOverlay(id)
+        void open(plugin)
+      },
+      // 详情 → 编辑：先开新的再关旧的。反过来的话，新层记录"还原目标"时旧的已经出栈，
+      // 焦点就会落到一个正在被移除的按钮上，关掉编辑层后焦点掉到 body
+      // 详情 → 编辑：先开新层再关旧的，焦点不会落到正在被移除的按钮上
+      onEdit: () => void openEdit(plugin, id),
+      onDetach: () => {
+        closeOverlay(id)
+        void detach(plugin)
+      }
+    }
+  })
+}
+
+function openExternalEditor(plugin: PluginSummary): void {
+  let id = 0
+  id = openOverlay({
+    component: ExternalEdit,
+    label: 'external-edit',
+    // 打开就能直接改路径，别让用户再点一下输入框
+    initialFocus: 'first',
+    props: {
+      plugin,
+      onClose: () => closeOverlay(id),
+      onSaved: () => void store.load()
+    }
+  })
+}
+
+function openShortcutEditor(entry: ShortcutEntry, plugin: PluginSummary): void {
+  let id = 0
+  id = openOverlay({
+    component: ShortcutEdit,
+    label: 'shortcut-edit',
+    initialFocus: 'first',
+    props: {
+      entry,
+      previewIcon: plugin.icon,
+      onClose: () => closeOverlay(id),
+      onSaved: () => void store.load()
+    }
+  })
+}
+
+/**
+ * 「编辑」入口按来源分流：插件改启动命令（写 config.pluginOverrides），
+ * 自定义应用改整张表单（写 shortcuts.json）——两处配置各归各的，不会互相覆盖。
+ * `closeOld` 是详情层的 id：新层入栈后再关它。
+ */
+async function openEdit(plugin: PluginSummary, closeOld?: number): Promise<void> {
+  if (plugin.source === 'shortcut') {
+    const entry = await window.panel.getShortcut(plugin.id)
+    if (!entry) {
+      message.error('没找到这个应用的配置，可能已被删除')
+      await store.load()
+      return
+    }
+    openShortcutEditor(entry, plugin)
+  } else {
+    openExternalEditor(plugin)
+  }
+  if (closeOld !== undefined) closeOverlay(closeOld)
 }
 </script>
 
@@ -316,34 +393,25 @@ function onTileCtx(plugin: PluginSummary, pos: { x: number; y: number }): void {
       @back="store.view = 'home'; focusSearch()"
       @open="open($event)"
       @pin="togglePin($event)"
-      @detail="detail = $event"
+      @detail="openDetail($event)"
     />
 
-    <SettingsView v-else @back="store.view = 'home'; focusSearch()" />
+      <SettingsView v-else @back="store.view = 'home'; focusSearch()" />
+      </template>
 
-    <ContextMenu v-if="ctx" :x="ctx.x" :y="ctx.y" :items="ctxItems" @close="ctx = null" />
-    <PluginDetail
-      v-if="detail"
-      :plugin="detail"
-      @close="detail = null"
-      @open="open(detail); detail = null"
-      @edit="edit = detail; detail = null"
-      @detach="detach(detail); detail = null"
-    />
-    <ExternalEdit v-if="edit" :plugin="edit" @close="edit = null" />
-    </template>
-
-    <PluginFrame v-else :plugin="activePlugin" @exit="backToHome" @detach="detachActive" />
-    <!-- 缩放热区必须排在 drag 区元素之后：Electron 按文档顺序做 drag 加/no-drag 减，
-         热区放前面会被搜索行后续加回的 drag 矩形覆盖（表现为顶边只能移动不能缩放） -->
-    <span
-      v-for="h in RESIZE_HANDLES"
-      :key="h"
-      class="rz"
-      :class="`rz-${h}`"
-      @pointerdown="startResize($event, h)"
-    />
+      <PluginFrame v-else :plugin="activePlugin" @exit="backToHome" @detach="detachActive" />
+      <!-- 缩放热区必须排在 drag 区元素之后：Electron 按文档顺序做 drag 加/no-drag 减，
+           热区放前面会被搜索行后续加回的 drag 矩形覆盖（表现为顶边只能移动不能缩放） -->
+      <span
+        v-for="h in RESIZE_HANDLES"
+        :key="h"
+        class="rz"
+        :class="`rz-${h}`"
+        @pointerdown="startResize($event, h)"
+      />
     </div>
+    <!-- 所有弹窗/菜单都从这里渲染（Teleport 到 body），遮罩、层级、Esc、焦点统一 -->
+    <OverlayHost />
   </div>
 </template>
 

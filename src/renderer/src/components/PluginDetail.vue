@@ -33,102 +33,91 @@ async function clearData(): Promise<void> {
 </script>
 
 <template>
-  <div class="modal-backdrop" @click.self="emit('close')">
-    <div class="modal">
-      <header class="head">
-        <div class="app-icon">
-          <img v-if="plugin.icon" :src="plugin.icon" alt="" draggable="false" />
-          <span v-else class="fallback" :style="{ background: gradientFor(plugin) }">
-            <AppIcon :name="fallbackIconFor(plugin)" :size="24" :stroke-width="1.8" />
+  <div class="modal">
+    <header class="head">
+      <div class="app-icon">
+        <img v-if="plugin.icon" :src="plugin.icon" alt="" draggable="false" />
+        <span v-else class="fallback" :style="{ background: gradientFor(plugin) }">
+          <AppIcon :name="fallbackIconFor(plugin)" :size="24" :stroke-width="1.8" />
+        </span>
+      </div>
+      <div class="title-wrap">
+        <div class="title-row">
+          <h2>{{ plugin.name }}</h2>
+          <span v-if="plugin.version" class="chip ver">v{{ plugin.version }}</span>
+          <span class="chip" :class="plugin.type">
+            {{ plugin.type === 'external' ? '外部程序' : '内置应用' }}
           </span>
         </div>
-        <div class="title-wrap">
-          <div class="title-row">
-            <h2>{{ plugin.name }}</h2>
-            <span v-if="plugin.version" class="chip ver">v{{ plugin.version }}</span>
-            <span class="chip" :class="plugin.type">
-              {{ plugin.type === 'external' ? '外部程序' : '内置应用' }}
-            </span>
-          </div>
-          <p class="desc">{{ plugin.description || '暂无描述' }}</p>
-        </div>
-        <button class="close" title="关闭" @click="emit('close')">
-          <AppIcon name="x" :size="16" />
-        </button>
-      </header>
+        <p class="desc">{{ plugin.description || '暂无描述' }}</p>
+      </div>
+      <button class="close" title="关闭" @click="emit('close')">
+        <AppIcon name="x" :size="16" />
+      </button>
+    </header>
 
-      <div class="body">
-        <div class="row">
-          <span class="label">ID</span>
-          <code class="mono">{{ plugin.id }}</code>
-        </div>
-        <div v-if="plugin.type === 'external' && plugin.command" class="row">
-          <span class="label">启动命令</span>
-          <code class="mono ellip" :title="`${plugin.command} ${(plugin.args ?? []).join(' ')}`">
-            {{ plugin.command }} {{ (plugin.args ?? []).join(' ') }}
-          </code>
-        </div>
-        <div v-if="plugin.type === 'web' && plugin.dir" class="row">
-          <span class="label">目录</span>
-          <code class="mono ellip" :title="plugin.dir">{{ plugin.dir }}</code>
-        </div>
-        <div class="row">
-          <span class="label">关键词</span>
-          <div class="chips">
-            <span v-for="kw in plugin.keywords" :key="kw" class="kw">{{ kw }}</span>
-            <span v-if="!plugin.keywords.length" class="none">无</span>
-          </div>
-        </div>
-        <div class="row">
-          <span class="label">权限</span>
-          <div class="chips">
-            <span v-for="p in perms" :key="p" class="perm">
-              <AppIcon name="check" :size="11" /> {{ permLabel(p) }}
-            </span>
-            <span v-if="!perms.length" class="none">未申请任何权限</span>
-          </div>
+    <div class="body">
+      <div class="row">
+        <span class="label">ID</span>
+        <code class="mono">{{ plugin.id }}</code>
+      </div>
+      <div v-if="plugin.type === 'external' && plugin.command" class="row">
+        <span class="label">启动命令</span>
+        <code class="mono ellip" :title="`${plugin.command} ${(plugin.args ?? []).join(' ')}`">
+          {{ plugin.command }} {{ (plugin.args ?? []).join(' ') }}
+        </code>
+      </div>
+      <div v-if="plugin.type === 'web' && plugin.dir" class="row">
+        <span class="label">目录</span>
+        <code class="mono ellip" :title="plugin.dir">{{ plugin.dir }}</code>
+      </div>
+      <div class="row">
+        <span class="label">关键词</span>
+        <div class="chips">
+          <span v-for="kw in plugin.keywords" :key="kw" class="kw">{{ kw }}</span>
+          <span v-if="!plugin.keywords.length" class="none">无</span>
         </div>
       </div>
-
-      <footer class="foot">
-        <NButton size="small" type="primary" @click="emit('open')">
-          <template #icon><AppIcon name="play" :size="13" /></template>
-          打开
-        </NButton>
-        <NButton v-if="plugin.type === 'web'" size="small" @click="emit('detach')">
-          <template #icon><AppIcon name="external-link" :size="13" /></template>
-          独立窗口打开
-        </NButton>
-        <NButton v-if="plugin.type === 'external'" size="small" @click="emit('edit')">
-          <template #icon><AppIcon name="pencil" :size="13" /></template>
-          编辑启动命令
-        </NButton>
-        <NPopconfirm v-if="plugin.type === 'web'" @positive-click="clearData">
-          <template #trigger>
-            <NButton size="small" quaternary type="error">
-              <template #icon><AppIcon name="trash" :size="13" /></template>
-              清除插件数据
-            </NButton>
-          </template>
-          将删除该插件保存在本地的全部数据（历史记录、配置等），确定？
-        </NPopconfirm>
-        <span class="spacer" />
-        <NButton size="small" quaternary @click="emit('close')">关闭</NButton>
-      </footer>
+      <div class="row">
+        <span class="label">权限</span>
+        <div class="chips">
+          <span v-for="p in perms" :key="p" class="perm">
+            <AppIcon name="check" :size="11" /> {{ permLabel(p) }}
+          </span>
+          <span v-if="!perms.length" class="none">未申请任何权限</span>
+        </div>
+      </div>
     </div>
+
+    <footer class="foot">
+      <NButton size="small" type="primary" @click="emit('open')">
+        <template #icon><AppIcon name="play" :size="13" /></template>
+        打开
+      </NButton>
+      <NButton v-if="plugin.type === 'web'" size="small" @click="emit('detach')">
+        <template #icon><AppIcon name="external-link" :size="13" /></template>
+        独立窗口打开
+      </NButton>
+      <NButton v-if="plugin.type === 'external'" size="small" @click="emit('edit')">
+        <template #icon><AppIcon name="pencil" :size="13" /></template>
+        {{ plugin.source === 'shortcut' ? '编辑应用' : '编辑启动命令' }}
+      </NButton>
+      <NPopconfirm v-if="plugin.type === 'web'" @positive-click="clearData">
+        <template #trigger>
+          <NButton size="small" quaternary type="error">
+            <template #icon><AppIcon name="trash" :size="13" /></template>
+            清除插件数据
+          </NButton>
+        </template>
+        将删除该插件保存在本地的全部数据（历史记录、配置等），确定？
+      </NPopconfirm>
+      <span class="spacer" />
+      <NButton size="small" quaternary @click="emit('close')">关闭</NButton>
+    </footer>
   </div>
 </template>
 
 <style scoped>
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 70;
-  background: rgba(15, 18, 25, 0.32);
-  display: grid;
-  place-items: center;
-}
-
 .modal {
   width: 470px;
   max-width: calc(100vw - 48px);

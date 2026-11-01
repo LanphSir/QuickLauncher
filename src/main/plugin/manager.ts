@@ -5,10 +5,14 @@ import AdmZip from 'adm-zip'
 import { getConfig } from '../config'
 import { PLUGIN_FEATURES } from '../../shared/pluginApi'
 import { readDevServers } from './devServers'
+import { listShortcuts } from '../services/shortcuts'
+import { cachedIcon } from '../services/shortcutIcons'
+import type { ShortcutEntry } from '../services/shortcutModel'
+import { isAcceleratorLike } from './hotkeyPlan'
 import { pluginAppUrl } from './urls'
 
 export type PluginType = 'web' | 'external'
-export type PluginSource = 'builtin' | 'installed'
+export type PluginSource = 'builtin' | 'installed' | 'shortcut'
 
 export interface PluginManifest {
   /** 全局唯一 id，建议反向域名：com.launcher.xxx */
@@ -36,6 +40,13 @@ export interface PluginManifest {
    * 缺省或空 = 一个都不许。
    */
   hosts?: string[]
+  /** external 型的工作目录（仅自定义应用会用到；插件 manifest 也可写） */
+  workDir?: string
+  /**
+   * 建议的启动快捷键（accelerator）：只作设置页的提示，不自动注册。
+   * 快捷键是占系统全局资源的，默认替用户占一个键很容易撞车，让用户亲手确认更稳妥。
+   */
+  hotkey?: string
 }
 
 export interface PluginRecord {
@@ -103,6 +114,15 @@ function validate(raw: unknown, dir: string): PluginManifest | null {
   // features 同理：不认识的功能名直接丢，插件照常加载（只是不参与该形态）
   if (m.features !== undefined) {
     m.features = normalizeFeatures(Array.isArray(m.features) ? m.features : [], m.type, dir)
+  }
+  // 建议快捷键只用于界面提示：格式不像组合键就丢掉，不影响插件加载
+  if (m.hotkey !== undefined) {
+    const value = typeof m.hotkey === 'string' ? m.hotkey.trim() : ''
+    if (value && isAcceleratorLike(value)) m.hotkey = value
+    else {
+      if (value) console.warn(`[plugin] ${dir}: 忽略非法的 hotkey 建议值 ${JSON.stringify(m.hotkey)}`)
+      delete m.hotkey
+    }
   }
   return m as unknown as PluginManifest
 }
@@ -193,6 +213,31 @@ function loadFromDir(dir: string, source: PluginSource, baseDir: string): Plugin
   }
 }
 
+/** 把一条自定义应用记录翻译成"插件记录"：下游只认 PluginRecord，这样不用改启动链路 */
+function shortcutRecord(entry: ShortcutEntry): PluginRecord {
+  return {
+    manifest: {
+      id: entry.id,
+      name: entry.name,
+      description: entry.description,
+      type: 'external',
+      command: entry.command,
+      args: [...entry.args],
+      workDir: entry.workDir,
+      keywords: entry.keywords,
+      permissions: []
+    },
+    // 没有插件目录：reveal/uninstall 这类操作会在 IPC 层被拦下并给出提示
+    dir: '',
+    baseDir: '',
+    source: 'shortcut',
+    disabled: getConfig().disabledPluginIds.includes(entry.id),
+    iconDataUrl: cachedIcon(entry),
+    baseCommand: entry.command,
+    baseArgs: [...entry.args]
+  }
+}
+
 /** 扫描所有插件根目录并重建注册表。子目录本身含 plugin.json，或其 dist/ 内含均可。 */
 export function scanPlugins(): PluginRecord[] {
   registry.clear()
@@ -216,8 +261,21 @@ export function scanPlugins(): PluginRecord[] {
       registry.set(rec.manifest.id, rec)
     }
   }
+  // 自定义外部应用：与插件共用注册表，下游（启动/搜索/固定/快捷键）不必区分来源
+  let shortcutCount = 0
+  for (const entry of listShortcuts()) {
+    if (registry.has(entry.id)) {
+      console.warn(`[plugin] 自定义应用 id 与插件冲突，跳过: ${entry.id}`)
+      continue
+    }
+    registry.set(entry.id, shortcutRecord(entry))
+    shortcutCount++
+  }
   const devCount = listPlugins().filter((r) => r.devUrl).length
-  console.log(`[plugin] 已加载 ${registry.size} 个插件${devCount ? `（其中 ${devCount} 个走 dev server）` : ''}`)
+  console.log(
+    `[plugin] 已加载 ${registry.size} 个插件${shortcutCount ? `（含 ${shortcutCount} 个自定义应用）` : ''}` +
+      `${devCount ? `，其中 ${devCount} 个走 dev server` : ''}`
+  )
   return listPlugins()
 }
 
@@ -327,6 +385,7 @@ export function installPluginFromPath(src: string): { ok: boolean; message?: str
 export function uninstallPlugin(id: string): { ok: boolean; message?: string } {
   const rec = getPlugin(id)
   if (!rec) return { ok: false, message: '插件不存在' }
+  if (rec.source === 'shortcut') return { ok: false, message: '自定义应用请在 设置 → 外部应用 里删除' }
   if (rec.source !== 'installed') return { ok: false, message: '内置插件不可卸载，可改为停用' }
   try {
     rmSync(rec.baseDir, { recursive: true, force: true })

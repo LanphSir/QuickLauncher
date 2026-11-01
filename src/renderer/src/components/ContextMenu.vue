@@ -36,29 +36,21 @@ function menuStyle(): CSSProperties {
 </script>
 
 <template>
-  <div class="ctx-backdrop" @click="emit('close')" @contextmenu.prevent="emit('close')">
-    <div class="ctx-menu" :style="menuStyle()">
-      <button
-        v-for="item in items"
-        :key="item.key"
-        class="ctx-item"
-        :class="{ danger: item.danger }"
-        @click="run(item)"
-      >
-        <AppIcon v-if="item.icon" :name="item.icon" :size="15" />
-        <span class="ctx-label">{{ item.label }}</span>
-      </button>
-    </div>
+  <div class="ctx-menu" :style="menuStyle()">
+    <button
+      v-for="item in items"
+      :key="item.key"
+      class="ctx-item"
+      :class="{ danger: item.danger }"
+      @click="run(item)"
+    >
+      <AppIcon v-if="item.icon" :name="item.icon" :size="15" />
+      <span class="ctx-label">{{ item.label }}</span>
+    </button>
   </div>
 </template>
 
 <style scoped>
-.ctx-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-}
-
 .ctx-menu {
   position: fixed;
   width: 200px;

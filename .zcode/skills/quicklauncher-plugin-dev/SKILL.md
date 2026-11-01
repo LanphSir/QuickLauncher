@@ -37,6 +37,7 @@ node .zcode/skills/quicklauncher-plugin-dev/scripts/scaffold.mjs <目录名> --n
 | `permissions` | 建议 | 申请的 API 权限，见下方权限表 |
 | `features` | 可选 | 功能形态声明（不是权限）：目前只有 `inline`，声明后才能回传内联结果 |
 | `hosts` | `net` 权限必填 | 可访问的域白名单：`api.github.com`、`*.example.com`、`localhost:8080`；空 = 一个都不许 |
+| `hotkey` | 可选 | 建议启动键（accelerator，如 `Alt+Shift+V`）：只在设置页作提示，**不自动注册**，用户点了才生效 |
 
 图标：目录（或 dist）内 `icon.svg` / `icon.png` / `icon.ico` 任一，由主进程转 dataURL 下发。
 扫描位置：`plugins/<name>/dist/plugin.json`（web 型）或 `plugins/<name>/plugin.json`（external 型）。

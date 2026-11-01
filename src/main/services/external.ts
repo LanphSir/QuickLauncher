@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { shell } from 'electron'
 import type { PluginRecord } from '../plugin/manager'
 
@@ -10,8 +11,8 @@ function quote(arg: string): string {
 }
 
 /** 走 cmd 解释一整行：批处理这类"不是可执行文件"的目标只能这么起 */
-function runShellLine(line: string): ChildProcess {
-  return spawn(line, { ...SPAWN_OPTS, shell: true })
+function runShellLine(line: string, cwd?: string): ChildProcess {
+  return spawn(line, { ...SPAWN_OPTS, shell: true, ...(cwd ? { cwd } : {}) })
 }
 
 /**
@@ -24,6 +25,10 @@ function runShellLine(line: string): ChildProcess {
 export function launchExternalPlugin(rec: PluginRecord): { ok: boolean; message?: string } {
   const command = rec.manifest.command!
   const args = rec.manifest.args ?? []
+  // 工作目录只对自定义应用有意义（比如某些绿色软件必须从自己目录启动）；
+  // 目录被删了就当没设，别因为一个可选字段让整个启动失败
+  const workDir = rec.manifest.workDir && existsSync(rec.manifest.workDir) ? rec.manifest.workDir : undefined
+  const opts = workDir ? { ...SPAWN_OPTS, cwd: workDir } : SPAWN_OPTS
   if (/^https?:\/\//i.test(command)) {
     void shell.openExternal(command)
     return { ok: true }
@@ -36,8 +41,8 @@ export function launchExternalPlugin(rec: PluginRecord): { ok: boolean; message?
   try {
     const child =
       lower.endsWith('.bat') || lower.endsWith('.cmd')
-        ? runShellLine([quote(command), ...args.map(quote)].join(' '))
-        : spawn(command, args, SPAWN_OPTS)
+        ? runShellLine([quote(command), ...args.map(quote)].join(' '), workDir)
+        : spawn(command, args, opts)
     child.on('error', (err) => {
       console.error(`[external] 启动失败 ${command}`, err)
     })

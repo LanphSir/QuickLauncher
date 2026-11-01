@@ -23,9 +23,20 @@ my-plugin/
   "keywords": ["demo", "示例"],     // 面板搜索关键词
   "permissions": ["storage", "notify"],
   "hosts": ["api.example.com"],     // 仅 net 权限需要：可访问的域白名单
-  "features": ["inline"]            // 可选：参与面板内联结果（v0.4.7 起，见对应章节）
+  "features": ["inline"],           // 可选：参与面板内联结果（v0.4.7 起，见对应章节）
+  "hotkey": "Alt+Shift+V"           // 可选：建议启动键（v0.4.12 起，仅作设置页提示）
 }
 ```
+
+### 建议启动键 `hotkey`（v0.4.12 起）
+
+manifest 里的 `hotkey` 是**建议值**，不会自动注册——设置页会在该插件的「插件快捷键」一行
+显示成可点的小标签，用户点一下才真正生效（生效值存在用户配置 `pluginHotkeys` 里）。
+
+之所以不自动注册：全局快捷键是稀缺资源，替用户默认占一个键很容易和别的程序撞车，
+撞了之后要用户自己去设置里排查。给个建议、让用户点头更稳妥。
+
+格式同 Electron accelerator，必须至少一个修饰键（`Alt+Shift+V`、`CommandOrControl+Shift+K`）。
 
 ### 关键词高级匹配（v0.2.0 起）
 

@@ -99,6 +99,7 @@ async function open(p: PluginSummary): Promise<void> {
             <span class="name">{{ p.name }}</span>
             <span class="badge" :class="p.type">{{ p.type === 'external' ? '外部程序' : '应用' }}</span>
             <span v-if="p.source === 'installed'" class="badge installed">已安装</span>
+            <span v-if="p.source === 'shortcut'" class="badge shortcut">自定义</span>
             <span v-if="p.disabled" class="badge off">已停用</span>
             <span v-if="p.version" class="ver">v{{ p.version }}</span>
           </div>
@@ -300,6 +301,11 @@ async function open(p: PluginSummary): Promise<void> {
 .badge.installed {
   background: #e8f7ef;
   color: #0a7d43;
+}
+
+.badge.shortcut {
+  background: #eef0ff;
+  color: #4f46e5;
 }
 
 .badge.off {
