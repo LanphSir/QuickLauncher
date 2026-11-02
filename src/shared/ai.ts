@@ -526,3 +526,74 @@ export const TOOL_HOST_READY_MS = 10_000
 
 /** 工具宿主空闲多久后回收插件视图（用户没在看它，没必要占一个渲染进程） */
 export const TOOL_HOST_IDLE_MS = 60_000
+
+// ---------------------------------------------------------------- MCP（v0.6.4）
+
+/**
+ * 单个插件最多声明几个 MCP server。
+ *
+ * 每个 server 都是一个长期的子进程，还会带来一批工具占上下文；
+ * 5 个足够覆盖「文件 + 数据库 + 搜索 + 浏览器 + 自定义」这类真实组合。
+ */
+export const MAX_MCP_SERVERS_PER_PLUGIN = 5
+
+/** 命令行参数个数与单个参数长度上限（防呆，不是安全边界——安全靠 spawn 不经 shell） */
+export const MAX_MCP_ARGS = 32
+export const MAX_MCP_ARG_CHARS = 512
+
+/** 单个 server 的 env 项数上限 */
+export const MAX_MCP_ENV = 32
+
+/** tools/call 的默认超时：MCP 服务器常要起子进程或查网络，比内置工具宽一些 */
+export const DEFAULT_MCP_CALL_TIMEOUT_MS = 30_000
+export const MIN_MCP_TIMEOUT_MS = 1000
+export const MAX_MCP_TIMEOUT_MS = 120_000
+
+/** 建连（spawn + initialize + tools/list）的总预算。超过就当作这个 server 暂时不可用 */
+export const MCP_CONNECT_TIMEOUT_MS = 20_000
+
+/**
+ * 每次发消息前给 MCP 建连的时间预算。
+ *
+ * 只影响「刚打开应用/刚批准」的第一次：连上之后进程就常驻了，后续是 0 等待。
+ * 3 秒是权衡——再长就开始像卡住了，再短则 npx 安装依赖那种慢启动永远赶不上。
+ */
+export const MCP_CHAT_BUDGET_MS = 3000
+
+/** 连续崩溃多少次后停用该 server（本会话内不再拉起，避免「崩-拉-崩」烧 CPU） */
+export const MCP_MAX_CRASHES = 3
+
+/** server 的 stdout/stderr 各留多少字节用于排错（只保留尾部） */
+export const MCP_LOG_TAIL_BYTES = 64 * 1024
+
+/** 设置页「MCP 服务」里一行 = 一个插件声明的 server */
+export interface AiMcpServerView {
+  pluginId: string
+  pluginName: string
+  /** 插件内唯一名 */
+  server: string
+  /** 完整命令行（已按 shell 习惯加引号，仅供展示） */
+  commandLine: string
+  command: string
+  args: string[]
+  /** 只列键名：值里可能含 token，设置页不该把它们写进 DOM */
+  envKeys: string[]
+  /** 相对插件目录，空串表示用插件目录本身 */
+  cwd: string
+  timeoutMs: number
+  /**
+   * pending   —— 还没问过用户
+   * approved  —— 已确认且指纹一致
+   * rejected  —— 用户明确拒绝
+   * stale     —— 曾经批准过，但命令改了（指纹不一致），需要重新确认
+   * disabled  —— 崩溃次数超限，本会话停用
+   */
+  state: 'pending' | 'approved' | 'rejected' | 'stale' | 'disabled'
+  /** 已连上并列出过工具时，工具的数量 */
+  toolCount: number
+  running: boolean
+  /** 上一次失败/崩溃的原因，展示给用户 */
+  error?: string
+  /** 声明被丢掉的原因（坏一个丢一个） */
+  errors: string[]
+}

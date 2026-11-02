@@ -208,7 +208,7 @@ onUnmounted(stop)                               // 页面真被销毁时也停
 | `docs` | `appapi.docs.*`（插件自己的文档库目录，路径不出主进程） |
 | `search` | `appapi.search.*`（把插件内的条目注册给主面板搜索，v0.4.2 起） |
 | `net` | `appapi.net.request`（v0.4.6 起；**还要在 manifest `hosts` 里声明可访问的域**） |
-| `ai` | 允许被 AI 调用：声明 `ai/tools.json` 后，工具可被模型调用；还要用户在 设置 → AI → AI 工具 里授权（v0.6.2 起）。对话通道 `appapi.ai.*` 仍是 `internalOnly`，只给内置 AI 插件 |
+| `ai` | 允许被 AI 调用：声明 `ai/tools.json` 后，工具可被模型调用；还要用户在 设置 → AI → AI 工具 里授权（v0.6.2 起）。声明 `ai/mcp.json` 时要额外逐条批准其中的命令（v0.6.4 起）。对话通道 `appapi.ai.*` 仍是 `internalOnly`，只给内置 AI 插件 |
 | `webview` | 在插件页使用 `<webview>` 嵌入第三方网页（v0.2.1 起） |
 
 `window.hide` / `exit` / `info` / `onQuery` / `onShow` / `onHide` / `onDestroy` 不需要权限。
@@ -250,6 +250,7 @@ my-plugin/
 ├─ plugin.json
 └─ ai/
    ├─ tools.json    工具声明（模型能调用什么）
+   ├─ mcp.json      MCP server 声明（要执行的命令，可选）
    └─ SKILL.md      技能说明（怎么用，按需读取）
 ```
 
@@ -259,7 +260,7 @@ my-plugin/
 {
   "apiVersion": 2,
   "permissions": ["ai"],                                   // 缺这行 = 拒绝执行
-  "ai": { "tools": "ai/tools.json", "skill": "ai/SKILL.md" }
+  "ai": { "tools": "ai/tools.json", "skill": "ai/SKILL.md", "mcp": "ai/mcp.json" }
 }
 ```
 
@@ -363,6 +364,56 @@ window.appapi.ai.confirmTool(requestId, allow, remember?)   // 插件一般不�
 - 所有调用（含被拒、超时、失败）都写进 `userData/ai/audit.jsonl`，用户可查。
 
 这条流程只走主进程，插件无法绕过，也无法伪造「已确认」。
+
+### 接一个现成的 MCP server（v0.6.4 起）
+
+如果能力已经有现成的 MCP server（社区里文件系统、数据库、GitHub、浏览器都有），
+不用自己写工具，声明一条命令就行：
+
+```json
+{
+  "servers": [
+    {
+      "name": "filesystem",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:/notes"],
+      "env": { "LOG_LEVEL": "error" },
+      "timeoutMs": 30000
+    }
+  ]
+}
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `name` | 是 | 插件内唯一，小写字母开头，只含 `a-z0-9_-`，≤32。会出现在工具名里 |
+| `command` | 是 | 可执行文件。**不经 shell**，所以不能写 `npx pkg && rm -rf /` 这种 |
+| `args` | 否 | 字符串数组，≤32 项，单项 ≤512 字符 |
+| `env` | 否 | 追加到当前环境变量上（不是替换），≤32 项。值里可以放 token，界面只显示键名 |
+| `cwd` | 否 | 工作目录，必须是**插件目录内的相对路径**；`..` 与绝对路径会被拒 |
+| `timeoutMs` | 否 | 单次 `tools/call` 超时，缺省 30 秒，夹在 1–120 秒 |
+
+声明之后会发生什么：
+
+1. **默认一条都不执行**。用户在 设置 → AI → MCP 服务 里看到完整命令行，逐条点「允许」。
+2. **允许绑定到命令本身**：把你声明的 `command+args+env+cwd` 算成一个指纹存下来。
+   你以后改了任何一个字符，状态就回到「命令已改，需重新确认」，用户要再点一次。
+   这不是刁难——插件升级时悄悄往命令里塞参数，正是最容易被滥用的地方。
+3. 允许的瞬间建连、`tools/list` 拿工具清单；工具名在模型那边是
+   `mcp:<插件 id>:<server 名>:<工具名>`，与别的插件不会撞。
+4. 风险等级**由 server 自己声明**：`annotations.destructiveHint` → 每次确认（不可记住）、
+   `readOnlyHint` → 自动放行、都没有 → 每次确认（可记住）。所以给工具写对注解，
+   用户体验会好很多。
+5. 进程崩了（退出/被杀/OOM）：那一次调用以错误回给模型，下一轮对话照常；连续 3 次失败
+   就本会话停用，避免每次提问都重启一遍。
+
+已知限制，写在前头省得踩：
+
+- **只支持 stdio**，http 传输没做。
+- 只实现 `tools/*`：`resources`、`prompts`、`sampling`、`roots` 都不支持。
+- `npx -y` 第一次要下载依赖，可能超过 20 秒建连预算（表现是第一次对话里工具不在，
+  过一会儿再问就有了）。要求稳就把依赖提前装好，直接写 `node`/`uvx` 指向本地可执行文件。
+- 返回内容只取文本：图片、二进制、音频会被标成「已省略」。
 
 ### `ai/SKILL.md`
 

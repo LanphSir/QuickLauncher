@@ -1,8 +1,8 @@
 # AI 应用与插件 AI 协议（设计稿 + 实现校正）
 
-> 状态：v0.6.0 → v0.6.3 已落地，v0.6.4（MCP）待做。
+> 状态：v0.6.0 → v0.6.4 全部落地。
 > 决策日期 2026-11-02。本文回答三个问题：**放在哪、怎么调、出问题谁负责**。
-> 第 4–6 节已按 v0.6.3 的实际实现校正过（与设计稿不一致处均已标注原因）；
+> 第 2、4–6 节已按实际实现校正过（与设计稿不一致处均已标注原因）；
 > 版本与验收见 [ROADMAP.md](ROADMAP.md)；每版交付后补 [DEVLOG.md](DEVLOG.md)。
 
 ## 0. 结论与已定决策
@@ -69,7 +69,9 @@ src/main/ai/
   toolHost.ts      把调用送进插件页并等回执（懒建、10s 就绪、空闲 60s 回收、崩溃重试一次）
   attach.ts / extract.ts / pdf.ts   附件抽取与编码回退
   settings.ts      AI 设置（模型、授权开关、确认模式）
-  mcp/             v0.6.4：@modelcontextprotocol/sdk 封装 + 进程生命周期
+  mcpSpec.ts       ai/mcp.json 解析、命令指纹、MCP 工具命名与风险推断
+  mcpClient.ts     最小 stdio JSON-RPC 客户端（initialize / tools/list / tools/call）
+  mcpManager.ts    审批状态、懒启动、崩溃计数、工具清单、退出收尸
 plugins/ai/        AI 对话界面（独立 vite 工程，自带样式，不引 naive-ui）
 ```
 
@@ -183,14 +185,43 @@ description: 中英互译、术语对照；用户提到翻译/英文/多语言�
 模型需要细节时调内置工具 `load_skill(pluginId)` 拉全文。
 **不要**把 SKILL.md 直接拼进 system prompt——多插件时上下文会被文档挤满。
 
-### 4.4 `ai/mcp.json`（v0.6.4）
+### 4.4 `ai/mcp.json`（v0.6.4，已落地）
 
 ```json
-{ "servers": [ { "name": "filesystem", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:/notes"], "env": {} } ] }
+{
+  "servers": [
+    {
+      "name": "filesystem",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:/notes"],
+      "env": { "LOG_LEVEL": "error" },
+      "cwd": "tools",
+      "timeoutMs": 30000
+    }
+  ]
+}
 ```
 
-插件自带 MCP 声明等于"让启动器执行任意命令"，因此：安装/首次启用时**必须**弹窗展示
-完整 argv 由用户确认，且确认记录绑定到 `command + args` 指纹——改了参数要重新确认。
+也接受裸数组。字段：`name`（小写字母开头，`a-z0-9_-`，≤32，用于工具命名空间）、
+`command`（必填）、`args`（字符串数组，≤32 项、单项 ≤512 字符）、`env`（≤32 项，
+键名合法即可，值里可以放 token——设置页**只显示键名**）、`cwd`（插件目录内的相对路径，
+`..`/绝对路径一律拒）、`timeoutMs`（缺省 30s，夹在 1–120s）。坏一条丢一条。
+
+插件自带 MCP 声明等于「让启动器执行任意命令」，因此：
+
+1. **默认一条都不执行**。`state: pending`，设置页列出完整 argv，用户逐条点允许。
+2. **确认绑定到指纹**（`command+args+env+cwd` 的 sha256/32 位，落 `config.aiMcpApprovals`）。
+   改了参数 → `stale` → 必须重新确认。只存布尔等于「允许这个插件以后执行任何命令」。
+3. **不经 shell**：`spawn(cmd, args, {shell:false})`，参数里的 `;`/`&&` 只是普通字符。
+   `env` 与 `process.env` **合并**（`npx`/`node` 靠 PATH 找到）。
+4. **插件级授权同样生效**：命令批了但插件在「AI 工具」里被关掉，工具仍不下发；
+   批准命令时顺手打开该插件开关，避免用户在两处各开一次。
+5. **进程可控**：懒启动（批准时建连 + 每次对话前 3s 预算补齐）、连续失败 3 次本会话停用、
+   退出时 `taskkill /T /F` 收整棵进程树。
+
+实现选择：**自写最小 stdio 客户端**（`mcpClient.ts`），不引官方 SDK——只用
+`initialize`/`tools/list`/`tools/call`，而崩溃计数、stderr 归因、杀进程树这些恰恰是
+SDK 藏起来的部分。代价是不支持 resources/prompts/sampling，http 传输也未做。
 
 ### 4.5 新通道与权限
 
@@ -239,13 +270,14 @@ description: 中英互译、术语对照；用户提到翻译/英文/多语言�
       c. needsConfirm(risk)：read 直通；write 查会话放行；dangerous 必问
       d. askConfirm()：主进程推 tool-confirm 给 AI 页 → 等 tool.confirm 回执
          （TOOL_CONFIRM_TIMEOUT_MS=60s，超时按 denied；取消对话即全部 cancelConfirms）
-      e. 执行（超时统一取 tool.timeoutMs，缺省 8s、夹在 1–60s）
+      e. 执行（超时统一取 tool.timeoutMs，缺省 8s、夹在 1–60s；MCP 缺省 30s、1–120s）
          builtin：主进程内直调，withTimeout(timeoutMs)
          plugin ：toolHost → warmPluginContents → waitReady(10s)
                   → send 'plugin:ai.tool-call' → 等 'plugin:ai.tool.reply'
                   → 崩溃/被回收 retryable 重建重试一次
-         mcp    ：v0.6.4
-      f. writeAudit()：无论成功/失败/被拒都写一行
+         mcp    ：mcpManager.callMcpTool → 进程不在就先重连一次（记一次失败）
+                  → stdio JSON-RPC 'tools/call'（新行分帧，客户端自己计时）
+      f. writeAudit()：无论成功/失败/被拒都写一行，source 区分 builtin/plugin/mcp
   → 结果归一化：单条 ≤4000 字（MAX_TOOL_RESULT_CHARS），preload 侧先按 16000 字截
   → 回填 role:'tool' 消息 → 继续循环
      （MAX_TOOL_ROUNDS=4 轮 / MAX_TOOL_CALLS=8 次，超限补「未执行」结果再收尾）
@@ -265,7 +297,7 @@ webContents，实际实现改为**复用 `pluginHost` 的视图**（`warmPluginC
 
 ## 6. 安全模型
 
-| 面 | 措施（v0.6.3 实际实现） |
+| 面 | 措施（v0.6.4 实际实现） |
 |---|---|
 | API Key | `safeStorage.encryptString` 密文落盘；渲染层/插件层只拿掩码；日志与审计里脱敏 |
 | 工具越权 | 四重门：manifest `permissions:["ai"]` + `ai.tools` 声明有效 + 设置页开关（默认全体关闭）+ 每次下发现算授权（撤销立即生效） |
@@ -273,8 +305,8 @@ webContents，实际实现改为**复用 `pluginHost` 的视图**（`warmPluginC
 | 提示注入 | 工具返回内容一律作为 `role:'tool'` 的 data 消息回填，不拼进 system；`shell.openExternal`、写入类归 `dangerous`；绝不执行模型给出的原样命令 |
 | 名字伪造 | 模型只能用 api 名（`[A-Za-z0-9_-]{1,64}`），主进程用 `byApiName` 反查真实工具；反查不到的调用直接失败，不接受模型自己拼的 `plugin:` 名 |
 | 回执伪造 | `toolHost` 用 `getCaller(sender)` 核对回执来源必须等于目标插件，且 `callId` 必须在 pending 里；迟到的回执按 callId 找不到等待者即丢弃（不能污染下一轮） |
-| MCP | 命令 argv 人工确认 + 指纹绑定；`cwd` 限制在用户选择的目录；stdout/stderr 各留 64KB；连续 3 次崩溃停用（v0.6.4） |
-| 成本 | 会话级 token 预算 + 用量显示；单轮 `MAX_TOOL_ROUNDS=4` / `MAX_TOOL_CALLS=8`；工具结果截断到 4000 字（长结果最容易烧 token） |
+| MCP | 命令 argv 人工确认 + **指纹绑定**（改任一字符即失效）；`spawn(shell:false)` 不经 shell；`env` 与 `process.env` 合并而非替换；`cwd` 限制在插件目录内；stdout/stderr 各留 64KB 尾部；连续 3 次失败本会话停用；退出时 `taskkill /T` 收进程树 |
+| 成本 | 会话级 token 预算 + 用量显示；单轮 `MAX_TOOL_ROUNDS=4` / `MAX_TOOL_CALLS=8`；工具结果截断到 4000 字（长结果最容易烧 token）；MCP 工具数量随 server 走，单个插件最多 5 个 server |
 | 审计 | `userData/ai/audit.jsonl` 每次调用一行：时间、会话、来源、工具、参数摘要、结果摘要、耗时、`confirm`（`allowed`/`denied`/`timeout`/`not-required`）；2MB 轮转 |
 | 数据 | 会话与审计都在 `userData/ai/`，与插件 `data/<pluginId>/` 平级、互不可见 |
 
@@ -299,8 +331,14 @@ webContents，实际实现改为**复用 `pluginHost` 的视图**（`warmPluginC
    再改 `MessageChannelMain` 传 port；不预先优化。
 2. **推理型模型**（DeepSeek-R1 等）的 `reasoning` 字段形态各家不同，v0.6.0 先做"有就展示、
    没有就空着"，不做结构归一。
-3. **工具结果长文**：截断策略（16KB/4000 字）可能会切掉关键行，v0.6.3 观察真实使用后
-   再决定是否加"分段读取"工具。
+3. **工具结果长文**：截断策略（16KB/4000 字）可能会切掉关键行，观察真实使用后再决定
+   是否加"分段读取"工具。
 4. **多插件工具重名**：命名空间解决调用歧义，但模型看到的短名仍可能混淆，考虑在
    描述前缀插件名（等有 5 个以上插件工具再定）。
 5. **跨平台**：Windows 优先；macOS 的 MCP stdio 路径与托盘行为留到 v0.7 盘点。
+6. **MCP 首次启动慢**：`npx -y` 要下载依赖，20s 建连预算可能不够。真接入社区 server
+   后按实际耗时决定：是放宽预算、还是把「安装」与「建连」拆成两步（先预热再对话）。
+7. **MCP 停用后无法恢复**：连续 3 次失败 → 本会话禁用，只能重启应用。等有人真的踩到
+   再加「设置页重新启用」按钮。
+8. **MCP 进程常驻**：批准后进程活到应用退出，没有空闲回收。重启成本（可能几十秒）
+   比省下的内存贵，暂定如此；如果用户装了多个重型 server 再考虑按空闲回收。

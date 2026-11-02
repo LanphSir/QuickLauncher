@@ -13,6 +13,7 @@ import { writeAudit } from './audit'
 import { findBuiltinTool } from './builtinTools'
 import { askConfirm, needsConfirm } from './confirm'
 import { callPluginTool } from './toolHost'
+import { callMcpTool } from './mcpManager'
 import type { ResolvedTool, ToolCatalog } from './toolCatalog'
 import type { RawToolCall } from './toolCalls'
 
@@ -107,6 +108,12 @@ async function runTool(
     } catch (err) {
       return { ok: false, text: '', error: reasonOf(err) }
     }
+  }
+  if (tool.source === 'mcp') {
+    if (!tool.pluginId || !tool.server) return { ok: false, text: '', error: 'MCP 工具缺少归属信息' }
+    // MCP 侧超时由 client 自己的 request 计时器管，这里不再包一层：
+    // 两层超时只会让人分不清是谁放弃的
+    return callMcpTool(tool.pluginId, tool.server, tool.shortName, args, timeoutMs)
   }
   const plugin = tool.pluginId
   if (!plugin) return { ok: false, text: '', error: '工具缺少插件归属' }

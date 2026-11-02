@@ -19,6 +19,7 @@ import {
   DEFAULT_MAX_OUTPUT_TOKENS,
   MAX_TOOL_CALLS,
   MAX_TOOL_ROUNDS,
+  MCP_CHAT_BUDGET_MS,
   type AiChatMessage,
   type AiMessagePart,
   type AiSendRequest,
@@ -39,6 +40,7 @@ import { estimateTokens, fitTurns, type ChatTurn } from './tokens'
 import { buildToolCatalog } from './toolCatalog'
 import { ToolCallCollector } from './toolCalls'
 import { describeCall, executeToolCall } from './toolExec'
+import { ensureForChat, hasApprovedServers } from './mcpManager'
 
 interface ActiveRun {
   controller: AbortController
@@ -349,6 +351,11 @@ export async function sendMessage(
       turnsForSummary = history
 
       // 工具目录每次发消息重建：授权刚被撤销时，这一条消息就不该再看到那个工具
+
+      // MCP（v0.6.4）：已批准的 server 惰性建连。预算 3 秒，超时的那几个本轮
+      // 只是不出现——模型少一个工具照样能答，不该让用户干等一个卡住的握手。
+      if (hasApprovedServers()) await ensureForChat(MCP_CHAT_BUDGET_MS)
+
       const catalog = buildToolCatalog()
       /** 本轮内产生、还没落盘的工具轮次，只参与后续请求 */
       const extraTurns: ChatTurn[] = []

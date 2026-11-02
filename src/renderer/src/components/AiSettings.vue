@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { NButton, NPopconfirm, NSelect, NSwitch, useMessage } from 'naive-ui'
 import AppIcon from './AppIcon.vue'
 import AiProviderEdit from './AiProviderEdit.vue'
+import AiMcpConfirm from './AiMcpConfirm.vue'
 import { closeOverlay, openOverlay } from '../composables/useOverlay'
 
 const message = useMessage()
@@ -19,12 +20,24 @@ const modelOptions = computed(() => {
 const testing = ref('')
 const toolPlugins = ref<AiToolPluginView[]>([])
 const toolBusy = ref('')
+const mcpServers = ref<AiMcpServerView[]>([])
+const mcpBusy = ref('')
 
 const grantedCount = computed(() => toolPlugins.value.filter((p) => p.granted).length)
+const approvedMcp = computed(() => mcpServers.value.filter((s) => s.state === 'approved').length)
+
+const MCP_STATE_LABEL: Record<AiMcpServerView['state'], string> = {
+  pending: '待确认',
+  approved: '已允许',
+  rejected: '已拒绝',
+  stale: '命令已改，需重新确认',
+  disabled: '已停用'
+}
 
 async function load(): Promise<void> {
   settings.value = await window.panel.aiGetSettings()
   toolPlugins.value = await window.panel.aiTools()
+  mcpServers.value = await window.panel.aiMcpServers()
 }
 
 onMounted(() => void load())
@@ -47,6 +60,50 @@ async function toggleGrant(view: AiToolPluginView, granted: boolean): Promise<vo
     toolPlugins.value = await window.panel.aiTools()
   } finally {
     toolBusy.value = ''
+  }
+}
+
+async function refreshMcp(): Promise<void> {
+  mcpServers.value = await window.panel.aiMcpServers()
+}
+
+/**
+ * 允许要过确认弹窗（完整 argv），拒绝可以直接点——拒绝没有任何风险，
+ * 多一道门只会让人以为「连拒绝都要打报告」。
+ */
+function askApprove(row: AiMcpServerView): void {
+  let id = 0
+  id = openOverlay({
+    component: AiMcpConfirm,
+    label: 'ai-mcp-confirm',
+    initialFocus: 'first',
+    props: {
+      target: row,
+      onClose: () => closeOverlay(id),
+      onDecided: async (allow: boolean, reason?: string) => {
+        closeOverlay(id)
+        mcpBusy.value = `${row.pluginId}::${row.server}`
+        try {
+          await refreshMcp()
+          if (reason) message.error(reason)
+          else message.success(allow ? '已允许，工具会随下一次对话下发' : '已拒绝')
+        } finally {
+          mcpBusy.value = ''
+        }
+      }
+    }
+  })
+}
+
+async function decide(row: AiMcpServerView, allow: boolean): Promise<void> {
+  mcpBusy.value = `${row.pluginId}::${row.server}`
+  try {
+    const r = await window.panel.aiMcpDecision(row.pluginId, row.server, allow)
+    if (!r.ok) message.error(r.message ?? '操作失败')
+    else if (allow) message.success('已允许，工具会随下一次对话下发')
+    await refreshMcp()
+  } finally {
+    mcpBusy.value = ''
   }
 }
 
@@ -225,6 +282,60 @@ async function setDefault(model: string): Promise<void> {
     <p class="hint">
       授权的插件，其工具才会出现在模型手上；未授权时工具与技能文档都不下发。
       工具能读到剪贴板、能改你的数据，所以默认全部关闭。
+    </p>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h3>MCP 服务</h3>
+      <span class="count">{{ approvedMcp }}/{{ mcpServers.length }} 已允许</span>
+    </div>
+
+    <div v-for="s in mcpServers" :key="`${s.pluginId}::${s.server}`" class="mcp">
+      <div class="p-main">
+        <div class="p-name">
+          {{ s.pluginName }}<span class="mcp-server">/{{ s.server }}</span>
+          <span class="p-tag" :class="`mcp-tag-${s.state}`">{{ MCP_STATE_LABEL[s.state] }}</span>
+          <span v-if="s.running" class="p-tag">运行中 · {{ s.toolCount }} 个工具</span>
+        </div>
+        <div class="p-sub mono">{{ s.commandLine || '（没有可用的命令）' }}</div>
+        <div v-if="s.envKeys.length" class="p-meta">环境变量：{{ s.envKeys.join('、') }}</div>
+        <div v-for="e in s.errors" :key="e" class="p-error">{{ e }}</div>
+        <div v-if="s.error" class="p-error">{{ s.error }}</div>
+      </div>
+      <div class="p-actions">
+        <NButton
+          size="tiny"
+          :type="s.state === 'approved' ? 'default' : 'error'"
+          :secondary="s.state !== 'approved'"
+          :quaternary="s.state === 'approved'"
+          :disabled="mcpBusy === `${s.pluginId}::${s.server}`"
+          @click="askApprove(s)"
+        >
+          {{ s.state === 'approved' ? '重新确认' : '查看命令' }}
+        </NButton>
+        <NButton
+          v-if="s.state !== 'rejected'"
+          size="tiny"
+          quaternary
+          :disabled="mcpBusy === `${s.pluginId}::${s.server}`"
+          @click="decide(s, false)"
+        >
+          拒绝
+        </NButton>
+      </div>
+    </div>
+
+    <p v-if="!mcpServers.length" class="empty">
+      还没有插件声明 MCP server。插件在 <code>plugin.json</code> 里写
+      <code>ai: { "mcp": "ai/mcp.json" }</code> 并声明 <code>permissions: ["ai"]</code> 后，
+      这里会列出它想执行的命令。
+    </p>
+
+    <p class="hint">
+      这些条目是<strong>要在这台机器上执行的命令</strong>，所以默认一条都不跑：必须由你看过完整命令行后逐条允许，
+      允许绑定到命令本身——插件改了任何参数都会重新问你。进程只在 AI 需要用到工具时才启动；
+      允许某个 server 时会顺带打开该插件在「AI 工具」里的开关，关掉那个开关也会一并停用它的 MCP 工具。
     </p>
   </section>
 </template>
@@ -409,5 +520,48 @@ async function setDefault(model: string): Promise<void> {
   font-size: 11.5px;
   color: #b25d09;
   line-height: 1.6;
+}
+
+/* ---- MCP 服务 ---- */
+.mcp {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid #f4f5f6;
+}
+
+.mcp:first-of-type {
+  border-top: none;
+}
+
+.mcp-server {
+  color: #8f959e;
+  font-size: 12px;
+}
+
+.mcp-tag-pending {
+  background: #fff4e6;
+  color: #b25d09;
+}
+
+.mcp-tag-approved {
+  background: #eef6f0;
+  color: #2f7d4f;
+}
+
+.mcp-tag-rejected {
+  background: #f4f5f6;
+  color: #8f959e;
+}
+
+.mcp-tag-stale {
+  background: #fdecea;
+  color: #c0392b;
+}
+
+.mcp-tag-disabled {
+  background: #f4f5f6;
+  color: #c0392b;
 }
 </style>

@@ -49,6 +49,25 @@ function createAjv(): Ajv {
   return new Ajv({ allErrors: true, strict: false, validateFormats: false })
 }
 
+/**
+ * 把 ajv 包成「schema → 校验器」的工厂。
+ *
+ * 校验失败返回一句给模型看的原因（带实例路径），而不是布尔：
+ * 模型靠这句话改参数重试，返回值里塞 ajv 原始 errors 数组它读不懂。
+ */
+function makeCompiler(ajv: Ajv): (schema: object) => ToolValidator {
+  return (schema: object): ToolValidator => {
+    const fn = ajv.compile(schema)
+    return (data: unknown): string | null => {
+      if (fn(data) === true) return null
+      const first = fn.errors?.[0]
+      if (!first) return '参数不符合 schema'
+      const where = first.instancePath || '参数'
+      return `${where} ${first.message ?? '不符合 schema'}`.slice(0, 300)
+    }
+  }
+}
+
 /** 编译失败信息可能很长（带 schema 路径），截断到一句能读的话 */
 function shortError(err: unknown): string {
   const text = err instanceof Error ? err.message : String(err)
@@ -93,6 +112,21 @@ function normalizeParameters(
 }
 
 /**
+ * 给外部复用（v0.6.4 的 MCP 工具）：把一份 JSON Schema 编成校验器。
+ *
+ * MCP server 自己声明 `inputSchema`，形状与 tools.json 的 `parameters` 完全一致，
+ * 所以复用同一套编译与「返回字符串原因」的约定——执行链路不需要知道工具从哪来。
+ * 编不出来返回 null（调用方当作「该工具不可用」，与 tools.json 的处理一致）。
+ */
+export function compileToolSchema(raw: unknown): {
+  schema: Record<string, unknown>
+  validator: ToolValidator
+} | null {
+  const errors: string[] = []
+  return normalizeParameters(raw, 'inputSchema', makeCompiler(createAjv()), errors)
+}
+
+/**
  * 解析一份 tools.json 的原始 JSON。
  *
  * 不读文件、不碰 fs：文件读写在 tools.ts，这里纯靠入参，单测能直接喂各种坏数据。
@@ -115,16 +149,7 @@ export function parseToolsSpec(raw: unknown): ToolsParseResult {
   }
 
   const ajv = createAjv()
-  const compile = (schema: object): ToolValidator => {
-    const fn = ajv.compile(schema)
-    return (data: unknown): string | null => {
-      if (fn(data) === true) return null
-      const first = fn.errors?.[0]
-      if (!first) return '参数不符合 schema'
-      const where = first.instancePath || '参数'
-      return `${where} ${first.message ?? '不符合 schema'}`.slice(0, 300)
-    }
-  }
+  const compile = makeCompiler(ajv)
 
   const seen = new Set<string>()
   for (const [index, item] of root.tools.entries()) {

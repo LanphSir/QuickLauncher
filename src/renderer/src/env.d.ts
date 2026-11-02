@@ -141,6 +141,27 @@ interface AiToolPluginView {
   errors: string[]
 }
 
+/**
+ * 设置 → AI → MCP 服务：一行 = 一个插件声明的 MCP server。
+ * 与工具不同，这些条目要靠用户看完 argv 后**逐条**批准，命令改了要重新批。
+ */
+interface AiMcpServerView {
+  pluginId: string
+  pluginName: string
+  server: string
+  commandLine: string
+  command: string
+  args: string[]
+  envKeys: string[]
+  cwd: string
+  timeoutMs: number
+  state: 'pending' | 'approved' | 'rejected' | 'stale' | 'disabled'
+  toolCount: number
+  running: boolean
+  error?: string
+  errors: string[]
+}
+
 interface PanelApi {
   getPlugins(): Promise<PluginSummary[]>
   openPlugin(
@@ -187,6 +208,9 @@ interface PanelApi {
   /** AI 工具目录（v0.6.2）：每个声明了 AI 能力的插件一行，含授权开关与解析错误 */
   aiTools(): Promise<AiToolPluginView[]>
   aiSetToolGrant(pluginId: string, granted: boolean): Promise<{ ok: boolean; message?: string }>
+  /** MCP 服务（v0.6.4）：列出声明的命令；决策会落盘并把指纹绑到当前命令 */
+  aiMcpServers(): Promise<AiMcpServerView[]>
+  aiMcpDecision(pluginId: string, server: string, allow: boolean): Promise<{ ok: boolean; message?: string }>
   /** 自定义外部应用（设置 → 外部应用） */
   getShortcuts(): Promise<ShortcutEntry[]>
   getShortcut(id: string): Promise<ShortcutEntry | null>

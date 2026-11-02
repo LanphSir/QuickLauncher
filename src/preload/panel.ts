@@ -46,6 +46,9 @@ const api = {
   aiTools: () => ipcRenderer.invoke('panel:ai-tools'),
   aiSetToolGrant: (pluginId: string, granted: boolean) =>
     ipcRenderer.invoke('panel:ai-set-tool-grant', { pluginId, granted }),
+  aiMcpServers: () => ipcRenderer.invoke('panel:ai-mcp'),
+  aiMcpDecision: (pluginId: string, server: string, allow: boolean) =>
+    ipcRenderer.invoke('panel:ai-mcp-decision', { pluginId, server, allow }),
   installPlugin: (mode: 'dir' | 'zip') => ipcRenderer.invoke('panel:install-plugin', mode),
   uninstallPlugin: (id: string) => ipcRenderer.invoke('panel:uninstall-plugin', id),
   setPluginDisabled: (id: string, disabled: boolean) =>

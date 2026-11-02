@@ -1140,6 +1140,11 @@ try {
             callTool(findTool('launcher_open'), { target: 'com.launcher.translator', query: clip })
             return
           }
+          if (lastCall.includes('_echo')) {
+            // MCP 工具：把结果原样带回正文，断言里好认
+            writeText([`MCP 说：${String(toolMsgs[toolMsgs.length - 1].content ?? '').trim()}`])
+            return
+          }
           writeText(['已经用翻译插件打开了剪贴板里的地址。'])
           return
         }
@@ -1150,6 +1155,9 @@ try {
           if (userText.includes('CALC')) return callTool(findTool('calculate'), { expression: '123*45+6' })
           if (userText.includes('TIMEOUT')) return callTool(findTool('probe_slow'), {})
           if (userText.includes('BOOM')) return callTool(findTool('probe_boom'), {})
+          // MCPCRASH 必须排在 MCP 前面：前者包含后者
+          if (userText.includes('MCPCRASH')) return callTool(findTool('crash'), {})
+          if (userText.includes('MCP')) return callTool(findTool('echo'), { text: '你好，MCP' })
         }
 
         writeText(
@@ -1453,7 +1461,7 @@ try {
       entry: 'index.html',
       permissions: ['ai'],
       apiVersion: 2,
-      ai: { tools: 'ai/tools.json' }
+      ai: { tools: 'ai/tools.json', mcp: 'ai/mcp.json' }
     })
   )
   writeFileSync(
@@ -1501,6 +1509,42 @@ try {
   })
 </script></body>`
   )
+
+  // MCP（v0.6.4）：冒充一个真实的 stdio server。
+  // 命令用 process.execPath（跑冒烟的这个 node），路径写绝对路径——与插件作者
+  // 写 `npx xxx` 的形态一致，都是「一条要执行的命令 + 一串参数」。
+  //
+  // 两个 server 各管一件事：
+  //   mock —— 走完整流程（批准/调用/改参数/崩溃）；它的审批记录会被上一轮冒烟留在 config 里，
+  //           所以不拿它断言「初始待确认」，否则第二次跑就变成 stale 了
+  //   idle —— 永远不批准，专门用来断言「默认一条命令都不跑」与「argv 完整可见」
+  const MOCK_MCP_SCRIPT = join(process.cwd(), 'scripts', 'mock-mcp-server.mjs')
+  const writeMcpJson = (extraArgs = []) =>
+    writeFileSync(
+      join(TOOL_PROBE_DIR, 'ai', 'mcp.json'),
+      JSON.stringify(
+        {
+          servers: [
+            {
+              name: 'mock',
+              command: process.execPath,
+              args: [MOCK_MCP_SCRIPT, ...extraArgs],
+              env: { SMOKE_MCP: '1' },
+              timeoutMs: 15000
+            },
+            {
+              name: 'idle',
+              command: process.execPath,
+              args: [MOCK_MCP_SCRIPT, '--idle'],
+              timeoutMs: 15000
+            }
+          ]
+        },
+        null,
+        2
+      )
+    )
+  writeMcpJson()
   await evaluate(ws, 'window.panel.setPluginDisabled("com.launcher.notepad", true)')
   await evaluate(ws, 'window.panel.setPluginDisabled("com.launcher.notepad", false)')
   const toolProbe = await waitFor(async () => {
@@ -1694,6 +1738,114 @@ try {
     String(boomResult?.result?.error ?? '(无)').slice(0, 60)
   )
 
+  // ---------- v0.6.4：MCP 接入（声明 → 确认 → 调用 → 改参数 → 崩溃） ----------
+  const findMcpRow = async (server = 'mock') => {
+    const list = await evaluate(ws, 'window.panel.aiMcpServers()')
+    return (list ?? []).find((r) => r.pluginId === TOOL_PROBE_ID && r.server === server) ?? null
+  }
+
+  // 1. 声明被识别，但没有任何进程被启动（用从未批准过的 idle 保证可重复）
+  const mcpPending = await waitFor(async () => {
+    const row = await findMcpRow('idle')
+    return row && row.state === 'pending' ? row : null
+  })
+  check(
+    'MCP server 声明被识别且默认不启动',
+    mcpPending?.state === 'pending' && mcpPending.running === false && mcpPending.toolCount === 0,
+    `${mcpPending?.state ?? '(无)'} / running=${mcpPending?.running}`
+  )
+  check(
+    '设置页能拿到完整 argv（确认的依据）',
+    mcpPending?.command === process.execPath &&
+      Array.isArray(mcpPending?.args) &&
+      mcpPending.args[0] === MOCK_MCP_SCRIPT &&
+      mcpPending.args[1] === '--idle' &&
+      String(mcpPending?.commandLine).includes('mock-mcp-server.mjs'),
+    String(mcpPending?.commandLine ?? '(无)').slice(-48)
+  )
+  const mcpEnvRow = await findMcpRow('mock')
+  check(
+    'env 只暴露键名（值里可能带 token）',
+    (mcpEnvRow?.envKeys ?? []).join() === 'SMOKE_MCP' && !String(mcpEnvRow?.commandLine).includes('SMOKE_MCP=1'),
+    (mcpEnvRow?.envKeys ?? []).join('、')
+  )
+
+  // 2. 允许 → 立刻建连并列出工具
+  const mcpApprove = await evaluate(
+    ws,
+    `window.panel.aiMcpDecision(${JSON.stringify(TOOL_PROBE_ID)}, 'mock', true)`
+  )
+  const mcpReady = await waitFor(async () => {
+    const row = await findMcpRow()
+    return row && row.state === 'approved' && row.running && row.toolCount >= 2 ? row : null
+  })
+  check(
+    '允许后建连并列出工具',
+    mcpApprove?.ok === true && mcpReady?.toolCount === 2,
+    `${mcpApprove?.ok ? 'ok' : mcpApprove?.message ?? '失败'} / ${mcpReady?.toolCount ?? 0} 个工具`
+  )
+
+  // 3. 对话里真的调到了 MCP 工具
+  const mcpTurn = await toolTurn('MCP 用回声工具说一句话')
+  const mcpCalls = pick(mcpTurn.events, 'tool-call')
+  const mcpResults = pick(mcpTurn.events, 'tool-result')
+  check(
+    'MCP 工具被模型调用并返回结果',
+    mcpCalls.length === 1 &&
+      String(mcpCalls[0].call.apiName).endsWith('_echo') &&
+      mcpResults.length === 1 &&
+      mcpResults[0].result.ok === true &&
+      String(mcpResults[0].result.text).includes('回声'),
+    `${mcpCalls[0]?.call?.apiName ?? '(未调用)'} → ${String(mcpResults[0]?.result?.text ?? '').slice(0, 30)}`
+  )
+  check(
+    'MCP 结果回到模型后继续生成',
+    doneOf(mcpTurn.events)?.error === undefined && textOfEvents(mcpTurn.events).includes('回声'),
+    textOfEvents(mcpTurn.events).slice(0, 40)
+  )
+
+  // 4. 改参数 → 指纹失效 → 回到待确认（这条是整个授权机制的核心）
+  writeMcpJson(['--smoke-changed'])
+  const mcpStale = await waitFor(async () => {
+    const row = await findMcpRow()
+    return row && row.state === 'stale' ? row : null
+  })
+  check(
+    '命令改动后旧批准失效，回到待确认',
+    mcpStale?.state === 'stale',
+    `${mcpStale?.state ?? '(无)'} / ${String(mcpStale?.commandLine ?? '').slice(-30)}`
+  )
+
+  // 5. server 崩溃：工具报错回给模型，对话继续可用
+  const reApprove = await evaluate(
+    ws,
+    `window.panel.aiMcpDecision(${JSON.stringify(TOOL_PROBE_ID)}, 'mock', true)`
+  )
+  await waitFor(async () => {
+    const row = await findMcpRow()
+    return row && row.state === 'approved' && row.running ? true : null
+  })
+  const crashRun = (async () => toolTurn('MCPCRASH 让服务崩掉'))()
+  const crashDialog = await confirmDialog('allow')
+  const crashed = await crashRun
+  const crashResult = pick(crashed.events, 'tool-result')[0]
+  check(
+    'MCP 的高危工具同样要确认',
+    reApprove?.ok === true && crashDialog?.risk === '高风险',
+    JSON.stringify(crashDialog ?? {}).slice(0, 80)
+  )
+  check(
+    'server 崩溃后工具以错误回给模型',
+    crashResult?.result.ok === false,
+    String(crashResult?.result?.error ?? '(无)').slice(0, 60)
+  )
+  const afterCrash = await toolTurn('你好，崩了之后还能聊吗')
+  check(
+    'server 崩溃后对话仍可用',
+    doneOf(afterCrash.events)?.error === undefined && textOfEvents(afterCrash.events).length > 0,
+    textOfEvents(afterCrash.events).slice(0, 30) || '(无正文)'
+  )
+
   // 6. 审计：userData/ai/audit.jsonl 里有据可查
   const auditFile = (() => {
     const base = process.env.APPDATA || join(process.env.USERPROFILE || '', 'AppData', 'Roaming')
@@ -1728,8 +1880,15 @@ try {
     Boolean(auditDeny) && auditDeny.ok === false && auditDeny.risk === 'dangerous' && auditDeny.confirm === 'denied',
     JSON.stringify(auditDeny ?? {}).slice(0, 100)
   )
+  const auditMcp = auditLines.find((e) => e.source === 'mcp' && e.ok === true)
+  check(
+    '审计区分工具来源（内置/插件/MCP）',
+    Boolean(auditMcp) && String(auditMcp.tool).startsWith('mcp:'),
+    auditMcp ? `${auditMcp.tool} / ${auditMcp.source}` : '未找到 source=mcp 的记录'
+  )
 
   // 收回探针与授权，退出插件页（断言失败也不留垃圾）
+  await evaluate(ws, `window.panel.aiMcpDecision(${JSON.stringify(TOOL_PROBE_ID)}, 'mock', false)`).catch(() => {})
   await evaluate(ws, `window.panel.aiSetToolGrant(${JSON.stringify(TOOL_PROBE_ID)}, false)`).catch(() => {})
   await evaluate(ws, 'window.panel.exitPlugin()').catch(() => {})
 } finally {
@@ -1747,6 +1906,7 @@ try {
     await evaluate(ws, `window.panel.aiSetToolGrant('com.launcher.calculator', false)`).catch(() => {})
   }
   await evaluate(ws, `window.panel.aiSetToolGrant('com.smoke.probe-ai', false)`).catch(() => {})
+  await evaluate(ws, `window.panel.aiMcpDecision('com.smoke.probe-ai', 'mock', false)`).catch(() => {})
   rmSync(join(process.cwd(), 'plugins', 'probe-ai'), { recursive: true, force: true })
   await evaluate(ws, 'window.panel.setPluginDisabled("com.launcher.notepad", true)').catch(() => {})
   await evaluate(ws, 'window.panel.setPluginDisabled("com.launcher.notepad", false)').catch(() => {})

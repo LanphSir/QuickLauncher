@@ -11,9 +11,9 @@ Electron 38 + TypeScript(strict) + Vue 3 + Pinia + electron-vite + pnpm workspac
 pnpm dev              # 开发模式（会先构建内置插件再启动 electron-vite dev）
 pnpm dev:plugin <name> # 单个插件改走 vite dev server（HMR），改插件代码不用重构建/重启
 pnpm typecheck        # 三端类型检查（tsconfig.json + tsconfig.web.json）
-pnpm test             # 单元测试 247 项（纯逻辑：校验器/内联归一化/存储分片与配额/LRU 策略/监听计划/失焦判定/面板布局/快捷键计划与注册表/自定义应用模型/AI 的 SSE 与增量解析/地址与模型 id/会话转换/token 预算与截断/附件抽取与编码回退/摘要触发条件/manifest 新字段校验/tools.json 解析与参数校验/SKILL.md 解析/工具调用分片归并与名字合法化/工具确认与放行）
+pnpm test             # 单元测试 268 项（纯逻辑：校验器/内联归一化/存储分片与配额/LRU 策略/监听计划/失焦判定/面板布局/快捷键计划与注册表/自定义应用模型/AI 的 SSE 与增量解析/地址与模型 id/会话转换/token 预算与截断/附件抽取与编码回退/摘要触发条件/manifest 新字段校验/tools.json 解析与参数校验/SKILL.md 解析/工具调用分片归并与名字合法化/工具确认与放行/mcp.json 解析与命令指纹）
 pnpm build:plugins    # 仅构建内置插件（plugins/*/dist）
-pnpm smoke            # CDP 功能冒烟 124 项（含 AI：mock 端点跑通配置→流式→停止→附件→多模态→插件工具授权→工具调用全链路/确认/危险工具/超时/崩溃）（需先另起: npx electron . --remote-debugging-port=9222）
+pnpm smoke            # CDP 功能冒烟 135 项（含 AI：mock 端点跑通配置→流式→停止→附件→多模态→插件工具授权→工具调用全链路/确认/危险工具/超时/崩溃→MCP 确认与调用/改参数失效/进程崩溃）（需先另起: npx electron . --remote-debugging-port=9222）
                       # 注意本机 shell 里若带 ELECTRON_RUN_AS_NODE=1，electron 会当 node 跑，启动前 unset
 pnpm dist             # 打包 Windows 安装包 → release/<version>/
 node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
@@ -35,6 +35,7 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 8. **模型调用只有内置插件能发起**：`plugin:ai.chat.*` 等通道在 `define.ts` 标了 `internalOnly`，网关只放行 `source === 'builtin'`。模型调用花的是用户自己的钱，第三方插件即使声明了 `ai` 权限也调不通。第三方插件参与 AI 的唯一姿势是**被调用**：`plugin:ai.tool-call`（主→插件，宿主代发）→ 插件执行 → `plugin:ai.tool.reply`（插件→主，`internalOnly`）。工具调用的编排（选工具、限轮次、风险确认、审计）全在主进程 `main/ai/`，插件侧只负责执行单个 `handler`。
 9. **密钥只在主进程**：AI 的 apiKey 走 `safeStorage` 密文（`main/ai/secrets.ts`），渲染层与插件页只能拿掩码；日志、审计、错误信息里一律脱敏。
 10. **工具调用必须有闸门**：任何模型发起的工具调用都要经过 `main/ai/toolExec.ts` 的同一条流水（参数校验 → `needsConfirm` → `askConfirm` → 执行 → `writeAudit`）。`dangerous` 级工具每次都问，不给「本次会话不再询问」；确认超时按拒绝；任何失败都折成 `tool-result.error` 回给模型而不是抛出去。绕过这条流水直接 dispatch 是禁止的。
+11. **MCP 命令必须用户逐条确认且与指纹绑定**：`ai/mcp.json` 里的命令默认一条都不执行；用户批准时把 `command+args+env+cwd` 的 sha256 一起存进 `config.aiMcpApprovals`，命令改了（指纹对不上）必须重新批准。执行一律 `spawn(cmd, args, {shell:false})`——**不许拼字符串走 shell**，也不许把整份 `process.env` 换成声明里的 env（`npx`/`node` 靠 PATH）。子进程必须在退出时收掉（Windows 用 `taskkill /T`），连续失败 3 次本会话停用。
 
 ## 3. 代码规范
 

@@ -9,6 +9,7 @@ import { ipcMain } from 'electron'
 import { loadAiConfig, saveProvider, deleteProvider, setDefaultModel, settingsView, testProvider } from './settings'
 import { stopAll } from './chat'
 import { listToolPlugins, setToolGrant } from './tools'
+import { decideMcpServer, listMcpServers, shutdownMcp } from './mcpManager'
 import type { ProviderInput } from './settings'
 
 export function initAi(): void {
@@ -41,11 +42,21 @@ export function initAi(): void {
     setToolGrant(String(payload?.pluginId ?? ''), payload?.granted === true)
   )
 
+  // MCP（v0.6.4）：列出「有插件想执行哪些命令」，由用户逐条批准。
+  // 读的是声明与 config，不启动任何进程——真正的 spawn 发生在批准之后。
+  ipcMain.handle('panel:ai-mcp', () => listMcpServers())
+  ipcMain.handle(
+    'panel:ai-mcp-decision',
+    (_event, payload: { pluginId?: unknown; server?: unknown; allow?: unknown }) =>
+      decideMcpServer(String(payload?.pluginId ?? ''), String(payload?.server ?? ''), payload?.allow === true)
+  )
+
   const providers = settingsView().providers.length
   console.log(`[ai] 已初始化，provider ${providers} 个`)
 }
 
-/** 退出时取消所有在飞的请求，避免 quit 阶段还持有 socket */
+/** 退出时取消所有在飞的请求，并收掉 MCP 子进程（否则会留下孤儿 node 进程） */
 export function shutdownAi(): void {
   stopAll()
+  void shutdownMcp()
 }

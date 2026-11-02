@@ -11,6 +11,109 @@
 
 ---
 
+## v0.6.4 — MCP 接入（2026-11-02）
+
+**目标**：让插件能把外部 MCP server 的能力接进对话，同时不把「执行任意命令」这件事
+变成一次静默授权。验收口径三条：能列出并调用工具、确认弹窗展示完整 argv 且改参数要重新确认、
+server 崩了对话还能继续。
+
+### 1. 为什么自写客户端而不是用官方 SDK（`ai/mcpClient.ts`）
+
+官方 `@modelcontextprotocol/sdk` 把进程管理、传输、版本协商都包了，但**恰恰是我们最需要
+掌控的部分**被藏起来：崩溃计数、stderr 归因、Windows 上杀子进程树、建连预算。要在它的
+抽象上插一手，比从头写这一层更绕。
+
+而 MCP 的 stdio 传输本身很薄：**按行分帧的 JSON-RPC 2.0**（不是 LSP 的 `Content-Length`），
+工具场景只需要 `initialize` / `tools/list` / `tools/call` 三个方法。这与项目一贯的口径一致
+（SSE 解析、表达式求值都是自己写的）：协议足够简单就自己写，依赖留给真正复杂的地方。
+
+代价明确写下：只支持 tools 一族，`resources` / `prompts` / `sampling` / `roots` 一律不碰。
+这层薄到可以随时替换成 SDK，真需要时再换。
+
+### 2. 审批绑定指纹，而不是布尔（`ai/mcpSpec.ts` + `config.aiMcpApprovals`）
+
+插件自带的 MCP 声明等于「让启动器执行一条命令」。如果只存 `true/false`，那等于
+「允许这个插件以后执行任何命令」——确认就变成了摆设。
+
+所以存的是 `command + args + env + cwd` 的 sha256 前 32 位。任何一个字符变了，指纹对不上，
+状态回到 `stale`，用户必须重新看一遍再批。`timeoutMs` **故意不进指纹**：超时是本地策略，
+改它不该让用户重新授权一次执行。
+
+状态机（`stateOf`）：`pending` → `approved` / `rejected`；命令改了 → `stale`；
+连续失败 3 次 → `disabled`（本会话内）。
+
+### 3. 不经过 shell 是唯一的安全边界（`mcpClient.ts`）
+
+`spawn(command, args, { shell: false })`。于是 `args: ["a; rm -rf /"]` 只是一个普通参数。
+这条路走通了，就不需要去写「危险字符正则」——那种正则永远漏。
+
+env 是**合并**而不是替换（`{...process.env, ...spec.env}`）：`npx`、`node`、`uvx` 都靠
+PATH 找到，清空 env 会让绝大多数社区 server 直接起不来。
+
+### 4. 生命周期：懒启动、崩溃计数、退出收尸（`ai/mcpManager.ts`）
+
+- **懒启动**：批准时就建连（这是用户唯一一次主动要求它跑起来的机会，等几秒可接受），
+  之后进程常驻；每次对话前 `ensureForChat` 只补「还没连上的」，总预算 3 秒。
+  超预算的那几个本轮只是不出现——模型少一个工具照样能答，让用户等 20 秒才见第一个字才是坏体验。
+- **崩溃计数**：建连失败或调用时发现进程没了，都记一次；成功执行一次工具才清零。
+  达到 3 次停用。不这么做的话，一个配置错误的 server 会在每轮对话里重启一次。
+- **退出收尸**：`shutdownAi` 里 `shutdownMcp()`。Windows 上用 `taskkill /pid <pid> /T /F`，
+  因为 `npx` 起的 node 是孙进程，只 kill 父进程会留孤儿。
+
+### 5. 风险等级来自服务端注解
+
+`annotations.destructiveHint` → `dangerous`，`readOnlyHint` → `read`，都没有 → `write`。
+两个都标了（自相矛盾）按更危险的算。这样第三方 server 的危险工具会自动进入
+v0.6.3 那套确认流程，不需要插件作者再声明一遍。
+
+### 6. 顺手补的漏洞：插件的 AI 授权也是闸
+
+第一版里 MCP 工具只看「命令批没批」，于是出现一个说不通的组合：用户在「AI 工具」里
+关掉某个插件（意思是「别让它参与 AI」），它的 MCP 工具却照样下发。
+
+修法：`isUsable` 要求**命令已批准 且 插件已授权**；同时批准命令时顺手把插件的开关打开
+（用户已经为这条命令点过允许，再让他去另一个地方开一次是多余的）。
+
+### 7. 冒烟踩到的自身问题
+
+第一版断言「初始状态是 pending」，第二次跑就挂了——上一轮留在 config 里的审批记录
+让新声明的命令变成 `stale`。这不是产品 bug，是冒烟不够隔离。
+
+修法：`mcp.json` 声明两个 server，`idle` 永远不批准，专门用来断言「默认不启动」与
+「argv 完整可见」；`mock` 走完整流程。改完连跑两次均通过。
+
+### 关键文件
+
+新增 `src/main/ai/{mcpSpec,mcpClient,mcpManager}.ts`、`src/renderer/src/components/AiMcpConfirm.vue`、
+`scripts/mock-mcp-server.mjs`、`tests/aiMcp.test.ts`；改 `config.ts`（`aiMcpApprovals` + 洗脏值）、
+`shared/ai.ts`（MCP 常量与 `AiMcpServerView`）、`ai/{toolCatalog,toolExec,chat,index,audit,toolsSpec}.ts`、
+`preload/panel.ts`、`renderer/src/{env.d.ts,components/AiSettings.vue}`、`scripts/smoke.mjs`。
+
+### 验证
+
+- `pnpm typecheck` 0 错；`pnpm test` **268/268**（+21）；`npx electron-vite build` + `build:plugins` 通过
+- `pnpm smoke` **135/135**（+11），其中 MCP 段：
+  - `MCP server 声明被识别且默认不启动 — pending / running=false`
+  - `设置页能拿到完整 argv（确认的依据） — …mock-mcp-server.mjs --idle`
+  - `env 只暴露键名（值里可能带 token） — SMOKE_MCP`
+  - `允许后建连并列出工具 — ok / 2 个工具`
+  - `MCP 工具被模型调用并返回结果 — mcp_com_smoke_probe-ai_mock_echo → 回声：你好，MCP`
+  - `命令改动后旧批准失效，回到待确认 — stale / … --smoke-changed`
+  - `MCP 的高危工具同样要确认 — 「让服务崩掉」/ 高风险`
+  - `server 崩溃后工具以错误回给模型 — 退出码 7`
+  - `server 崩溃后对话仍可用 — 你好，我是本地 mock 端点。`
+  - `审计区分工具来源（内置/插件/MCP） — mcp:com.smoke.probe-ai:mock:echo / mcp`
+- 连续跑两次冒烟均 135/135（验证上一轮的审批记录不会污染下一轮）
+
+### 遗留
+
+- `npx -y` 首次启动要下载依赖，可能超过建连预算（20s）；真实社区 server 未实测（本机无网侧依赖）
+- 停用（3 次失败）后没有「重新启用」入口，要重启应用
+- 只支持 stdio，未做 http 传输；不支持 resources/prompts/sampling
+- 进程常驻到退出，没有空闲回收（重启成本比内存贵，先这么定）
+
+---
+
 ## v0.6.3 — 工具调用（2026-11-02）
 
 **目标**：让 v0.6.2 登记好的工具真正跑起来——模型可以调启动器自身的能力和插件的工具，

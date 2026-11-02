@@ -129,9 +129,27 @@
     改由 AI 页自己渲染（遮罩/Esc/焦点规则对齐）。工具宿主复用 pluginHost 视图而非独立隐藏页，
     避免同插件双实例踩存储；代价是占用 5 个常驻视图名额
   - 遗留：「插件未就绪」失败路径未在冒烟里造出来；确认超时固定 60s；内置工具没有逐项开关
-- [ ] v0.6.4 **MCP 接入**：`ai/mcp.json` 解析 + 命令行人工确认（指纹绑定）+ stdio/http client + 进程生命周期（懒启动/崩溃≤3）
-  - 验收：接一个社区 MCP server 能列出并调用工具；确认弹窗展示完整 argv 且改参数需重新确认；server 崩溃后对话仍可用
-  - 遗留预判：跨平台 stdio 路径差异留到 v0.7 盘点
+- [x] v0.6.4 **MCP 接入**（已交付：`ai/{mcpSpec,mcpClient,mcpManager}.ts`、`config.aiMcpApprovals`、
+  设置页「MCP 服务」分组 + `AiMcpConfirm` 确认弹窗、`panel:ai-mcp` / `panel:ai-mcp-decision`、
+  冒烟用假 server `scripts/mock-mcp-server.mjs`）
+  - 交付内容：`mcp.json` 解析（server 名/command/args/env/cwd/超时，坏一条丢一条）、
+    **命令指纹**（`command+args+env+cwd` 的 sha256 前 32 位，落 config，改任一字符即失效）、
+    自写 stdio JSON-RPC 客户端（按行分帧、initialize 握手、tools/list 翻页、tools/call、
+    stderr 尾 64KB、Windows `taskkill /T` 收子进程树）、懒启动（`ensureForChat` 3s 预算）、
+    连续失败 3 次本会话停用、按 `annotations` 推断风险（`destructiveHint`→dangerous、
+    `readOnlyHint`→read、否则 write）、退出时收进程
+  - 验收：✅ 声明的 server 默认 `pending` 且**没有进程被启动**；✅ 允许后建连并列出 2 个工具，
+    模型调用 `echo` 拿到「回声：…」并把结果写进回答；✅ 改 `args` 后状态回到 `stale`
+    （旧批准不再作数），重新批准才可用；✅ `crash` 工具让 server 退出码 7，
+    工具以错误回给模型、**同一会话的下一轮对话仍正常**；✅ 审计能区分 `source: 'mcp'`；
+    ✅ `pnpm test` 268/268（+21）；✅ `pnpm smoke` 135/135（+11，连续跑两次均通过）
+  - 与设计稿的偏差：① 没用 `@modelcontextprotocol/sdk`，自写最小客户端（只要 tools 一族，
+    进程/超时/崩溃计数需要自己掌控，理由与取舍写在 `mcpClient.ts` 头部）；② http 传输未做，
+    只支持 stdio（社区 server 绝大多数是 stdio，http 需要额外的鉴权与证书口径）；
+    ③ 工具宿主没做空闲回收——MCP 进程批准后常驻到应用退出，重启成本（npx 装依赖）比省下的内存贵
+  - 遗留：`npx -y` 首次启动要下载依赖，可能超出 `MCP_CONNECT_TIMEOUT_MS`（20s）；
+    本会话停用后无「重新启用」入口（要重启应用）；`resources`/`prompts`/`sampling` 不支持；
+    跨平台 stdio 路径差异留到 v0.7 盘点
 
 ## v0.7+ — 探索项
 

@@ -45,6 +45,14 @@ export interface AppConfig {
    * 这种能力必须由用户主动打开，不能因为「插件声明了」就默认信任。
    */
   aiToolGrants: string[]
+  /**
+   * 用户对 MCP server 命令的授权记录，key 为 `<插件 id>::<server 名>`。
+   *
+   * 存的是**命令指纹**而不是布尔：插件改了 `command`/`args`/`env`/`cwd` 之后
+   * 指纹对不上，就必须重新问一次。只存 true/false 等于「允许这个插件以后
+   * 执行任何命令」，那是把确认做成摆设。
+   */
+  aiMcpApprovals: Record<string, { fp: string; allow: boolean }>
 }
 
 /**
@@ -64,7 +72,8 @@ const DEFAULTS: AppConfig = {
   pluginHotkeys: {},
   windowStates: {},
   blurBehavior: 'delay',
-  aiToolGrants: []
+  aiToolGrants: [],
+  aiMcpApprovals: {}
 }
 
 let config: AppConfig = { ...DEFAULTS }
@@ -83,6 +92,18 @@ export function loadConfig(): AppConfig {
       config.aiToolGrants = Array.isArray(config.aiToolGrants)
         ? config.aiToolGrants.filter((id): id is string => typeof id === 'string' && Boolean(id))
         : []
+      // MCP 授权：手改配置进来可能是 null/数组/缺 fp，洗成「一条都不信」更安全——
+      // 脏掉的那条会退回待确认，用户再点一次，代价远小于默认放行
+      const rawApprovals = config.aiMcpApprovals
+      config.aiMcpApprovals = {}
+      if (rawApprovals && typeof rawApprovals === 'object' && !Array.isArray(rawApprovals)) {
+        for (const [key, value] of Object.entries(rawApprovals)) {
+          if (!value || typeof value !== 'object') continue
+          const record = value as { fp?: unknown; allow?: unknown }
+          if (typeof record.fp !== 'string' || !record.fp) continue
+          config.aiMcpApprovals[key] = { fp: record.fp, allow: record.allow === true }
+        }
+      }
     }
   } catch (err) {
     console.error('[config] 读取失败，使用默认配置', err)

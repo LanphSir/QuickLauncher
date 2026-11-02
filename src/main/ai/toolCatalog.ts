@@ -16,6 +16,7 @@ import type { AiToolEntry, AiToolRisk } from '../../shared/ai'
 import type { ApiToolDef } from './provider'
 import { builtinTools } from './builtinTools'
 import { grantedToolList } from './tools'
+import { mcpToolEntries } from './mcpManager'
 import type { ToolValidator } from './toolsSpec'
 import { apiToolName } from './toolNames'
 
@@ -31,9 +32,11 @@ export interface ResolvedTool {
   risk: AiToolRisk
   parameters: Record<string, unknown>
   timeoutMs: number
-  source: 'builtin' | 'plugin'
+  source: 'builtin' | 'plugin' | 'mcp'
   pluginId?: string
   pluginName?: string
+  /** source==='mcp' 时：这个工具属于哪个 server（执行要按 server 找进程） */
+  server?: string
   validate: ToolValidator
 }
 
@@ -96,6 +99,26 @@ export function buildToolCatalog(): ToolCatalog {
   const plugins = grantedToolList().sort((a, b) => a.entry.fullName.localeCompare(b.entry.fullName))
   for (const { entry, validate } of plugins) {
     tools.push(fromPluginEntry(entry, validate, claim(apiToolName(entry.fullName))))
+  }
+
+  // MCP 工具排最后：它们来自外部进程，数量与名字都不受我们控制，
+  // 放在后面可以保证「内置/插件工具一定拿到最自然的函数名」。
+  for (const entry of mcpToolEntries()) {
+    tools.push({
+      apiName: claim(apiToolName(entry.fullName)),
+      fullName: entry.fullName,
+      shortName: entry.name,
+      title: entry.title,
+      description: entry.description,
+      risk: entry.risk,
+      parameters: entry.parameters,
+      timeoutMs: entry.timeoutMs,
+      source: 'mcp',
+      pluginId: entry.pluginId,
+      pluginName: entry.pluginName,
+      server: entry.server,
+      validate: entry.validate
+    })
   }
 
   const byApiName = new Map<string, ResolvedTool>()

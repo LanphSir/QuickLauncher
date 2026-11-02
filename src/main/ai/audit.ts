@@ -21,7 +21,7 @@ export interface AuditEntry {
   messageId: string
   /** 全局工具名 */
   tool: string
-  source: 'builtin' | 'plugin'
+  source: 'builtin' | 'plugin' | 'mcp'
   pluginId?: string
   risk: string
   /** 参数原文（已截断） */
