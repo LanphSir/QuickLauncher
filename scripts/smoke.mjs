@@ -247,11 +247,18 @@ await evaluate(
 )
 await new Promise((r) => setTimeout(r, 260))
 const appCard = await evaluate(ws, `!!document.querySelector('.settings-body .card-head')`)
+// AI 分组是 v0.6.0 加的：点进去要能看到 provider 列表卡片（而不是空白）
+await evaluate(
+  ws,
+  `Array.from(document.querySelectorAll('.nav-item')).find((e) => e.textContent.includes('AI'))?.click()`
+)
+await new Promise((r) => setTimeout(r, 260))
+const aiCard = await evaluate(ws, `!!document.querySelector('.settings-body .card h3')`)
 await evaluate(ws, `document.querySelector('.settings-header .back')?.click()`)
 await new Promise((r) => setTimeout(r, 360))
 check(
-  '设置页有分组侧栏且可切换',
-  navCount === 4 && navActive.includes('快捷键') && appCard === true,
+  '设置页有分组侧栏且可切换(含 AI 组)',
+  navCount === 5 && navActive.includes('快捷键') && appCard === true && aiCard === true,
   `${navCount} 项 / 默认 ${navActive}`
 )
 
@@ -979,6 +986,156 @@ const unregistered = await waitFor(async () => {
   return LRU_IDS.some((id) => ids.includes(id)) ? null : true
 })
 check('插件目录删除后自动下架(免重启)', unregistered === true)
+
+// ---------- AI：provider 配置 / 流式对话 / 停止 ----------
+// 用一个本地假端点验证全链路（不联网、不花钱）：配置 → 探活 → 打开 AI 插件 → 流式 → 停止 → 清理
+const AI_MOCK_PORT = 8788
+let aiMock = null
+let aiProviderId = ''
+try {
+  aiMock = createServer((req, res) => {
+    if (req.method === 'GET' && req.url.startsWith('/v1/models')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ data: [{ id: 'mock-chat' }, { id: 'mock-slow' }] }))
+      return
+    }
+    if (req.method === 'POST' && req.url.startsWith('/v1/chat/completions')) {
+      let body = ''
+      req.on('data', (c) => (body += c))
+      req.on('end', () => {
+        const slow = String(body).includes('SLOW')
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
+        const pieces = slow
+          ? Array.from({ length: 40 }, (_, i) => `片段${i} `)
+          : ['你', '好', '，我是本地', ' mock 端点。']
+        let i = 0
+        const timer = setInterval(() => {
+          if (res.writableEnded) return clearInterval(timer)
+          if (i < pieces.length) {
+            res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: pieces[i++] } }] })}\n\n`)
+            return
+          }
+          clearInterval(timer)
+          res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 11, completion_tokens: 7 } })}\n\n`)
+          res.write('data: [DONE]\n\n')
+          res.end()
+        }, slow ? 60 : 15)
+        res.on('close', () => clearInterval(timer))
+      })
+      return
+    }
+    res.writeHead(404).end('no')
+  })
+  await new Promise((r) => aiMock.listen(AI_MOCK_PORT, '127.0.0.1', r))
+
+  const saved = await evaluate(
+    ws,
+    `window.panel.aiSaveProvider({ presetId: 'custom', name: '冒烟 Mock', baseURL: 'http://127.0.0.1:${AI_MOCK_PORT}/v1', models: ['mock-chat', 'mock-slow'], apiKey: 'sk-smoke-9999' })`
+  )
+  aiProviderId = saved?.settings?.providers?.find((p) => p.name === '冒烟 Mock')?.id ?? ''
+  const view = saved?.settings?.providers?.find((p) => p.id === aiProviderId)
+  check(
+    'AI 保存 provider 且密钥只回显掩码',
+    saved?.ok === true && view?.hasKey === true && view?.apiKeyHint === 'sk-…9999',
+    `${aiProviderId} / ${view?.apiKeyHint ?? '(无)'}`
+  )
+
+  const probe = await evaluate(ws, `window.panel.aiTestProvider(${JSON.stringify(aiProviderId)})`)
+  check('AI 探活 /models 通过', probe?.ok === true && Array.isArray(probe.models), probe?.message ?? '')
+
+  await evaluate(ws, `window.panel.openPlugin('com.launcher.ai')`)
+  const aiReady = await waitFor(async () => {
+    return (await targets()).some((t) => t.url.startsWith('plugin://com.launcher.ai/')) ? true : null
+  })
+  check('AI 插件页可打开', aiReady === true)
+
+  // 必须先等界面挂载完再注册：插件 App 在 onMounted 里也调 onDelta，
+  // preload 只保留最后一个回调，抢在它前面注册会被覆盖（表现为收不到任何事件）
+  const aiMounted = await waitFor(async () => {
+    return (await evaluateIn('ai', "Boolean(document.querySelector('.composer textarea'))")) ? true : null
+  })
+  check('AI 界面挂载完成', aiMounted === true)
+
+  const sent = await evaluateIn(
+    'ai',
+    `(async () => {
+      window.__ai = []
+      window.appapi.ai.onDelta((e) => window.__ai.push(e))
+      return window.appapi.ai.send({ text: '你好' })
+    })()`
+  )
+  check('AI 消息受理', sent?.ok === true, sent?.message ?? '')
+
+  const firstRun = await waitFor(async () => {
+    const events = await evaluateIn('ai', 'window.__ai')
+    return events.some((e) => e.type === 'done') ? events : null
+  })
+  const streamedText = (firstRun ?? [])
+    .filter((e) => e.type === 'text')
+    .map((e) => e.delta)
+    .join('')
+  check(
+    'AI 流式回答拼接正确',
+    streamedText === '你好，我是本地 mock 端点。',
+    `${(firstRun ?? []).length} 个事件 / ${streamedText}`
+  )
+
+  const sessions = await evaluateIn('ai', 'window.appapi.ai.sessions.list()')
+  check(
+    'AI 会话落库(两条消息 + 标题取首句)',
+    sessions.length === 1 && sessions[0].messageCount === 2 && sessions[0].title === '你好',
+    JSON.stringify(sessions[0] ?? {})
+  )
+
+  const slowSend = await evaluateIn(
+    'ai',
+    `(async () => {
+      window.__ai2 = []
+      window.appapi.ai.onDelta((e) => window.__ai2.push(e))
+      const list = await window.appapi.ai.sessions.list()
+      return window.appapi.ai.send({ text: 'SLOW 停止', sessionId: list[0].id })
+    })()`
+  )
+  await new Promise((r) => setTimeout(r, 300))
+  const stoppedAt = Date.now()
+  await evaluateIn('ai', 'window.appapi.ai.sessions.list().then((l) => window.appapi.ai.stop(l[0].id))')
+  const stopDone = await waitFor(async () => {
+    const events = await evaluateIn('ai', 'window.__ai2')
+    return events.find((e) => e.type === 'done') ?? null
+  }, 40, 50)
+  check(
+    'AI 停止生效且标记 stopped',
+    slowSend?.ok === true && stopDone?.stopped === true && Date.now() - stoppedAt < 2000,
+    `${Date.now() - stoppedAt}ms / ${JSON.stringify(stopDone ?? null).slice(0, 60)}`
+  )
+
+  const partial = await evaluateIn(
+    'ai',
+    `window.appapi.ai.sessions.list().then((l) => window.appapi.ai.sessions.get(l[0].id)).then((d) => {
+      const last = d.messages[d.messages.length - 1]
+      return { stopped: last.stopped === true, text: (last.parts || []).map((p) => p.text).join('') }
+    })`
+  )
+  check(
+    'AI 停止后保留已生成内容且无半截状态',
+    partial?.stopped === true && partial.text.length > 0 && !partial.text.includes('undefined'),
+    `${partial?.text?.length ?? 0} 字`
+  )
+} finally {
+  // 清理：先删 provider（连带密钥），再删会话，最后关假端点
+  if (aiProviderId) {
+    await evaluate(ws, `window.panel.aiDeleteProvider(${JSON.stringify(aiProviderId)})`).catch(() => {})
+  }
+  try {
+    const list = await evaluateIn('ai', 'window.appapi.ai.sessions.list()')
+    for (const s of list ?? []) {
+      await evaluateIn('ai', `window.appapi.ai.sessions.remove(${JSON.stringify(s.id)})`).catch(() => {})
+    }
+  } catch {
+    // AI 插件没打开过：没有会话要清
+  }
+  if (aiMock) await new Promise((r) => aiMock.close(r))
+}
 
 const failed = results.filter((r) => !r.ok)
 console.log(`\n=== 冒烟结果: ${results.length - failed.length}/${results.length} 通过 ===`)

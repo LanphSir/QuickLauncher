@@ -49,6 +49,19 @@ importers:
         specifier: ^5.0.5
         version: 5.0.5(@types/node@26.6.5)(vite@7.3.7(@types/node@26.6.5)(jiti@2.7.0))
 
+  plugins/ai:
+    dependencies:
+      vue:
+        specifier: ^3.5.0
+        version: 3.5.44(typescript@5.9.3)
+    devDependencies:
+      '@vitejs/plugin-vue':
+        specifier: ^6.0.0
+        version: 6.0.10(vite@7.3.7(@types/node@26.6.5)(jiti@2.7.0))(vue@3.5.44(typescript@5.9.3))
+      vite:
+        specifier: ^7.1.0
+        version: 7.3.7(@types/node@26.6.5)(jiti@2.7.0)
+
   plugins/calculator:
     dependencies:
       vue:

@@ -40,6 +40,7 @@ import {
   uninstallPlugin
 } from './plugin/manager'
 import { initGateway } from './plugin/gateway'
+import { initAi, shutdownAi } from './ai'
 import { installPluginProtocol, registerPluginSchemePrivileges } from './plugin/protocol'
 import { clearPluginSession } from './plugin/sessions'
 import { forgetInline, queryInline } from './plugin/inline'
@@ -651,6 +652,7 @@ if (!app.requestSingleInstanceLock()) {
     const panel = createPanelWindow()
     initPluginHost(panel)
     initGateway()
+    initAi()
     registerPanelIpc()
 
     // 开发期热更新：`pnpm dev:plugin <name>` 启停 dev server 会改写 .dev-plugins.json，
@@ -703,6 +705,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  // 先掐掉在飞的模型请求，别让 quit 阶段还挂着 socket
+  shutdownAi()
   unregisterAll()
   // 存储写盘是防抖的：退出前把还在排队的分片落下去，否则最后几次 set 会丢
   pluginStorage.flushAll()

@@ -1,11 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type {
-  InlineQuery,
-  PluginApiSurface,
-  PluginApiTypes,
-  PluginChannel,
-  PluginQueryPayload
+import {
+  AI_DELTA_CHANNEL,
+  type InlineQuery,
+  type PluginApiSurface,
+  type PluginApiTypes,
+  type PluginChannel,
+  type PluginQueryPayload
 } from '../shared/pluginApi'
+import type { AiStreamEvent } from '../shared/ai'
 
 /** 通道与入参/返回值都由 shared/pluginApi 的契约约束，桥这一层不再手写类型 */
 function invoke<C extends PluginChannel>(
@@ -60,6 +62,22 @@ let pendingInline: InlineQuery | null = null
 ipcRenderer.on('plugin:inline-query', (_event, payload: InlineQuery) => {
   if (inlineHandler) inlineHandler(payload)
   else pendingInline = payload
+})
+
+/**
+ * AI 流式增量：与内联查询不同，这里不能"只留最后一条"——每个 token 都要拼进消息。
+ * 但缓冲要封顶：页面还没注册回调时来了上万条事件，攒着也没用（那多半是上一个
+ * 会话的残流），超过 500 条丢最旧的。
+ */
+let aiDeltaHandler: ((event: AiStreamEvent) => void) | null = null
+const pendingAiDeltas: AiStreamEvent[] = []
+ipcRenderer.on(AI_DELTA_CHANNEL, (_event, payload: AiStreamEvent) => {
+  if (!payload || typeof payload !== 'object') return
+  if (aiDeltaHandler) aiDeltaHandler(payload)
+  else {
+    pendingAiDeltas.push(payload)
+    if (pendingAiDeltas.length > 500) pendingAiDeltas.shift()
+  }
 })
 
 /**
@@ -134,6 +152,22 @@ const api: PluginApiSurface = {
   },
   inline: {
     set: (reply) => invoke('plugin:inline.set', plain(reply))
+  },
+  ai: {
+    onDelta: (callback: (event: AiStreamEvent) => void) => {
+      aiDeltaHandler = callback
+      while (pendingAiDeltas.length) callback(pendingAiDeltas.shift()!)
+    },
+    send: (request) => invoke('plugin:ai.chat.send', plain(request)),
+    stop: (sessionId: string) => invoke('plugin:ai.chat.stop', { sessionId }),
+    models: () => invoke('plugin:ai.models'),
+    sessions: {
+      list: () => invoke('plugin:ai.session.list'),
+      get: (id: string) => invoke('plugin:ai.session.get', id),
+      create: (model?: string) => invoke('plugin:ai.session.create', { model }),
+      rename: (id: string, title: string) => invoke('plugin:ai.session.rename', { id, title }),
+      remove: (id: string) => invoke('plugin:ai.session.delete', id)
+    }
   },
   window: {
     hide: () => invoke('plugin:window.hide'),

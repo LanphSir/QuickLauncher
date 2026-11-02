@@ -20,6 +20,12 @@ export interface ApiDef<C extends PluginChannel> {
    * 与权限分开：权限是系统能力，功能是参与启动器的方式。
    */
   feature?: PluginFeature
+  /**
+   * 只允许**内置插件**（随应用发布，`source === 'builtin'`）调用。
+   * 用于"花用户的钱"或"改动全局状态"的通道（如模型对话）：
+   * 第三方插件即使声明了权限也调不通。
+   */
+  internalOnly?: boolean
   handle: (
     ctx: ApiContext,
     payload: PluginApiTypes[C]['req']
@@ -34,6 +40,7 @@ export interface ApiDef<C extends PluginChannel> {
 export interface RegisteredApiDef {
   parse?: (payload: unknown) => unknown
   feature?: PluginFeature
+  internalOnly?: boolean
   handle: (ctx: ApiContext, payload: any) => unknown
 }
 

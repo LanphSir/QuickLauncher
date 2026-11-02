@@ -11,9 +11,9 @@ Electron 38 + TypeScript(strict) + Vue 3 + Pinia + electron-vite + pnpm workspac
 pnpm dev              # 开发模式（会先构建内置插件再启动 electron-vite dev）
 pnpm dev:plugin <name> # 单个插件改走 vite dev server（HMR），改插件代码不用重构建/重启
 pnpm typecheck        # 三端类型检查（tsconfig.json + tsconfig.web.json）
-pnpm test             # 单元测试（纯逻辑：校验器/内联归一化/存储分片与配额/LRU 策略/监听计划/失焦判定/面板布局/快捷键计划与注册表/自定义应用模型）
+pnpm test             # 单元测试 148 项（纯逻辑：校验器/内联归一化/存储分片与配额/LRU 策略/监听计划/失焦判定/面板布局/快捷键计划与注册表/自定义应用模型/AI 的 SSE 与增量解析/地址与模型 id/会话转换）
 pnpm build:plugins    # 仅构建内置插件（plugins/*/dist）
-pnpm smoke            # CDP 功能冒烟 86 项（需先另起: npx electron . --remote-debugging-port=9222）
+pnpm smoke            # CDP 功能冒烟 95 项（含 AI：本地 mock 端点跑通配置→流式→停止）（需先另起: npx electron . --remote-debugging-port=9222）
                       # 注意本机 shell 里若带 ELECTRON_RUN_AS_NODE=1，electron 会当 node 跑，启动前 unset
 pnpm dist             # 打包 Windows 安装包 → release/<version>/
 node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
@@ -32,7 +32,7 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 5. **插件扫描只认固定目录**（`plugin/manager.ts` 的 `getPluginRoots()`）：builtin（dev 项目 `plugins/`、打包 `resources/plugins/builtin/`）+ installed（`userData/plugins/installed/`）。manifest 校验失败即跳过，id 冲突 builtin 优先。
 6. **自定义外部应用与插件同一张注册表**：`userData/shortcuts.json` 的条目在扫描时翻译成 `PluginRecord`（`source='shortcut'`，`type` 固定 `external`），不得为它单开启动/搜索/固定路径；配置只能由 `shortcuts.json` 一份承载。
 7. **`<webview>` 必须有权限门禁**：插件宿主虽开 `webviewTag`，但 `will-attach-webview` 只放行声明了 `webview` 权限的插件，且强制 guest 沙箱（删 preload、禁 nodeIntegration）。不要绕过这道门禁。
-8. **AI 只能经工具通道动插件**：模型要插件做事，一律走 `plugin:ai.toolCall` 事件 + `appapi.ai.toolResult` 回执，与用户手动触发同一条路径；主进程不得直接对插件页做 DOM 操作或注入脚本。调用模型类的通道（`plugin:ai.chat.*`）标 `internalOnly`，只有内置 AI 插件能调——模型调用是花用户的钱，第三方插件不得偷偷发起。
+8. **模型调用只有内置插件能发起**：`plugin:ai.chat.*` 等通道在 `define.ts` 标了 `internalOnly`，网关只放行 `source === 'builtin'`。模型调用花的是用户自己的钱，第三方插件即使声明了 `ai` 权限也调不通。等 v0.6.2 的工具协议落地后，插件要参与 AI 也只能"被调用"（`plugin:ai.toolCall` → `appapi.ai.toolResult`），不能自己去发起对话。
 9. **密钥只在主进程**：AI 的 apiKey 走 `safeStorage` 密文（`main/ai/secrets.ts`），渲染层与插件页只能拿掩码；日志、审计、错误信息里一律脱敏。
 
 ## 3. 代码规范
@@ -62,6 +62,8 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 - 要让插件**输入即得**（`2+3 → 5`、汇率换算）→ manifest 声明 `features: ["inline"]`（功能声明，不是权限），`onInlineQuery` 里收到 `{ seq, query }`，用 `appapi.inline.set({ seq, items })` 回 ≤2 条、**120ms 内**返回；动作 `copy`（面板不关）或 `open`（缺省）。参考 `plugins/calculator/`
 - 内联插件视图会被后台拉起但**不挂到面板**（`pluginHost.warmPluginContents`）：不要在这里做重活，慢数据自己缓存；页面未加载完时面板会在 `did-finish-load` 后自动补查一次
 - 改插件后：日常用 `pnpm dev:plugin <name>`（vite dev server + HMR，启动器自动切入口、改代码即时生效，manifest 改动仍需 `pnpm build:plugins` 并重开插件）；没起 dev server 时一律 `pnpm build:plugins`
+- 想让插件将来被 AI 当工具调用 → manifest 声明 `permissions: ["ai"]` + `features: ["ai"]`（v0.6.2 起生效）；
+  现阶段只有内置 AI 插件能调 `plugin:ai.*`，第三方插件声明了也进不来（`internalOnly`）
 - 想给插件配一个**建议启动键** → manifest 写 `hotkey`（accelerator，如 `Alt+Shift+V`）：只作设置页提示，**不会自动注册**；实际生效值在 `config.pluginHotkeys`
 - external 型插件 = 目录里一个 `plugin.json` + 图标，零代码
 - 加一个 API 的落点：`src/shared/pluginApi.ts`（契约：通道类型 + 权限）→ `src/main/plugin/api/<域>.ts`（`defineApi` + 入参校验）→ `src/preload/plugin.ts`（桥方法）。插件的 `window.appapi` 类型统一从 `src/shared/appapi.global.d.ts` 引用，**不要在各插件里手写一份 appapi 接口**
@@ -107,6 +109,10 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 | 默认唤起键别用 `Alt+Space` | Windows 把它留给窗口系统菜单，`globalShortcut.register` 直接失败，"恢复默认"会报"可能被其他程序占用"。默认值走 `config.ts` 的 `DEFAULT_HOTKEY`，经 `panel:get-config` 的 `defaultHotkey` 下发，前端不要自己写一份 |
 | 空快捷键 = 主动解绑，不是失败 | `registerHotkey('')` 要返回成功、`flush()` 遇空 accelerator 不 restore；旧逻辑报失败又把旧键接回去，用户看到"清了还生效"。托盘标签在空键时不要拼后缀 |
 | 矮窗口里长表单别用整体滚动 | 面板默认 560 高，表单用「头部固定 + 中间 `overflow-y:auto` + 底部固定」三段式（见 `ShortcutEdit.vue`），否则"保存"会被滚出视口，或被 sticky 页脚压住字段 |
+| `abort()` 后 fetch 的 body 可能"正常结束" | 不抛 `AbortError`，只catch异常会把"用户主动停止"记成完整回答。判停看 `controller.signal.aborted`；`DOMException` 在部分运行时不继承 `Error`，`instanceof` 同样不可靠 |
+| `ai.chat.send` 不能 await 到流结束 | 同页面的 `await` 会一直挂到整段回答生成完，这期间"停止"根本发不出去（我的端到端就是这样发现的）。通道只返回"已受理"，结果全走 `plugin:ai.delta` 事件 |
+| preload 的 `ai.onDelta` 只保留最后一个回调 | 插件 App 在 `onMounted` 注册，脚本/测试抢在前面注册会被覆盖（一个事件都收不到）。冒烟里先等 `.composer textarea` 出现再注册 |
+| AI 密钥别进日志与配置 | 只经 `main/ai/secrets.ts`（safeStorage 密文）；配置只存 `apiKeyRef` + `sk-…a1b2` 掩码，IPC 与审计里一律脱敏 |
 | CDP 截图前先让窗口可见 | 面板失焦会自动收起，`Page.captureScreenshot` 在隐藏窗口上会一直挂着（表现为脚本被 kill）。先起第二个实例触发 `second-instance → showPanel`（或 `Page.bringToFront`），再截图 |
 
 ## 6. Git 与迭代流程

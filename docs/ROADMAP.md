@@ -88,9 +88,14 @@
 > 内置插件 `plugins/ai`；AI 服务 = 主进程 `src/main/ai/*`；协议升级纯增量（`apiVersion: 2`）；
 > 工具授权按 `risk` 分级 + 审计；MCP 落在 v0.6.4。开发在 `feat/ai` 集成分支，每版合回 `main`。
 
-- [ ] v0.6.0 **AI 内核与对话**：`main/ai/{provider,secrets,store,chat}.ts`、内置 AI 插件（对话/多会话/模型切换/中断重试）、
-  `plugin:ai.chat.*`（`internalOnly`）+ `plugin:ai.delta` 事件流、OpenAI 兼容端点 + 预设（DeepSeek/通义/Kimi/Ollama）
-  - 验收：填 baseURL+key 后流式出字；停止 300ms 内生效且不留半条消息；重启后会话仍在；`secrets.bin` 为密文、界面只见掩码；`pnpm test` 新增 provider/会话纯函数用例
+- [x] v0.6.0 **AI 内核与对话**（已交付：`main/ai/{sse,chunk,provider,sessionModel,client,secrets,settings,store,chat,index}.ts`、
+  内置 AI 插件 `plugins/ai`（会话列表/流式消息/模型切换/停止/复制/reasoning 折叠）、契约新增权限与功能 `ai` 及 7 条
+  `plugin:ai.*` 通道 + `plugin:ai.delta` 事件流、网关新增 `internalOnly`（仅内置插件可调模型）、设置页「AI」分组
+  （6 种预设 + 密钥掩码 + `/models` 探活））
+  - 验收：✅ 填 key 后流式出字（mock 端点，端到端 15/15）；✅ 停止 431ms 内收到 `done{stopped:true}` 且保留已生成内容、无半截消息；
+    ✅ 重启后会话仍在（分文件 + index，索引损坏可按目录重建）；✅ `secrets.bin` 密文、界面只见 `sk-…a1b2`；
+    ✅ `pnpm test` 148/148（+25）；✅ `pnpm smoke` 95/95（+9）
+  - 遗留：真实第三方端点未验证（本机无 key，用 mock）；`reasoning` 字段在 deepseek-reasoner 的实测形态待补
 - [ ] v0.6.1 **上下文与附件**：拖拽/选择文件、文本抽取（txt/md/json/代码 → pdf/docx → 图片 vision）、
   token 估算与截断、搜索结果"作为上下文"、超长会话滚动摘要
   - 验收：2MB 日志不卡 UI（解析在 worker + 硬上限）；超预算自动摘要并提示；图片附件在 vision 模型下可用

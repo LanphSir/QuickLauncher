@@ -205,6 +205,7 @@ onUnmounted(stop)                               // 页面真被销毁时也停
 | `docs` | `appapi.docs.*`（插件自己的文档库目录，路径不出主进程） |
 | `search` | `appapi.search.*`（把插件内的条目注册给主面板搜索，v0.4.2 起） |
 | `net` | `appapi.net.request`（v0.4.6 起；**还要在 manifest `hosts` 里声明可访问的域**） |
+| `ai` | 目前只对内置 AI 插件开放：`appapi.ai.*` 的对话通道标了 `internalOnly`，第三方插件声明了也调不通（v0.6.2 起才会开放「被 AI 调用」的工具协议） |
 | `webview` | 在插件页使用 `<webview>` 嵌入第三方网页（v0.2.1 起） |
 
 `window.hide` / `exit` / `info` / `onQuery` / `onShow` / `onHide` / `onDestroy` 不需要权限。

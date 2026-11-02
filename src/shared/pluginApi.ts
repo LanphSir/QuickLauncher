@@ -12,6 +12,14 @@
  *
  * 本文件必须保持"纯数据与类型"：不 import electron / node，四端都能安全引入。
  */
+import type {
+  AiModelOption,
+  AiSendRequest,
+  AiSendResult,
+  AiSessionDetail,
+  AiSessionMeta,
+  AiStreamEvent
+} from './ai'
 
 /** 插件可申请的权限；未声明的通道（窗口控制/退出/自述）不需要权限 */
 export const PLUGIN_PERMISSIONS = [
@@ -23,7 +31,9 @@ export const PLUGIN_PERMISSIONS = [
   'search',
   'webview',
   /** 由主进程转发 HTTP 请求；实际可访问的域由 manifest 的 hosts 再限一层 */
-  'net'
+  'net',
+  /** 使用内置 AI 能力（对话、会话、以及后续的 AI 工具回执） */
+  'ai'
 ] as const
 
 export type PluginPermission = (typeof PLUGIN_PERMISSIONS)[number]
@@ -34,10 +44,22 @@ export type PluginPermission = (typeof PLUGIN_PERMISSIONS)[number]
  */
 export const PLUGIN_FEATURES = [
   /** 内联结果：面板每敲一次键就把查询推给插件，插件回几条结果直接显示在搜索框下方 */
-  'inline'
+  'inline',
+  /**
+   * AI 能力：允许被内置 AI 应用当作工具调用（v0.6.2 起生效）。
+   * 只有声明了它、且用户在该插件上打开开关，工具才会出现在模型的可调用列表里。
+   */
+  'ai'
 ] as const
 
 export type PluginFeature = (typeof PLUGIN_FEATURES)[number]
+
+/**
+ * 主进程 → AI 插件页的流式事件通道。
+ * 它不是 invoke 通道（没有请求/响应），所以不进 PluginApiTypes；
+ * 但仍在这里声明一次，避免主进程与 preload 各写一遍字符串。
+ */
+export const AI_DELTA_CHANNEL = 'plugin:ai.delta'
 
 export interface PluginInfo {
   id: string
@@ -177,6 +199,17 @@ export interface PluginApiTypes {
   /** 内联结果回传；实际可用性由 manifest 的 features 决定（不是权限） */
   'plugin:inline.set': { req: InlineReply; res: number }
 
+  /** AI 对话（internalOnly：只有内置插件能调，避免第三方插件偷偷花用户的钱） */
+  'plugin:ai.chat.send': { req: AiSendRequest; res: AiSendResult }
+  'plugin:ai.chat.stop': { req: { sessionId: string }; res: SimpleResult }
+  'plugin:ai.models': { req: undefined; res: AiModelOption[] }
+
+  'plugin:ai.session.list': { req: undefined; res: AiSessionMeta[] }
+  'plugin:ai.session.get': { req: string; res: AiSessionDetail | null }
+  'plugin:ai.session.create': { req: { model?: string }; res: AiSessionDetail }
+  'plugin:ai.session.rename': { req: { id: string; title: string }; res: SimpleResult }
+  'plugin:ai.session.delete': { req: string; res: SimpleResult }
+
   'plugin:window.hide': { req: undefined; res: boolean }
   'plugin:window.detach': { req: undefined; res: SimpleResult }
   'plugin:exit': { req: undefined; res: boolean }
@@ -207,6 +240,14 @@ export const PLUGIN_PERMS: Record<PluginChannel, PluginPermission | null> = {
   'plugin:search.clear': 'search',
   'plugin:net.request': 'net',
   'plugin:inline.set': null,
+  'plugin:ai.chat.send': 'ai',
+  'plugin:ai.chat.stop': 'ai',
+  'plugin:ai.models': 'ai',
+  'plugin:ai.session.list': 'ai',
+  'plugin:ai.session.get': 'ai',
+  'plugin:ai.session.create': 'ai',
+  'plugin:ai.session.rename': 'ai',
+  'plugin:ai.session.delete': 'ai',
   'plugin:window.hide': null,
   'plugin:window.detach': null,
   'plugin:exit': null
@@ -281,6 +322,31 @@ export interface PluginApiSurface {
   inline: {
     /** 回传内联查询结果（seq 必须原样带回 query 里的序号），返回实际采纳条数 */
     set(reply: InlineReply): Promise<number>
+  }
+
+  /**
+   * 内置 AI 能力（需 `ai` 权限）。对话通道是 internalOnly：只有随应用发布的内置插件
+   * 能调用——模型调用花的是用户自己的钱，不能给第三方插件开口子。
+   */
+  ai: {
+    /**
+     * 流式增量。事件自带 sessionId/messageId：切走会话再切回来时，
+     * 用它对上"这条增量属于哪条消息"，不要把别的会话的字拼进来。
+     */
+    onDelta(callback: (event: AiStreamEvent) => void): void
+    /** 发一条消息；sessionId 缺省表示新建会话。返回的 messageId 与后续增量一致 */
+    send(request: AiSendRequest): Promise<AiSendResult>
+    /** 停止当前会话的生成：已生成内容会以 stopped 标记保留 */
+    stop(sessionId: string): Promise<SimpleResult>
+    /** 可用模型（provider/model），设置页没配时为空数组 */
+    models(): Promise<AiModelOption[]>
+    sessions: {
+      list(): Promise<AiSessionMeta[]>
+      get(id: string): Promise<AiSessionDetail | null>
+      create(model?: string): Promise<AiSessionDetail>
+      rename(id: string, title: string): Promise<SimpleResult>
+      remove(id: string): Promise<SimpleResult>
+    }
   }
 
   window: {

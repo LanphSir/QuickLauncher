@@ -88,6 +88,39 @@ interface SearchHit {
   icon: string | null
 }
 
+/** AI：设置页看到的 provider（永远不含明文密钥，只有掩码与"是否已配"） */
+interface AiProviderView {
+  id: string
+  presetId: string
+  name: string
+  baseURL: string
+  models: string[]
+  hasKey: boolean
+  apiKeyHint: string
+  keyless: boolean
+}
+
+interface AiPresetView {
+  id: string
+  name: string
+  baseURL: string
+  models: string[]
+  keyless: boolean
+  hint?: string
+}
+
+interface AiSettingsView {
+  providers: AiProviderView[]
+  defaultModel: string
+  presets: AiPresetView[]
+}
+
+interface AiProviderSaveResult {
+  ok: boolean
+  message?: string
+  settings?: AiSettingsView
+}
+
 interface PanelApi {
   getPlugins(): Promise<PluginSummary[]>
   openPlugin(
@@ -114,6 +147,21 @@ interface PanelApi {
   /** 浏览本地文件挑一个可执行文件（取消时 canceled=true） */
   pickCommand(): Promise<{ ok: boolean; canceled?: boolean; path?: string; message?: string }>
   clearPluginData(id: string): Promise<{ ok: boolean }>
+  /** AI：provider 列表（密钥只以掩码回显）与默认模型 */
+  aiGetSettings(): Promise<AiSettingsView>
+  aiSaveProvider(input: {
+    id?: string
+    presetId?: string
+    name: string
+    baseURL: string
+    models: string[]
+    apiKey?: string
+    keyless?: boolean
+  }): Promise<AiProviderSaveResult>
+  aiDeleteProvider(id: string): Promise<AiProviderSaveResult>
+  /** 探活：GET /models，同时验证地址与密钥 */
+  aiTestProvider(id: string): Promise<{ ok: boolean; message?: string; models?: string[] }>
+  aiSetDefaultModel(id: string): Promise<AiProviderSaveResult>
   /** 自定义外部应用（设置 → 外部应用） */
   getShortcuts(): Promise<ShortcutEntry[]>
   getShortcut(id: string): Promise<ShortcutEntry | null>

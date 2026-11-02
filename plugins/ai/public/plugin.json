@@ -1,0 +1,11 @@
+{
+  "id": "com.launcher.ai",
+  "name": "AI 助手",
+  "version": "0.1.0",
+  "description": "内置 AI 对话：支持 DeepSeek / 通义 / Kimi / OpenAI 等 OpenAI 兼容端点与本机 Ollama",
+  "type": "web",
+  "entry": "index.html",
+  "keywords": ["ai", "chat", "对话", "问答", "助手", "gpt", "llm", "大模型"],
+  "permissions": ["ai", "clipboard"],
+  "hotkey": "Alt+Shift+Q"
+}

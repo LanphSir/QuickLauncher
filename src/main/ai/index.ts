@@ -1,0 +1,39 @@
+/**
+ * AI 模块入口：装配配置、注册设置页用的 panel:ai-* 通道。
+ *
+ * 插件页（对话界面）不经过这里——它走 plugin/* 契约通道 + 网关，
+ * 只有核心渲染层（设置页）才用 panel:ai-*。两套分开的原因见 CLAUDE.md 铁律：
+ * 插件永远走网关，核心页面才直连 IPC。
+ */
+import { ipcMain } from 'electron'
+import { loadAiConfig, saveProvider, deleteProvider, setDefaultModel, settingsView, testProvider } from './settings'
+import { stopAll } from './chat'
+import type { ProviderInput } from './settings'
+
+export function initAi(): void {
+  loadAiConfig()
+
+  ipcMain.handle('panel:ai-get-settings', () => settingsView())
+  ipcMain.handle('panel:ai-save-provider', (_event, input: ProviderInput) =>
+    saveProvider({
+      id: typeof input?.id === 'string' ? input.id : undefined,
+      presetId: typeof input?.presetId === 'string' ? input.presetId : undefined,
+      name: String(input?.name ?? ''),
+      baseURL: String(input?.baseURL ?? ''),
+      models: Array.isArray(input?.models) ? input.models : [],
+      apiKey: typeof input?.apiKey === 'string' ? input.apiKey : undefined,
+      keyless: input?.keyless === true
+    })
+  )
+  ipcMain.handle('panel:ai-delete-provider', (_event, id: string) => deleteProvider(String(id)))
+  ipcMain.handle('panel:ai-test-provider', (_event, id: string) => testProvider(String(id)))
+  ipcMain.handle('panel:ai-set-default-model', (_event, id: string) => setDefaultModel(String(id)))
+
+  const providers = settingsView().providers.length
+  console.log(`[ai] 已初始化，provider ${providers} 个`)
+}
+
+/** 退出时取消所有在飞的请求，避免 quit 阶段还持有 socket */
+export function shutdownAi(): void {
+  stopAll()
+}

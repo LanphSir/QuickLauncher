@@ -7,6 +7,7 @@ import { docsApi } from './docs'
 import { searchApi } from './search'
 import { netApi } from './net'
 import { inlineApi } from './inline'
+import { aiApi } from './ai'
 
 export type { ApiContext, ApiDef, ApiDefinition, RegisteredApiDef } from './define'
 
@@ -21,7 +22,8 @@ export const apiDefs: ApiDefinition[] = [
   ...docsApi,
   ...searchApi,
   ...netApi,
-  ...inlineApi
+  ...inlineApi,
+  ...aiApi
 ]
 
 /** 通道必须唯一：重复注册会让 ipcMain.handle 直接抛错，启动期就暴露 */

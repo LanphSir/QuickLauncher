@@ -5,6 +5,7 @@ import AppIcon from './AppIcon.vue'
 import HotkeyInput from './HotkeyInput.vue'
 import ShortcutEdit from './ShortcutEdit.vue'
 import ShortcutImport from './ShortcutImport.vue'
+import AiSettings from './AiSettings.vue'
 import { closeOverlay, openOverlay } from '../composables/useOverlay'
 import type { IconName } from './icons'
 import { useLauncherStore } from '../stores/launcher'
@@ -17,13 +18,14 @@ const config = ref<LauncherConfig | null>(null)
 const hotkeyDraft = ref('')
 
 /** 设置分组：卡片一多就得滚着找，"快捷键 / 面板 / 应用 / 关于"分开更好定位 */
-type SettingsTab = 'hotkeys' | 'panel' | 'apps' | 'about'
+type SettingsTab = 'hotkeys' | 'panel' | 'ai' | 'apps' | 'about'
 const tab = ref<SettingsTab>('hotkeys')
 const bodyEl = ref<HTMLElement | null>(null)
 
 const tabs = computed<{ key: SettingsTab; label: string; icon: IconName; badge: number }[]>(() => [
   { key: 'hotkeys', label: '快捷键', icon: 'zap', badge: 0 },
   { key: 'panel', label: '面板', icon: 'settings', badge: 0 },
+  { key: 'ai', label: 'AI', icon: 'spark', badge: 0 },
   { key: 'apps', label: '应用', icon: 'grid', badge: store.plugins.length },
   { key: 'about', label: '关于', icon: 'info', badge: 0 }
 ])
@@ -339,6 +341,10 @@ async function revealDir(p: PluginSummary): Promise<void> {
           </section>
         </template>
 
+        <template v-else-if="tab === 'ai'">
+          <AiSettings />
+        </template>
+
         <template v-else-if="tab === 'apps'">
           <section class="card">
             <div class="card-head">
@@ -431,7 +437,7 @@ async function revealDir(p: PluginSummary): Promise<void> {
           <section class="card">
             <h3>关于</h3>
             <p class="hint">
-              QuickLauncher v0.4.14 — 全局快捷键唤起的插件化工具面板。<br />
+              QuickLauncher v0.6.0 — 全局快捷键唤起的插件化工具面板。<br />
               Electron + Vue 3 · 插件进程级隔离 · 自定义插件协议（见 docs/plugin-dev-guide.md）
             </p>
           </section>

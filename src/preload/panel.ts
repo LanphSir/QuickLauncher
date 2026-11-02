@@ -37,6 +37,12 @@ const api = {
   importShortcuts: (items: { path: string; name: string }[]) => ipcRenderer.invoke('panel:import-shortcuts', items),
   pickIconImage: () => ipcRenderer.invoke('panel:pick-icon-image'),
   pickDirectory: () => ipcRenderer.invoke('panel:pick-directory'),
+  /** AI 设置：provider 的增删改与探活（密钥提交后只在主进程加密保存，读回只有掩码） */
+  aiGetSettings: () => ipcRenderer.invoke('panel:ai-get-settings'),
+  aiSaveProvider: (input: Record<string, unknown>) => ipcRenderer.invoke('panel:ai-save-provider', input),
+  aiDeleteProvider: (id: string) => ipcRenderer.invoke('panel:ai-delete-provider', id),
+  aiTestProvider: (id: string) => ipcRenderer.invoke('panel:ai-test-provider', id),
+  aiSetDefaultModel: (id: string) => ipcRenderer.invoke('panel:ai-set-default-model', id),
   installPlugin: (mode: 'dir' | 'zip') => ipcRenderer.invoke('panel:install-plugin', mode),
   uninstallPlugin: (id: string) => ipcRenderer.invoke('panel:uninstall-plugin', id),
   setPluginDisabled: (id: string, disabled: boolean) =>

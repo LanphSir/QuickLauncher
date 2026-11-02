@@ -11,6 +11,78 @@
 
 ---
 
+## v0.6.0 — AI 内核与对话（2026-11-02）
+
+**目标**：让启动器里有一个能用的 AI 对话应用，并且把"模型调用"关在主进程里
+（密钥不进插件页），为后面几版的插件 AI 协议（tools / skill / MCP）铺好通道。
+设计见 [ai-architecture.md](ai-architecture.md)。
+
+### 1. 主进程 AI 服务（`src/main/ai/`）
+
+- **纯逻辑四件套**（可单测，不碰 electron）：
+  `sse.ts`（有状态 SSE 解码，扛得住"帧横跨两次 read"）、`chunk.ts`（OpenAI 增量解析：
+  正文 / `reasoning_content` / usage / 流内 error）、`provider.ts`（地址归一、模型 id 解析、
+  密钥掩码、请求体构造）、`sessionModel.ts`（造消息、取标题、转请求体、裁剪）。
+- **IO 层**：`client.ts`（fetch + 流式读取，HTTP 错误按状态码给方向）、`secrets.ts`
+  （`safeStorage` 加密落 `userData/ai/secrets.bin`）、`settings.ts`（provider 增删改、
+  默认模型、`resolveModel` 把"发不出去"的每种原因说清）、`store.ts`（一会话一文件 + `index.json`，
+  tmp/rename 原子写，索引坏了按目录重建）。
+- **`chat.ts` 编排**：用户消息先落盘（进程被杀也不丢问题）→ 流式增量 → **只在结束时**
+  落一条完整回答。两个刻意的取舍写在注释里：停止/失败/崩溃后不会留下"永远正在输入"的半截消息；
+  增量每 16ms 合并一次再发 IPC（长回答少掉几千次 send）。
+
+### 2. 契约与网关（纯增量）
+
+- `shared/ai.ts` 定义消息/会话/模型/流式事件；`shared/pluginApi.ts` 加权限 `ai`、
+  功能 `ai`、7 条 `plugin:ai.*` 通道与事件通道 `plugin:ai.delta`。
+- `api/define.ts` 新增 `internalOnly`；网关只加一句判定：`internalOnly` 要求
+  `source === 'builtin'`。**模型调用花的是用户的钱，第三方插件声明了权限也调不通。**
+
+### 3. 内置 AI 插件（`plugins/ai/`）
+
+左侧会话列表（新建/删除/条数）、右侧流式消息、模型下拉、停止按钮、复制答案、
+`reasoning` 折叠展示；`Esc` 两段式（有草稿先清草稿，再按才退出）。
+**懒建会话**：打开插件不写盘，发第一条消息时才创建——否则每次打开都多一条空会话。
+
+### 4. 设置页「AI」分组
+
+`AiSettings.vue`（默认模型 + provider 列表 + 测试/编辑/删除）+ `AiProviderEdit.vue`
+（预设 6 种：DeepSeek / 通义 / Kimi / Ollama / OpenAI / 自定义；模型逗号分隔；密钥框
+在编辑态留空表示不修改）。密钥只以 `sk-…a1b2` 回显，「测试」打 `/models`，不花对话额度。
+
+### 三个坑（都花了时间）
+
+1. **`abort()` 之后 fetch 的 body 可能"正常结束"而不是抛 `AbortError`**：只看异常会把
+   用户主动停止记成一次完整回答（界面没有"已停止"）。改为以 `controller.signal.aborted`
+   为准。另一个坑：`DOMException` 在部分运行时不继承 `Error`，`instanceof` 判定不可靠。
+2. **`ai.chat.send` 一开始 await 到流结束**：结果调用方的 `await` 一直挂到整段回答生成完，
+   同一页面里连"停止"都发不出去（我的端到端测试就是这样发现它的——停止请求先到、
+   流其实早已结束）。改为立刻返回"已受理"，结果一律走事件。
+3. **preload 的 `onDelta` 只保留最后一个回调**：插件 App 在 `onMounted` 里注册，
+   冒烟脚本若抢在挂载前注册就会被覆盖（表现为一个事件都收不到）。冒烟里先等
+   `.composer textarea` 出现再注册。
+
+### 关键文件
+
+`src/shared/ai.ts`（新）、`src/main/ai/*`（新，8 个）、`plugin/api/ai.ts`（新）、
+`api/define.ts`、`plugin/gateway.ts`、`preload/{plugin,panel}.ts`、`main/index.ts`、
+`components/{AiSettings,AiProviderEdit}.vue`（新）、`SettingsView.vue`、`components/icons.ts`、
+`plugins/ai/*`（新）、`tests/ai{Provider,Sse,SessionModel}.test.ts`（新）、`scripts/smoke.mjs`
+
+### 验证
+
+- `pnpm typecheck` 零错误；`pnpm test` **148/148**（新增 25 项：SSE 分片边界、增量解析、
+  地址与模型 id、密钥掩码、配置清洗、请求体、标题/裁剪/排序）
+- `pnpm build` 通过；`build:plugins` 通过（新插件 75KB）
+- `pnpm smoke` **95/95**（新增 9 项：provider 保存与掩码、探活、插件页可打开、界面挂载、
+  消息受理、流式拼接、会话落库、停止标记、停止后无半截）
+- 端到端（临时脚本 + 本地 mock 端点，15 项）：配置 → 探活 → 打开 AI → 流式 → 停止 → 清理，
+  15/15；停止在 431ms 内收到 `done{stopped:true}`，保留 24 字已生成内容
+- **未验证**：真实第三方端点（本机没有可用 key，用的是 mock）、`reasoning` 在
+  deepseek-reasoner 上的实际形态、超长会话的 token 预算（v0.6.1 才有）
+
+---
+
 ## v0.4.14 — 遮罩层级、设置分组侧栏、快捷键可解绑（2026-11-01）
 
 **来源**：三条实测反馈——① 弹窗"遮罩压在弹窗上面，挡住实际操作"；② 设置想有侧栏，方便分离和快速导航；

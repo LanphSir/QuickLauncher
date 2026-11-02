@@ -31,6 +31,11 @@ function register([channel, def]: ApiDefinition): void {
       )
     }
 
+    // 内置独占通道：第三方插件声明了权限也调不通（模型对话花的是用户的钱）
+    if (def.internalOnly && rec.source !== 'builtin') {
+      throw new Error(`通道 ${channel} 仅限内置插件调用`)
+    }
+
     const input = def.parse ? def.parse(payload) : payload
     return def.handle({ rec, sender: event.sender }, input)
   })

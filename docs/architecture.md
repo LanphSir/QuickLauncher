@@ -2,8 +2,8 @@
 
 一个全局快捷键唤起的插件化桌面工具面板（类 uTools），Windows 优先。
 
-> 本文只写**已实现**的架构。进行中的 AI 应用与插件 AI 协议（v0.6.x）另见
-> [ai-architecture.md](ai-architecture.md)，落地后再回写本文。
+> 本文只写**已实现**的架构。AI 应用已在 v0.6.0 落地（见「AI 服务与对话」），
+> 后续版本（插件 AI 工具 / MCP）的设计见 [ai-architecture.md](ai-architecture.md)，落地后回写本文。
 
 ## 技术栈
 
@@ -489,13 +489,57 @@ manifest 里的 `hotkey` 只是**建议值**（设置页显示成可点的小标
 ## 设置页分组（v0.4.14）
 
 设置卡片涨到 6 张，一屏放不下、找一项得滚半天。改成「左侧分组 + 右侧滚动」：
-快捷键 / 面板 / 应用 / 关于。
+快捷键 / 面板 / AI / 应用 / 关于（AI 组为 v0.6.0 新增）。
 
 - 分组只是 `v-if` 切换，不拆子组件——各卡片共享同一份 `config` 与 `store`，
   拆出去要传一堆 props 或再引 store，收益不抵成本。
 - 「应用」带数量徽标（`store.plugins.length`），侧栏宽度按"应用 + 徽标"不截断定成 118px。
 - 切分组要 `scrollTo(0, 0)`：上一个分组滚到一半，切过去会停在空白处。
 - 唤起键那一行在 520px（面板最小宽度）下会换行，不换行时按钮会压在按键标签上。
+
+## AI 服务与对话（v0.6.0）
+
+模型调用全部发生在主进程（`src/main/ai/`），插件页只做界面。这样密钥不会出现在任何
+插件上下文里，SSE 流式也不必穿过 `net.request` 那套"整包返回"的通道。
+
+### 分层
+
+| 层 | 文件 | 职责 |
+|---|---|---|
+| 纯逻辑 | `sse.ts` `chunk.ts` `provider.ts` `sessionModel.ts` | SSE 解码、增量解析、地址/模型 id、消息转换（可单测） |
+| IO | `client.ts` `secrets.ts` `settings.ts` `store.ts` | fetch 流式、密钥加密、provider 配置、会话持久化 |
+| 编排 | `chat.ts` | 一条消息：落盘 → 流式 → 结束时落完整回答 |
+| 通道 | `plugin/api/ai.ts` | 7 条 `plugin:ai.*` + 事件 `plugin:ai.delta` |
+| 界面 | `plugins/ai`（内置插件）+ 设置页「AI」组 | 会话列表、消息流、模型切换、停止 |
+
+### `internalOnly`：谁能花用户的钱
+
+`api/define.ts` 的通道定义新增 `internalOnly`，网关只加一句：
+`internalOnly && rec.source !== 'builtin'` 就拒绝。模型对话通道全部标记——
+第三方插件声明了 `ai` 权限也调不通。这比"登记一份插件 id 白名单"更稳：
+白名单会随插件改名失效，`source` 是扫描时就定死的。
+
+### 两个关于"停止"的坑
+
+1. **`abort()` 之后 fetch 的 body 可能只是正常结束**（不抛 `AbortError`），
+   所以判停必须看 `controller.signal.aborted`，不能只看异常。另外 `DOMException`
+   在部分运行时不继承 `Error`，`instanceof` 判定同样不可靠。
+2. **`ai.chat.send` 必须立刻返回**：早期实现 await 到流结束，导致同一页面里
+   `await send()` 的这段时间发不出"停止"。现在它只返回"已受理"，结果一律走事件流。
+
+### 落盘策略
+
+- 用户消息先写盘，回答**只在结束时**写：中断/崩溃不会留下一条"永远正在输入"的半截消息；
+  用户主动停止时回答照样落盘，但带 `stopped: true`（不是失败）。
+- 一个会话一个文件（`ai/sessions/<id>.json`）+ `index.json`：索引坏了按目录重建，
+  数据本身不丢；超过 `maxSessions` 从最旧删。
+- 增量每 16ms 合并一次再发 IPC，长回答从几千次 `send` 降到几十次。
+
+### 密钥
+
+`safeStorage`（Windows DPAPI）加密后写 `ai/secrets.bin`，配置里只存引用与掩码。
+系统不支持加密时**拒绝保存**并说明原因，不退回明文。换机器后解不开就当作没配，
+让用户重填，而不是每次请求都报错。
 
 ## 数据与配置
 
@@ -508,6 +552,10 @@ manifest 里的 `hotkey` 只是**建议值**（设置页显示成可点的小标
 ├─ data/<pluginId>/shards/*.json  各插件独立数据（一 key 一片）
 ├─ data/<pluginId>/docs/          各插件文档库（documents API，手动拖文件也可）
 ├─ search/<pluginId>.json         插件推送的搜索条目（重启后仍可搜）
+├─ ai/config.json                 AI provider 列表与默认模型（不含密钥）
+├─ ai/secrets.bin                 API Key（safeStorage 加密，按 ref 索引）
+├─ ai/sessions/<id>.json          AI 会话（一会话一文件）
+└─ ai/sessions/index.json         会话列表索引（损坏可按目录重建）
 ```
 
 ## 构建
