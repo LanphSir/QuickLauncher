@@ -32,6 +32,8 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 5. **插件扫描只认固定目录**（`plugin/manager.ts` 的 `getPluginRoots()`）：builtin（dev 项目 `plugins/`、打包 `resources/plugins/builtin/`）+ installed（`userData/plugins/installed/`）。manifest 校验失败即跳过，id 冲突 builtin 优先。
 6. **自定义外部应用与插件同一张注册表**：`userData/shortcuts.json` 的条目在扫描时翻译成 `PluginRecord`（`source='shortcut'`，`type` 固定 `external`），不得为它单开启动/搜索/固定路径；配置只能由 `shortcuts.json` 一份承载。
 7. **`<webview>` 必须有权限门禁**：插件宿主虽开 `webviewTag`，但 `will-attach-webview` 只放行声明了 `webview` 权限的插件，且强制 guest 沙箱（删 preload、禁 nodeIntegration）。不要绕过这道门禁。
+8. **AI 只能经工具通道动插件**：模型要插件做事，一律走 `plugin:ai.toolCall` 事件 + `appapi.ai.toolResult` 回执，与用户手动触发同一条路径；主进程不得直接对插件页做 DOM 操作或注入脚本。调用模型类的通道（`plugin:ai.chat.*`）标 `internalOnly`，只有内置 AI 插件能调——模型调用是花用户的钱，第三方插件不得偷偷发起。
+9. **密钥只在主进程**：AI 的 apiKey 走 `safeStorage` 密文（`main/ai/secrets.ts`），渲染层与插件页只能拿掩码；日志、审计、错误信息里一律脱敏。
 
 ## 3. 代码规范
 
@@ -42,6 +44,8 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 - **UI 文案中文**，代码注释中文、只写"为什么"，不复述代码。日志前缀用模块名：`[plugin]`、`[config]`、`[storage]`、`[external]`。
 - 命名：文件用 kebab 或与周边一致；插件 id 一律反向域名 `com.launcher.<name>`；IPC 通道前缀 `panel:*` / `plugin:*`。
 - **不引入新的运行时依赖**除非确有必要；加依赖前先确认 electron 原生 API 覆盖不了。
+  已批准的例外（v0.6 AI 线）：`ai` + `@ai-sdk/*`（流式与 tool-calling）、`ajv`（tools.json 的
+  JSON Schema 校验）、`@modelcontextprotocol/sdk`（MCP client）。再要加别的先讨论。
 
 ## 4. 插件开发（高频任务）
 
@@ -107,7 +111,8 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 
 ## 6. Git 与迭代流程
 
-- 分支：`main` 保持可运行；功能分支 `feat/<主题>`、修复 `fix/<主题>`。
+- 分支：`main` 保持可运行；功能分支 `feat/<主题>`、修复 `fix/<主题>`。v0.6 AI 线在
+  `feat/ai` 集成分支推进，每完成一个版本合回 `main` 一次，避免半成品挡住发布线。
 - 提交信息：Conventional Commits + 中文描述，如 `feat(plugins): 插件市场本地列表`、`fix(panel): 失焦隐藏在 DevTools 打开时误触发`。
 - **每完成一个功能迭代，必须更新 `docs/DEVLOG.md`**（模板在文件底部），并对照 `docs/ROADMAP.md` 勾选进度。
 - 版本号语义化：主版本.功能.修复；发版走 `pnpm dist`，产物入 `release/`（已 gitignore）。
@@ -118,6 +123,7 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 | 文档 | 内容 |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | 进程模型、五层隔离、插件协议、数据目录 |
+| [docs/ai-architecture.md](docs/ai-architecture.md) | AI 应用与插件 AI 协议（分层、tools.json、授权与安全、接缝清单） |
 | [docs/DEVLOG.md](docs/DEVLOG.md) | 功能开发记录（每迭代一条） |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 迭代路线与验收标准 |
 | [docs/plugin-dev-guide.md](docs/plugin-dev-guide.md) | 插件开发指南（人读版） |

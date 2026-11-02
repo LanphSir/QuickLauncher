@@ -2,6 +2,9 @@
 
 一个全局快捷键唤起的插件化桌面工具面板（类 uTools），Windows 优先。
 
+> 本文只写**已实现**的架构。进行中的 AI 应用与插件 AI 协议（v0.6.x）另见
+> [ai-architecture.md](ai-architecture.md)，落地后再回写本文。
+
 ## 技术栈
 
 | 层 | 选型 |

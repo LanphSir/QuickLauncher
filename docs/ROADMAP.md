@@ -82,7 +82,29 @@
 - [ ] v0.5.3 **安装器打磨**：自定义安装界面、安装后自启选项
 - [ ] v0.5.4 **崩溃/性能看板**：本地日志文件（`userData/logs/`），插件崩溃记录
 
-## v0.6+ — 探索项
+## v0.6.x — 内置 AI 应用与插件 AI 协议
+
+> 2026-11-02 开工，设计见 [ai-architecture.md](ai-architecture.md)。已定决策：AI 界面 =
+> 内置插件 `plugins/ai`；AI 服务 = 主进程 `src/main/ai/*`；协议升级纯增量（`apiVersion: 2`）；
+> 工具授权按 `risk` 分级 + 审计；MCP 落在 v0.6.4。开发在 `feat/ai` 集成分支，每版合回 `main`。
+
+- [ ] v0.6.0 **AI 内核与对话**：`main/ai/{provider,secrets,store,chat}.ts`、内置 AI 插件（对话/多会话/模型切换/中断重试）、
+  `plugin:ai.chat.*`（`internalOnly`）+ `plugin:ai.delta` 事件流、OpenAI 兼容端点 + 预设（DeepSeek/通义/Kimi/Ollama）
+  - 验收：填 baseURL+key 后流式出字；停止 300ms 内生效且不留半条消息；重启后会话仍在；`secrets.bin` 为密文、界面只见掩码；`pnpm test` 新增 provider/会话纯函数用例
+- [ ] v0.6.1 **上下文与附件**：拖拽/选择文件、文本抽取（txt/md/json/代码 → pdf/docx → 图片 vision）、
+  token 估算与截断、搜索结果"作为上下文"、超长会话滚动摘要
+  - 验收：2MB 日志不卡 UI（解析在 worker + 硬上限）；超预算自动摘要并提示；图片附件在 vision 模型下可用
+- [ ] v0.6.2 **插件 AI 协议**：manifest `apiVersion/window/ai` 校验、`ai/tools.json`（ajv）+ `ai/SKILL.md` 解析、
+  `load_skill` 渐进披露、面板图标 AI 徽标、设置页「AI 工具」授权列表与逐插件开关
+  - 验收：给计算器加 `tools.json` 后图标出徽标、授权后工具出现在列表、未授权时不下发；坏一份 tools.json 只丢该插件工具不影响加载
+- [ ] v0.6.3 **工具调用**：工具注册表（`launcher.search/open`、剪贴板、文档库、插件工具）、工具宿主（懒建/空闲 60s 回收/崩溃重建）、
+  风险分级确认（走 `OverlayHost`）、审计日志、循环与预算上限
+  - 验收：「把剪贴板里的地址用翻译插件翻一下」全链路跑通；`dangerous` 未确认必被拒；插件未就绪/超时/报错三种失败都以 `tool-result.error` 回给模型；`audit.jsonl` 有据可查
+- [ ] v0.6.4 **MCP 接入**：`ai/mcp.json` 解析 + 命令行人工确认（指纹绑定）+ stdio/http client + 进程生命周期（懒启动/崩溃≤3）
+  - 验收：接一个社区 MCP server 能列出并调用工具；确认弹窗展示完整 argv 且改参数需重新确认；server 崩溃后对话仍可用
+  - 遗留预判：跨平台 stdio 路径差异留到 v0.7 盘点
+
+## v0.7+ — 探索项
 
 - 多视图尺寸：插件可申请不同面板尺寸（`appapi.window.setSize`，需权限）
 - 手册：整目录导入（当前为多选文件）、在线手册源（远程拉取 + 校验 + 缓存）
