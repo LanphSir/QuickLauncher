@@ -11,9 +11,9 @@ Electron 38 + TypeScript(strict) + Vue 3 + Pinia + electron-vite + pnpm workspac
 pnpm dev              # 开发模式（会先构建内置插件再启动 electron-vite dev）
 pnpm dev:plugin <name> # 单个插件改走 vite dev server（HMR），改插件代码不用重构建/重启
 pnpm typecheck        # 三端类型检查（tsconfig.json + tsconfig.web.json）
-pnpm test             # 单元测试 148 项（纯逻辑：校验器/内联归一化/存储分片与配额/LRU 策略/监听计划/失焦判定/面板布局/快捷键计划与注册表/自定义应用模型/AI 的 SSE 与增量解析/地址与模型 id/会话转换）
+pnpm test             # 单元测试 186 项（纯逻辑：校验器/内联归一化/存储分片与配额/LRU 策略/监听计划/失焦判定/面板布局/快捷键计划与注册表/自定义应用模型/AI 的 SSE 与增量解析/地址与模型 id/会话转换/token 预算与截断/附件抽取与编码回退/摘要触发条件）
 pnpm build:plugins    # 仅构建内置插件（plugins/*/dist）
-pnpm smoke            # CDP 功能冒烟 95 项（含 AI：本地 mock 端点跑通配置→流式→停止）（需先另起: npx electron . --remote-debugging-port=9222）
+pnpm smoke            # CDP 功能冒烟 101 项（含 AI：mock 端点跑通配置→流式→停止→附件→多模态）（需先另起: npx electron . --remote-debugging-port=9222）
                       # 注意本机 shell 里若带 ELECTRON_RUN_AS_NODE=1，electron 会当 node 跑，启动前 unset
 pnpm dist             # 打包 Windows 安装包 → release/<version>/
 node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
@@ -45,7 +45,10 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 - 命名：文件用 kebab 或与周边一致；插件 id 一律反向域名 `com.launcher.<name>`；IPC 通道前缀 `panel:*` / `plugin:*`。
 - **不引入新的运行时依赖**除非确有必要；加依赖前先确认 electron 原生 API 覆盖不了。
   已批准的例外（v0.6 AI 线）：`ai` + `@ai-sdk/*`（流式与 tool-calling）、`ajv`（tools.json 的
-  JSON Schema 校验）、`@modelcontextprotocol/sdk`（MCP client）。再要加别的先讨论。
+  JSON Schema 校验）、`@modelcontextprotocol/sdk`（MCP client）、`unpdf`（PDF 抽文本，
+  比 pdfjs 全家桶小一个量级；ESM-only，只能动态 `import()` 加载）。再要加别的先讨论。
+  实测结论：v0.6.0/v0.6.1 都没用上 `ai`/`@ai-sdk/*`——SSE 与多模态请求自己写不到 200 行，
+  引两个依赖反而多一层不可控。留着例外，但**别为了"当初说好可以"而用它**。
 
 ## 4. 插件开发（高频任务）
 

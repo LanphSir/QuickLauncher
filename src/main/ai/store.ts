@@ -22,6 +22,10 @@ interface SessionFile {
   version: 1
   meta: AiSessionMeta
   messages: AiChatMessage[]
+  /** 滚动摘要：早期对话压缩后的一段陈述 */
+  summary?: string
+  /** 摘要覆盖到哪条消息 */
+  summaryUpTo?: string
 }
 
 interface IndexFile {
@@ -92,7 +96,14 @@ function readSessionFile(id: string): AiSessionDetail | null {
     const meta = isMeta(raw.meta)
       ? raw.meta
       : { id, title: '新会话', createdAt: Date.now(), updatedAt: Date.now(), messageCount: 0 }
-    return { ...meta, id, messageCount: messages.length, messages }
+    return {
+      ...meta,
+      id,
+      messageCount: messages.length,
+      messages,
+      ...(typeof raw.summary === 'string' && raw.summary ? { summary: raw.summary } : {}),
+      ...(typeof raw.summaryUpTo === 'string' && raw.summaryUpTo ? { summaryUpTo: raw.summaryUpTo } : {})
+    }
   } catch (err) {
     console.error(`[ai] 会话读取失败 ${id}`, err)
     return null
@@ -138,6 +149,11 @@ export function createSession(model?: string): AiSessionDetail {
 /** 保存整条会话：顺便裁剪超长历史、刷新 meta 的时间与条数 */
 export function saveSession(detail: AiSessionDetail): AiSessionDetail {
   const messages = trimMessages(detail.messages, MAX_SESSION_MESSAGES)
+  // 被裁掉的消息如果还在摘要覆盖范围内就没事；超出去了说明摘要已经不完整，清掉重来
+  const keptIds = new Set(messages.map((m) => m.id))
+  const summaryUpTo = detail.summaryUpTo && keptIds.has(detail.summaryUpTo) ? detail.summaryUpTo : undefined
+  const summary = summaryUpTo ? detail.summary : undefined
+
   const meta: AiSessionMeta = {
     id: detail.id,
     title: detail.title.slice(0, 60) || '新会话',
@@ -146,9 +162,50 @@ export function saveSession(detail: AiSessionDetail): AiSessionDetail {
     messageCount: messages.length,
     model: detail.model
   }
-  writeAtomic(sessionFile(meta.id), JSON.stringify({ version: 1, meta, messages } satisfies SessionFile))
+  writeAtomic(
+    sessionFile(meta.id),
+    JSON.stringify({
+      version: 1,
+      meta,
+      messages,
+      ...(summary ? { summary } : {}),
+      ...(summaryUpTo ? { summaryUpTo } : {})
+    } satisfies SessionFile)
+  )
   upsertIndex(meta)
-  return { ...meta, messages }
+  return { ...meta, messages, ...(summary ? { summary } : {}), ...(summaryUpTo ? { summaryUpTo } : {}) }
+}
+
+/**
+ * 只更新摘要，不动消息与排序。
+ *
+ * 单独一个入口是因为摘要是在对话**结束之后**才生成的：若走 saveSession，
+ * 会把会话的 updatedAt 刷新成现在，列表里一条半小时前的对话突然跳到最前面，
+ * 而用户并没有说话。这里读-改-写只碰两个字段，别的原样保留。
+ */
+export function saveSummary(id: string, summary: string, upToMessageId: string): boolean {
+  const detail = readSessionFile(id)
+  if (!detail) return false
+  if (!detail.messages.some((m) => m.id === upToMessageId)) return false
+  const meta: AiSessionMeta = {
+    id: detail.id,
+    title: detail.title,
+    createdAt: detail.createdAt,
+    updatedAt: detail.updatedAt,
+    messageCount: detail.messages.length,
+    model: detail.model
+  }
+  writeAtomic(
+    sessionFile(id),
+    JSON.stringify({
+      version: 1,
+      meta,
+      messages: detail.messages,
+      summary,
+      summaryUpTo: upToMessageId
+    } satisfies SessionFile)
+  )
+  return true
 }
 
 export function renameSession(id: string, title: string): boolean {

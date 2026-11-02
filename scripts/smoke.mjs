@@ -992,6 +992,12 @@ check('插件目录删除后自动下架(免重启)', unregistered === true)
 const AI_MOCK_PORT = 8788
 let aiMock = null
 let aiProviderId = ''
+/** 本次冒烟新建的会话：清理时只删它，绝不碰用户自己的对话 */
+let aiSessionId = ''
+/** 附件段另开的会话，同样只删自己的 */
+const extraSessionIds = []
+/** mock 端点收到的最后一次请求体：用来断言多模态 content、附件是否真的进了上下文 */
+let lastChatBody = null
 try {
   aiMock = createServer((req, res) => {
     if (req.method === 'GET' && req.url.startsWith('/v1/models')) {
@@ -1003,6 +1009,21 @@ try {
       let body = ''
       req.on('data', (c) => (body += c))
       req.on('end', () => {
+        try {
+          lastChatBody = JSON.parse(body)
+        } catch {
+          lastChatBody = null
+        }
+        // 摘要走非流式：返回一次性 JSON，而不是 SSE
+        if (lastChatBody?.stream === false) {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(
+            JSON.stringify({
+              choices: [{ message: { content: '用户在用本地 mock 端点测试上下文与附件。' } }]
+            })
+          )
+          return
+        }
         const slow = String(body).includes('SLOW')
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
         const pieces = slow
@@ -1030,7 +1051,7 @@ try {
 
   const saved = await evaluate(
     ws,
-    `window.panel.aiSaveProvider({ presetId: 'custom', name: '冒烟 Mock', baseURL: 'http://127.0.0.1:${AI_MOCK_PORT}/v1', models: ['mock-chat', 'mock-slow'], apiKey: 'sk-smoke-9999' })`
+    `window.panel.aiSaveProvider({ presetId: 'custom', name: '冒烟 Mock', baseURL: 'http://127.0.0.1:${AI_MOCK_PORT}/v1', models: ['mock-chat', 'mock-slow'], apiKey: 'sk-smoke-9999', visionModels: ['mock-chat'] })`
   )
   aiProviderId = saved?.settings?.providers?.find((p) => p.name === '冒烟 Mock')?.id ?? ''
   const view = saved?.settings?.providers?.find((p) => p.id === aiProviderId)
@@ -1061,9 +1082,12 @@ try {
     `(async () => {
       window.__ai = []
       window.appapi.ai.onDelta((e) => window.__ai.push(e))
-      return window.appapi.ai.send({ text: '你好' })
+      // 显式指定 mock 模型：默认模型可能已被用户设成真实端点，
+      // 不指定就会真的联网、真的花钱（而且断言会拿到真人回答）
+      return window.appapi.ai.send({ text: '你好', model: ${JSON.stringify(`${aiProviderId}/mock-chat`)} })
     })()`
   )
+  aiSessionId = sent?.sessionId ?? ''
   check('AI 消息受理', sent?.ok === true, sent?.message ?? '')
 
   const firstRun = await waitFor(async () => {
@@ -1081,10 +1105,11 @@ try {
   )
 
   const sessions = await evaluateIn('ai', 'window.appapi.ai.sessions.list()')
+  const mine = (sessions ?? []).find((s) => s.id === aiSessionId)
   check(
     'AI 会话落库(两条消息 + 标题取首句)',
-    sessions.length === 1 && sessions[0].messageCount === 2 && sessions[0].title === '你好',
-    JSON.stringify(sessions[0] ?? {})
+    mine?.messageCount === 2 && mine?.title === '你好',
+    JSON.stringify(mine ?? {})
   )
 
   const slowSend = await evaluateIn(
@@ -1092,8 +1117,7 @@ try {
     `(async () => {
       window.__ai2 = []
       window.appapi.ai.onDelta((e) => window.__ai2.push(e))
-      const list = await window.appapi.ai.sessions.list()
-      return window.appapi.ai.send({ text: 'SLOW 停止', sessionId: list[0].id })
+      return window.appapi.ai.send({ text: 'SLOW 停止', sessionId: ${JSON.stringify(aiSessionId)}, model: ${JSON.stringify(`${aiProviderId}/mock-slow`)} })
     })()`
   )
   await new Promise((r) => setTimeout(r, 300))
@@ -1111,7 +1135,7 @@ try {
 
   const partial = await evaluateIn(
     'ai',
-    `window.appapi.ai.sessions.list().then((l) => window.appapi.ai.sessions.get(l[0].id)).then((d) => {
+    `window.appapi.ai.sessions.get(${JSON.stringify(aiSessionId)}).then((d) => {
       const last = d.messages[d.messages.length - 1]
       return { stopped: last.stopped === true, text: (last.parts || []).map((p) => p.text).join('') }
     })`
@@ -1121,18 +1145,135 @@ try {
     partial?.stopped === true && partial.text.length > 0 && !partial.text.includes('undefined'),
     `${partial?.text?.length ?? 0} 字`
   )
+
+  // ---------- v0.6.1：附件抽取 / 多模态请求体 ----------
+  const mockModel = `${aiProviderId}/mock-chat`
+  // 1×1 透明 PNG：够小、是合法图片，能验证 nativeImage 缩略这条路
+  const PNG_1PX =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+
+  const textAttach = await evaluateIn(
+    'ai',
+    `window.appapi.ai.attach({ name: 'build.log', data: btoa('line1 ok line2 error: boom') })`
+  )
+  check(
+    'AI 附件：文本被抽取成正文',
+    textAttach?.ok === true &&
+      textAttach.part?.kind === 'text' &&
+      String(textAttach.part?.text ?? '').includes('error: boom'),
+    textAttach?.part ? `已读 ${textAttach.part.text?.length ?? 0} 字` : (textAttach?.message ?? '')
+  )
+
+  const badAttach = await evaluateIn(
+    'ai',
+    `window.appapi.ai.attach({ name: 'setup.exe', data: btoa('MZ') })`
+  )
+  check(
+    'AI 附件：不支持的类型被拒并说明原因',
+    badAttach?.ok === false && String(badAttach?.message ?? '').length > 0,
+    badAttach?.message ?? ''
+  )
+
+  const imageAttach = await evaluateIn('ai', `window.appapi.ai.attach({ name: 'shot.png', data: '${PNG_1PX}' })`)
+  check(
+    'AI 附件：图片生成缩略图并可发送',
+    imageAttach?.ok === true &&
+      imageAttach.part?.kind === 'image' &&
+      String(imageAttach.part?.preview ?? '').startsWith('data:image/jpeg'),
+    imageAttach?.part ? `${imageAttach.part.size}B` : (imageAttach?.message ?? '')
+  )
+
+  const fileSession = await evaluateIn('ai', `window.appapi.ai.sessions.create(${JSON.stringify(mockModel)})`)
+  extraSessionIds.push(fileSession.id)
+
+  const fileSend = await evaluateIn(
+    'ai',
+    `(async () => {
+      window.__ai3 = []
+      window.appapi.ai.onDelta((e) => window.__ai3.push(e))
+      return window.appapi.ai.send({
+        sessionId: ${JSON.stringify(fileSession.id)},
+        text: '看下这个日志',
+        attachIds: [${JSON.stringify(textAttach?.attachId ?? '')}],
+        model: ${JSON.stringify(mockModel)}
+      })
+    })()`
+  )
+  await waitFor(async () => {
+    const events = await evaluateIn('ai', 'window.__ai3')
+    return events.some((e) => e.type === 'done') ? true : null
+  })
+
+  const attachedMessage = await evaluateIn(
+    'ai',
+    `window.appapi.ai.sessions.get(${JSON.stringify(fileSession.id)}).then((d) => {
+      const user = d.messages.find((m) => m.role === 'user')
+      const file = (user?.parts || []).find((p) => p.type === 'file')
+      return { hasFile: Boolean(file), name: file?.name ?? '', kind: file?.kind ?? '' }
+    })`
+  )
+  const bodyText = JSON.stringify(lastChatBody ?? {})
+  check(
+    'AI 附件进入上下文（消息留档 + 请求体带上正文）',
+    fileSend?.ok === true &&
+      attachedMessage?.hasFile === true &&
+      attachedMessage?.name === 'build.log' &&
+      bodyText.includes('error: boom'),
+    `${attachedMessage?.name ?? '(无)'} / 请求体${bodyText.includes('error: boom') ? '含' : '不含'}正文`
+  )
+
+  const imageSend = await evaluateIn(
+    'ai',
+    `(async () => {
+      window.__ai4 = []
+      window.appapi.ai.onDelta((e) => window.__ai4.push(e))
+      return window.appapi.ai.send({
+        sessionId: ${JSON.stringify(fileSession.id)},
+        text: '看图',
+        attachIds: [${JSON.stringify(imageAttach?.attachId ?? '')}],
+        model: ${JSON.stringify(mockModel)}
+      })
+    })()`
+  )
+  await waitFor(async () => {
+    const events = await evaluateIn('ai', 'window.__ai4')
+    return events.some((e) => e.type === 'done') ? true : null
+  })
+  const lastMessage = (lastChatBody?.messages ?? []).slice(-1)[0]
+  const parts = Array.isArray(lastMessage?.content) ? lastMessage.content : []
+  check(
+    'AI 图片走多模态 content 数组',
+    imageSend?.ok === true &&
+      parts.some((p) => p.type === 'image_url' && String(p.image_url?.url).startsWith('data:image/png;base64,')),
+    `${parts.length} 个内容块`
+  )
+
+  // 面板右键「用 AI 询问」：条目信息经 intent 带进 AI 页，界面上要能看到引用条
+  await evaluate(
+    ws,
+    `window.panel.openPlugin('com.launcher.ai', undefined, { askAbout: { name: '冒烟应用', type: '本地程序', command: 'C:\\\\smoke.exe' } })`
+  )
+  const askChip = await waitFor(async () => {
+    const text = await evaluateIn('ai', "document.querySelector('.ask-chip')?.textContent || ''")
+    return text ? text : null
+  })
+  check(
+    'AI 收到面板条目上下文（引用条可见）',
+    String(askChip ?? '').includes('冒烟应用'),
+    String(askChip ?? '(无)').slice(0, 40)
+  )
 } finally {
-  // 清理：先删 provider（连带密钥），再删会话，最后关假端点
+  // 清理：先删 provider（连带密钥），再删本次冒烟建的会话，最后关假端点。
+  // 注意只能删 aiSessionId —— 早期版本这里是"删除列出的所有会话"，
+  // 一旦用户自己也用过 AI 插件，跑一次冒烟就会把他的对话全清掉。
   if (aiProviderId) {
     await evaluate(ws, `window.panel.aiDeleteProvider(${JSON.stringify(aiProviderId)})`).catch(() => {})
   }
-  try {
-    const list = await evaluateIn('ai', 'window.appapi.ai.sessions.list()')
-    for (const s of list ?? []) {
-      await evaluateIn('ai', `window.appapi.ai.sessions.remove(${JSON.stringify(s.id)})`).catch(() => {})
-    }
-  } catch {
-    // AI 插件没打开过：没有会话要清
+  if (aiSessionId) {
+    await evaluateIn('ai', `window.appapi.ai.sessions.remove(${JSON.stringify(aiSessionId)})`).catch(() => {})
+  }
+  for (const id of extraSessionIds) {
+    await evaluateIn('ai', `window.appapi.ai.sessions.remove(${JSON.stringify(id)})`).catch(() => {})
   }
   if (aiMock) await new Promise((r) => aiMock.close(r))
 }

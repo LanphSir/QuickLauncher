@@ -22,7 +22,11 @@ export function initAi(): void {
       baseURL: String(input?.baseURL ?? ''),
       models: Array.isArray(input?.models) ? input.models : [],
       apiKey: typeof input?.apiKey === 'string' ? input.apiKey : undefined,
-      keyless: input?.keyless === true
+      keyless: input?.keyless === true,
+      contextWindow: typeof input?.contextWindow === 'number' ? input.contextWindow : undefined,
+      visionModels: Array.isArray(input?.visionModels)
+        ? input.visionModels.filter((m): m is string => typeof m === 'string')
+        : undefined
     })
   )
   ipcMain.handle('panel:ai-delete-provider', (_event, id: string) => deleteProvider(String(id)))

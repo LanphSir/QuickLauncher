@@ -9,18 +9,22 @@
  */
 import type { WebContents } from 'electron'
 import { AI_DELTA_CHANNEL } from '../../shared/pluginApi'
-import type {
-  AiChatMessage,
-  AiMessagePart,
-  AiSendRequest,
-  AiSendResult,
-  AiStreamEvent
+import {
+  DEFAULT_MAX_OUTPUT_TOKENS,
+  type AiChatMessage,
+  type AiMessagePart,
+  type AiSendRequest,
+  type AiSendResult,
+  type AiStreamEvent
 } from '../../shared/ai'
+import { getAttachments, readImageDataUrl } from './attach'
 import { AiHttpError, streamChat } from './client'
-import { buildChatRequest, modelId } from './provider'
-import { createMessage, newMessageId, titleFromText, toApiMessages } from './sessionModel'
+import { buildChatRequest, modelId, type ApiContentPart, type ApiMessage } from './provider'
+import { createMessage, newMessageId, titleFromText, turnsOf } from './sessionModel'
 import { getAiConfig, resolveModel } from './settings'
-import { createSession, getSession, saveSession } from './store'
+import { createSession, getSession, saveSession, saveSummary } from './store'
+import { summarizeHistory, summarizeRange } from './summary'
+import { estimateTokens, fitTurns, type ChatTurn } from './tokens'
 
 interface ActiveRun {
   controller: AbortController
@@ -122,6 +126,37 @@ export function stopAll(): void {
 }
 
 /**
+ * 拼请求体：system（含摘要）+ 逐轮对话。
+ *
+ * 只有带图的消息才用 content 数组，纯文字仍是字符串——
+ * 兼容实现里对数组形式的支持参差不齐，能不用就不用。
+ */
+function assembleMessages(turns: ChatTurn[], system: string, summary?: string): ApiMessage[] {
+  const out: ApiMessage[] = []
+  const sysParts: string[] = []
+  if (system.trim()) sysParts.push(system.trim())
+  if (summary) sysParts.push(`【更早对话的摘要】\n${summary}`)
+  if (sysParts.length) out.push({ role: 'system', content: sysParts.join('\n\n') })
+
+  for (const turn of turns) {
+    if (!turn.images.length) {
+      out.push({ role: turn.role, content: turn.text })
+      continue
+    }
+    const parts: ApiContentPart[] = []
+    if (turn.text.trim()) parts.push({ type: 'text', text: turn.text })
+    for (const image of turn.images) {
+      const url = readImageDataUrl(image.fileId, image.mime)
+      // 原图被清理掉了就跳过这一张：宁可少一张图，也不要整条请求失败
+      if (url) parts.push({ type: 'image_url', image_url: { url } })
+    }
+    if (!parts.length) continue
+    out.push({ role: turn.role, content: parts })
+  }
+  return out
+}
+
+/**
  * 发一条消息。sender 是 AI 插件页的 webContents（事件推给它），
  * 由调用方（plugin/api/ai.ts）从网关上下文里取，不信任 payload 里的任何身份。
  */
@@ -130,10 +165,25 @@ export async function sendMessage(
   req: AiSendRequest
 ): Promise<AiSendResult> {
   const text = String(req?.text ?? '').trim()
-  if (!text) return { ok: false, sessionId: '', messageId: '', message: '消息为空' }
+  const files = getAttachments(req?.attachIds)
+  if (!text && !files.length) {
+    return { ok: false, sessionId: '', messageId: '', message: '消息为空' }
+  }
 
   const resolved = resolveModel(req.model)
   if (!resolved.ok) return { ok: false, sessionId: '', messageId: '', message: resolved.message }
+
+  // 图片是硬门槛：模型看不了图时提前拦下，否则服务端会回一句
+  // "invalid content type" —— 用户完全不知道该改什么
+  const imageCount = files.filter((f) => f.kind === 'image' && !f.error).length
+  if (imageCount > 0 && !resolved.supportsVision) {
+    return {
+      ok: false,
+      sessionId: req.sessionId ?? '',
+      messageId: '',
+      message: `「${resolved.model}」不支持图片：换一个能看图的模型，或移除图片附件（设置 → AI 里可标注哪些模型能读图）`
+    }
+  }
 
   let session = req.sessionId ? getSession(req.sessionId) : null
   if (req.sessionId && !session) {
@@ -146,9 +196,15 @@ export async function sendMessage(
 
   const modelRef = modelId(resolved.provider.id, resolved.model)
   const assistantId = newMessageId()
-  const userMessage = createMessage('user', [{ type: 'text', text }])
+
+  const userParts: AiMessagePart[] = []
+  if (text) userParts.push({ type: 'text', text })
+  for (const file of files) userParts.push(file)
+  const userMessage = createMessage('user', userParts)
+
   const isFirst = session.messages.length === 0
-  const title = isFirst ? titleFromText(text) : session.title
+  const titleSeed = text || files.map((f) => f.name).join('、')
+  const title = isFirst ? titleFromText(titleSeed) : session.title
 
   // 问题先落盘：即使随后进程被杀，用户也不会丢掉刚打的那段
   session = saveSession({
@@ -157,18 +213,22 @@ export async function sendMessage(
     model: modelRef,
     messages: [...session.messages, userMessage]
   })
+  const sessionId = session.id
+  const historyMessages = session.messages
 
   const controller = new AbortController()
-  runs.set(session.id, { controller })
-  const emitter = createEmitter(sender, session.id, assistantId)
-  emit(sender, { type: 'start', sessionId: session.id, messageId: assistantId, model: modelRef })
+  runs.set(sessionId, { controller })
+  const emitter = createEmitter(sender, sessionId, assistantId)
+  emit(sender, { type: 'start', sessionId, messageId: assistantId, model: modelRef })
 
   let textOut = ''
   let reasoningOut = ''
+  let droppedCount = 0
+  let wasTruncated = false
 
   const finalize = (outcome: { stopped?: boolean; error?: string }): void => {
     emitter.flush()
-    runs.delete(session!.id)
+    runs.delete(sessionId)
 
     const parts: AiMessagePart[] = []
     if (reasoningOut) parts.push({ type: 'reasoning', text: reasoningOut })
@@ -185,20 +245,48 @@ export async function sendMessage(
       ...(outcome.stopped ? { stopped: true } : {}),
       ...(error ? { error } : {})
     }
-    saveSession({ ...session!, messages: [...session!.messages, assistant] })
+    // 重新读一次再写：生成期间用户可能改了标题或删了会话
+    const latest = getSession(sessionId)
+    if (latest) saveSession({ ...latest, model: modelRef, messages: [...latest.messages, assistant] })
+
     emit(sender, {
       type: 'done',
-      sessionId: session!.id,
+      sessionId,
       messageId: assistantId,
       ...(outcome.stopped ? { stopped: true } : {}),
-      ...(error ? { error } : {})
+      ...(error ? { error } : {}),
+      ...(droppedCount > 0 ? { dropped: droppedCount } : {}),
+      ...(wasTruncated ? { truncated: true } : {})
     })
   }
 
+  // 供请求后触发的摘要使用：保留区从哪开始，决定了这次真正被丢掉的是哪一段
+  let turnsForSummary: ChatTurn[] = []
+  let keptStart = 0
+
   const run = async (): Promise<void> => {
     try {
-      const apiMessages = toApiMessages(session!.messages, getAiConfig().systemPrompt)
-      const built = buildChatRequest(resolved.provider, resolved.model, resolved.apiKey, apiMessages)
+      const cfg = getAiConfig()
+      const system = cfg.systemPrompt
+      const summary = session.summary
+      const turns = turnsOf(historyMessages)
+      turnsForSummary = turns
+
+      const fixedTokens =
+        estimateTokens(system) + (summary ? estimateTokens(summary) + 16 : 0)
+      const fitted = fitTurns(turns, {
+        contextWindow: resolved.contextWindow,
+        maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+        fixedTokens
+      })
+      droppedCount = fitted.dropped
+      wasTruncated = fitted.truncated
+      keptStart = fitted.start
+
+      const apiMessages = assembleMessages(fitted.kept, system, summary)
+      const built = buildChatRequest(resolved.provider, resolved.model, resolved.apiKey, apiMessages, {
+        maxTokens: DEFAULT_MAX_OUTPUT_TOKENS
+      })
       await streamChat(built, controller.signal, {
         onText: (delta) => {
           textOut += delta
@@ -218,11 +306,53 @@ export async function sendMessage(
     } catch (err) {
       finalize(controller.signal.aborted || isAbortError(err) ? { stopped: true } : { error: errorText(err) })
     }
+
+    // 摘要放在回答之后：它不该占用用户的等待时间，也不该因为失败影响这次回答
+    void maybeSummarize(sender, sessionId, turnsForSummary, keptStart, resolved.contextWindow)
   }
 
   // 立刻返回「已受理」：结果全部走事件流。
   // 若在这里 await 到流结束，调用方拿不到返回值的这段时间里连"停止"都发不出去
   // （同一页面的 await 会一直挂到整段回答生成完）。
   void run()
-  return { ok: true, sessionId: session.id, messageId: assistantId }
+  return { ok: true, sessionId, messageId: assistantId }
 }
+
+/**
+ * 超预算时把被丢掉的那段历史压成摘要，供下一轮使用。
+ *
+ * 触发条件看的是「这次实际丢了多少条」而不是「历史有多少条」：
+ * 丢一两条不值得多一次请求，丢一大段才说明摘要真能省下东西。
+ */
+async function maybeSummarize(
+  sender: WebContents | null,
+  sessionId: string,
+  turns: ChatTurn[],
+  keptStart: number,
+  contextWindow: number
+): Promise<void> {
+  const latest = getSession(sessionId)
+  if (!latest) return
+
+  // 压哪一段由纯函数决定：丢得太少、上次摘要已覆盖、摘要终点失效都会返回 null
+  const slice = summarizeRange(turns, keptStart, latest.summaryUpTo)
+  if (!slice) return
+
+  const resolved = resolveModel(latest.model)
+  if (!resolved.ok) return
+
+  const summary = await summarizeHistory({
+    provider: resolved.provider,
+    model: resolved.model,
+    apiKey: resolved.apiKey,
+    previous: latest.summary,
+    turns: slice,
+    contextWindow: resolved.contextWindow
+  })
+  if (!summary) return
+
+  const upTo = slice[slice.length - 1].messageId
+  if (!saveSummary(sessionId, summary, upTo)) return
+  emit(sender, { type: 'summary', sessionId, text: summary })
+}
+

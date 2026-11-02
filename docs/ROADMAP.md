@@ -96,9 +96,16 @@
     ✅ 重启后会话仍在（分文件 + index，索引损坏可按目录重建）；✅ `secrets.bin` 密文、界面只见 `sk-…a1b2`；
     ✅ `pnpm test` 148/148（+25）；✅ `pnpm smoke` 95/95（+9）
   - 遗留：真实第三方端点未验证（本机无 key，用 mock）；`reasoning` 字段在 deepseek-reasoner 的实测形态待补
-- [ ] v0.6.1 **上下文与附件**：拖拽/选择文件、文本抽取（txt/md/json/代码 → pdf/docx → 图片 vision）、
-  token 估算与截断、搜索结果"作为上下文"、超长会话滚动摘要
-  - 验收：2MB 日志不卡 UI（解析在 worker + 硬上限）；超预算自动摘要并提示；图片附件在 vision 模型下可用
+- [x] v0.6.1 **上下文与附件**（已交付：`main/ai/{tokens,extract,pdf,attach,summary}.ts`、
+  token 估算与预算裁剪（CJK 按字、末条必留、中间截断）、附件抽取（txt/md/json/代码/日志 →
+  GBK 回退 → docx 解 document.xml → PDF 走 unpdf 动态 import → 图片存原图 + 360px 缩略）、
+  多模态 content 数组与视觉模型门槛（`visionModels` 子串匹配，不支持时提前拦下）、
+  滚动摘要（只压本次被丢弃段、回答后异步、`saveSummary` 不动 updatedAt）、
+  插件页拖拽/选文件与附件气泡、设置页补「上下文窗口 / 能读图的模型」、面板右键「用 AI 询问」）
+  - 验收：✅ 文本附件抽取并进入请求体（冒烟）；✅ 不支持的类型被拒且说明原因；
+    ✅ 图片生成缩略图并以 `image_url` 走多模态数组；✅ 面板条目信息作为上下文可见；
+    ✅ `pnpm test` 186/186（+38）；✅ `pnpm smoke` 101/101（+6）
+  - 遗留：PDF 中文抽取质量未实测（无样本）；摘要请求仅 mock 端点手验，未做弱网/超时压测
 - [ ] v0.6.2 **插件 AI 协议**：manifest `apiVersion/window/ai` 校验、`ai/tools.json`（ajv）+ `ai/SKILL.md` 解析、
   `load_skill` 渐进披露、面板图标 AI 徽标、设置页「AI 工具」授权列表与逐插件开关
   - 验收：给计算器加 `tools.json` 后图标出徽标、授权后工具出现在列表、未授权时不下发；坏一份 tools.json 只丢该插件工具不影响加载

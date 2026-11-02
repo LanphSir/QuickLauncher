@@ -91,6 +91,31 @@ export async function streamChat(
   }
 }
 
+/**
+ * 一次性（非流式）补全。只用于后台任务：生成滚动摘要、以及将来可能的标题优化。
+ * 这些场景用户不在等字，流式反而要多写一套拼接逻辑。
+ */
+export async function completeChat(req: BuiltRequest, signal: AbortSignal): Promise<string> {
+  const body = { ...(req.body as Record<string, unknown>), stream: false }
+  const res = await fetch(req.url, {
+    method: 'POST',
+    headers: req.headers,
+    body: JSON.stringify(body),
+    signal
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new AiHttpError(describeHttpError(res.status, text), res.status)
+  }
+  const json = (await res.json().catch(() => null)) as unknown
+  const choices = json && typeof json === 'object' ? (json as Record<string, unknown>).choices : undefined
+  if (!Array.isArray(choices) || !choices.length) return ''
+  const first = choices[0] as Record<string, unknown>
+  const message = first?.message as Record<string, unknown> | undefined
+  const content = message?.content
+  return typeof content === 'string' ? content : ''
+}
+
 /** 探活：GET /models 能同时验证地址与密钥，比发一次真实对话便宜 */
 export async function fetchModels(
   url: string,

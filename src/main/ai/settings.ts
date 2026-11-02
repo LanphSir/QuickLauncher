@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'node:path'
 import {
   AI_PRESETS,
+  DEFAULT_CONTEXT_WINDOW,
   DEFAULT_SYSTEM_PROMPT,
   type AiConfig,
   type AiProviderConfig,
@@ -16,14 +17,15 @@ import {
   type AiSettingsView
 } from '../../shared/ai'
 import { fetchModels } from './client'
-import { maskKey, modelId, modelsEndpoint, normalizeProvider, parseModelId } from './provider'
+import { maskKey, modelId, modelsEndpoint, normalizeProvider, parseModelId, supportsVision } from './provider'
 import { hasSecret, readSecret, removeSecret, saveSecret } from './secrets'
 
 const DEFAULTS: AiConfig = {
   providers: [],
   defaultModel: '',
   maxSessions: 100,
-  systemPrompt: DEFAULT_SYSTEM_PROMPT
+  systemPrompt: DEFAULT_SYSTEM_PROMPT,
+  defaultContextWindow: DEFAULT_CONTEXT_WINDOW
 }
 
 let config: AiConfig = { ...DEFAULTS }
@@ -51,7 +53,11 @@ export function loadAiConfig(): AiConfig {
         systemPrompt:
           typeof raw.systemPrompt === 'string' && raw.systemPrompt.trim()
             ? raw.systemPrompt
-            : DEFAULTS.systemPrompt
+            : DEFAULTS.systemPrompt,
+        defaultContextWindow:
+          typeof raw.defaultContextWindow === 'number' && raw.defaultContextWindow >= 1024
+            ? Math.floor(raw.defaultContextWindow)
+            : DEFAULTS.defaultContextWindow
       }
       // 默认模型指向已删除的 provider 时重置，避免每次发消息都报"模型不存在"
       if (config.defaultModel && !parseModelId(config.defaultModel)) config.defaultModel = ''
@@ -90,7 +96,9 @@ export function settingsView(): AiSettingsView {
       models: [...p.models],
       hasKey: p.keyless || hasSecret(p.apiKeyRef),
       apiKeyHint: key ? maskKey(key) : '',
-      keyless: p.keyless
+      keyless: p.keyless,
+      contextWindow: p.contextWindow ?? cfg.defaultContextWindow,
+      visionModels: [...(p.visionModels ?? [])]
     }
   })
   return { providers, defaultModel: cfg.defaultModel, presets: AI_PRESETS }
@@ -105,6 +113,10 @@ export interface ProviderInput {
   /** 明文密钥：只在这一次提交里出现，落盘前就加密 */
   apiKey?: string
   keyless?: boolean
+  /** 上下文窗口（token）；不填则用全局默认 */
+  contextWindow?: number
+  /** 能读图的模型名（子串匹配） */
+  visionModels?: string[]
 }
 
 /** provider id 用来做模型 id 前缀，只允许 \w.- ，且全局唯一 */
@@ -133,7 +145,9 @@ export function saveProvider(input: ProviderInput): { ok: boolean; message?: str
     baseURL: input.baseURL,
     models: input.models,
     keyless: input.keyless === true,
-    apiKeyRef: existing?.apiKeyRef ?? (input.keyless ? '' : `provider-${id}`)
+    apiKeyRef: existing?.apiKeyRef ?? (input.keyless ? '' : `provider-${id}`),
+    contextWindow: input.contextWindow,
+    visionModels: input.visionModels
   })
   if (!normalized) {
     return { ok: false, message: '名称、接口地址（http/https）与至少一个模型名都是必填' }
@@ -202,7 +216,16 @@ export async function testProvider(id: string): Promise<{ ok: boolean; message?:
 }
 
 export type ResolvedModel =
-  | { ok: true; provider: AiProviderConfig; model: string; apiKey: string | null }
+  | {
+      ok: true
+      provider: AiProviderConfig
+      model: string
+      apiKey: string | null
+      /** provider 的上下文窗口，没填则用全局默认 */
+      contextWindow: number
+      /** 这个模型能不能读图 */
+      supportsVision: boolean
+    }
   | { ok: false; message: string }
 
 /** 把 "provider/model" 解析成可发请求的组合；所有"发不出去"的原因都在这里说清 */
@@ -221,5 +244,12 @@ export function resolveModel(modelRef?: string): ResolvedModel {
   if (!provider.keyless && !apiKey) {
     return { ok: false, message: `「${provider.name}」还没填 API Key` }
   }
-  return { ok: true, provider, model: parsed.model, apiKey }
+  return {
+    ok: true,
+    provider,
+    model: parsed.model,
+    apiKey,
+    contextWindow: provider.contextWindow ?? cfg.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW,
+    supportsVision: supportsVision(provider, parsed.model)
+  }
 }

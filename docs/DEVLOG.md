@@ -11,6 +11,96 @@
 
 ---
 
+## v0.6.1 — 上下文与附件（2026-11-02）
+
+**目标**：让 AI 真的能"看东西"——把文件拖进来就能问，长对话不再因为超窗口被服务端 400 打回。
+
+### 1. token 预算（`main/ai/tokens.ts`）
+
+自己估而不引 tiktoken：那套是 OpenAI 的分词器，对 DeepSeek / 通义 / 本地模型都不准，
+却要带几 MB 的 wasm。这里只需要"不把服务端撑爆"，所以**宁可估高**——
+估高只是少带几条历史，估低就是整条请求 400，而用户对那句报错完全无从下手。
+
+- 口径：CJK 按 1 字 1 token（真实约 0.6–0.7），其余 4 字符 1 token，每条消息另加 4 开销。
+- `fitTurns()` 从新到旧装，装不下就停；**最后一条必留**（用户刚说的话不能丢），
+  单独超预算就从中间截断（保头 60% 尾 40%，中间写明"省略 N 字"）。
+- 裁剪后不以 `assistant` 开头——部分服务端会因此 400。
+- 图片按每张 800 token 计（1024² 在 gpt-4o 上约 765），带图时会更早开始丢。
+
+### 2. 附件（`main/ai/{attach,extract,pdf}.ts`）
+
+- **解析权只在主进程**。插件页把文件读成 base64 传上来，拿到的是一个 `attachId`；
+  发送时回传 id，正文由主进程从暂存表重建。页面无法伪造一段文本冒充附件。
+- 文本类（txt/md/json/代码/日志…）直读，UTF-8 解不开时回退 GBK（中文 Windows 的日志
+  相当一部分是 GBK）；带 NUL 或大量控制字符的拒收，避免把改名的压缩包当文本灌进去。
+- docx 用 `adm-zip` 解 `word/document.xml` 抽 `<w:t>`：不引 mammoth，因为模型要的是字不是样式。
+- PDF 走 `unpdf`（pdfjs 的 serverless 构建），**ESM-only，用动态 `import()` 加载**——
+  主进程产物是 CJS，但 CJS 里 `import()` 加载 ESM 是合法的，比引 pdfjs 全家桶省几十 MB。
+  设 80 页与 20s 超时；扫描件抽不出字时给的是"没有文字层，需要 OCR"，而不是空串。
+- 图片：原图存 `userData/ai/files/`，消息里只留宽 360 的 JPEG 缩略图（约 20–40KB）。
+  否则一张 4MB 图 base64 进会话文件就是 5.3MB，几十条就把会话撑到几十兆（每次保存整体重写）。
+- 上限：单文件 8MB、图片 4MB、进上下文的正文 6 万字、单条消息 6 个附件。
+
+### 3. 多模态与视觉门槛
+
+`ApiMessage.content` 支持 `string | ApiContentPart[]`，只有带图的消息才用数组
+（兼容实现对数组的支持参差不齐）。**模型名不在 `visionModels` 里时提前拦下**并说明
+"换一个能看图的模型或移除图片"——不拦的话服务端只会回一句 `invalid content type`。
+
+### 4. 滚动摘要（`main/ai/summary.ts`）
+
+超出预算时把**这次真正被丢掉的那一段**压成摘要，而不是每轮重新总结全部历史：
+
+- `summarizeRange()` 是纯函数，三种"不压"都返回 null：丢得不够多（< 6 条）、
+  上次摘要已覆盖到边界、摘要终点指向的消息已被裁掉（此时旧摘要不可信）。
+- 摘要在**回答结束后**异步跑：不占用户等待时间，失败也静默（只是这轮不更新）。
+- 落盘走 `saveSummary()`，只改 `summary`/`summaryUpTo` 两个字段、不动 `updatedAt`——
+  否则一条半小时前的对话会在列表里突然跳到最前面，而用户并没有说话。
+- 摘要以"【更早对话的摘要】"注入 system，和系统提示一起算进固定开销。
+
+### 5. 面板「用 AI 询问」
+
+搜索结果右键多一项：把条目名称/类型/启动命令/目录/关键词作为 `intent.askAbout`
+带进 AI 插件，插件页顶部显示一个可关闭的引用条，发送时拼在正文前。
+只带结构化字段，不带图标 base64 这类对模型没意义的东西。
+
+### 坑
+
+1. **`Math.max(64, 预算)` 这种"保底"会把截断结果顶爆**：预算 50 时强留 64，
+   裁剪后反而比预算还大。下限应该只保证"还能读出几个字"，不是拍脑袋的 64。
+2. **冒烟清理段把所有会话都删了**：早期写法是"列出会话逐个删"，一旦用户自己也用过
+   AI 插件，跑一次冒烟就把他的对话清空。改成只删本次冒烟自己建的 sessionId。
+3. **冒烟不指定模型就会打真实端点**：用户配了 DeepSeek 后，默认模型不再是 mock，
+   冒烟断言拿到的是真人回答（内容对不上才发现）。现在发送一律显式带 `model`。
+4. **vitest 缓存目录被沙箱的批量删除保护拦下**：`node_modules/.vitest-cache` 里
+   条目数过阈值，`vitest` 启动时清理缓存被拒。整体 `mv` 走一次即可，不用删除。
+
+### 关键文件
+
+`src/shared/ai.ts`（附件/预算/摘要类型与上限）、`src/main/ai/{tokens,extract,pdf,attach,summary}.ts`（新）、
+`ai/{chat,sessionModel,provider,client,settings,store,index}.ts`、`plugin/api/{ai,validate}.ts`、
+`shared/pluginApi.ts`、`preload/plugin.ts`、`components/{AiProviderEdit,AiSettings}.vue`、
+`components/PanelShell.vue`、`plugins/ai/src/App.vue`、`tests/ai{Tokens,Extract,Summary}.test.ts`（新）、
+`scripts/smoke.mjs`
+
+### 验证
+
+- `pnpm typecheck` 零错误
+- `pnpm test` **186/186**（新增 38 项：估算口径、裁剪规则、中间截断、编码回退、
+  docx 抽取、二进制嗅探、上限截断、摘要触发条件）
+- `pnpm build` 通过；`build:plugins` 通过；产物里 `import("unpdf")` 保持动态导入形态
+- `pnpm smoke` **101/101**（新增 6 项：文本附件抽取、不支持类型被拒、图片缩略图、
+  附件进上下文且请求体含正文、图片走多模态 content 数组、面板条目上下文可见）
+
+### 遗留事项
+
+- **PDF 中文抽取质量未实测**：本机没有中文 PDF 样本，unpdf 的 CJK 表现待验证
+- GBK 回退依赖运行时带完整 ICU（Electron 自带，Node 精简构建下会退化为 UTF-8）
+- 图片只测了 1×1 PNG，大图缩略的耗时与内存未压测
+- 摘要链路已由纯函数覆盖，但"摘要请求真的发出去了"只在 mock 端点上手验过一次
+
+---
+
 ## v0.6.0 — AI 内核与对话（2026-11-02）
 
 **目标**：让启动器里有一个能用的 AI 对话应用，并且把"模型调用"关在主进程里

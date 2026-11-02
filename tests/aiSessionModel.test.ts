@@ -3,13 +3,26 @@ import {
   createMessage,
   sortSessions,
   titleFromText,
-  toApiMessages,
-  trimMessages
+  trimMessages,
+  turnsOf,
+  turnsToApiMessages
 } from '../src/main/ai/sessionModel'
-import type { AiChatMessage } from '../src/shared/ai'
+import type { AiChatMessage, AiFilePart } from '../src/shared/ai'
 
 function msg(role: AiChatMessage['role'], text: string, extra: Partial<AiChatMessage> = {}): AiChatMessage {
   return { id: `${role}-${text}`, role, parts: [{ type: 'text', text }], createdAt: 1, ...extra }
+}
+
+function filePart(over: Partial<AiFilePart> = {}): AiFilePart {
+  return {
+    type: 'file',
+    kind: 'text',
+    name: 'app.log',
+    mime: 'text/plain',
+    size: 12,
+    text: 'ERROR: boom',
+    ...over
+  }
 }
 
 describe('会话标题', () => {
@@ -31,7 +44,7 @@ describe('转请求体', () => {
       msg('assistant', '  '),
       msg('assistant', '回答')
     ]
-    expect(toApiMessages(messages, '你是助手')).toEqual([
+    expect(turnsToApiMessages(turnsOf(messages), '你是助手')).toEqual([
       { role: 'system', content: '你是助手' },
       { role: 'user', content: '问题' },
       { role: 'assistant', content: '回答' }
@@ -39,12 +52,48 @@ describe('转请求体', () => {
   })
 
   it('没有 system 时不塞空消息', () => {
-    expect(toApiMessages([msg('user', 'hi')])).toEqual([{ role: 'user', content: 'hi' }])
+    expect(turnsToApiMessages(turnsOf([msg('user', 'hi')]))).toEqual([{ role: 'user', content: 'hi' }])
   })
 
   it('已停止但有内容的回答要保留（它就是模型实际说的话）', () => {
     const stopped = msg('assistant', '说到一半', { stopped: true })
-    expect(toApiMessages([msg('user', 'q'), stopped])).toHaveLength(2)
+    expect(turnsToApiMessages(turnsOf([msg('user', 'q'), stopped]))).toHaveLength(2)
+  })
+
+  it('附件正文拼在用户正文之后，带文件名便于模型区分来源', () => {
+    const withFile: AiChatMessage = {
+      id: 'u-file',
+      role: 'user',
+      createdAt: 3,
+      parts: [{ type: 'text', text: '解释这个报错' }, filePart()]
+    }
+    expect(turnsToApiMessages(turnsOf([withFile]))[0].content).toBe(
+      '解释这个报错\n\n【附件：app.log】\nERROR: boom'
+    )
+  })
+
+  it('抽取失败的附件不参与请求（错误已在界面上说明）', () => {
+    const broken: AiChatMessage = {
+      id: 'u-broken',
+      role: 'user',
+      createdAt: 4,
+      parts: [{ type: 'text', text: '看看' }, filePart({ error: '没有文字层', text: undefined })]
+    }
+    expect(turnsToApiMessages(turnsOf([broken]))[0].content).toBe('看看')
+  })
+
+  it('只有图片时补一句占位，避免 content 为空', () => {
+    const imageOnly: AiChatMessage = {
+      id: 'u-img',
+      role: 'user',
+      createdAt: 5,
+      parts: [
+        filePart({ kind: 'image', fileId: 'abc.png', mime: 'image/png', text: undefined, preview: 'data:,' })
+      ]
+    }
+    const turns = turnsOf([imageOnly])
+    expect(turns[0].text).toBe('（见下图）')
+    expect(turns[0].images).toEqual([{ fileId: 'abc.png', mime: 'image/png' }])
   })
 })
 

@@ -98,6 +98,8 @@ interface AiProviderView {
   hasKey: boolean
   apiKeyHint: string
   keyless: boolean
+  contextWindow: number
+  visionModels: string[]
 }
 
 interface AiPresetView {
@@ -107,6 +109,8 @@ interface AiPresetView {
   models: string[]
   keyless: boolean
   hint?: string
+  contextWindow?: number
+  visionModels?: string[]
 }
 
 interface AiSettingsView {
@@ -157,6 +161,8 @@ interface PanelApi {
     models: string[]
     apiKey?: string
     keyless?: boolean
+    contextWindow?: number
+    visionModels?: string[]
   }): Promise<AiProviderSaveResult>
   aiDeleteProvider(id: string): Promise<AiProviderSaveResult>
   /** 探活：GET /models，同时验证地址与密钥 */

@@ -7,9 +7,14 @@
  */
 import { AI_PRESETS, type AiModelOption, type AiPreset, type AiProviderConfig } from '../../shared/ai'
 
+/** 多模态内容块。纯文本消息仍然走 string，只有带图时才用数组 */
+export type ApiContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+
 export interface ApiMessage {
   role: 'system' | 'user' | 'assistant'
-  content: string
+  content: string | ApiContentPart[]
 }
 
 export interface BuiltRequest {
@@ -77,6 +82,13 @@ export function normalizeProvider(raw: unknown): AiProviderConfig | null {
     ? [...new Set(r.models.filter((m): m is string => typeof m === 'string').map((m) => m.trim()).filter(Boolean))]
     : []
   if (!models.length) return null
+  const contextWindow =
+    typeof r.contextWindow === 'number' && Number.isFinite(r.contextWindow) && r.contextWindow >= 1024
+      ? Math.floor(r.contextWindow)
+      : undefined
+  const visionModels = Array.isArray(r.visionModels)
+    ? [...new Set(r.visionModels.filter((m): m is string => typeof m === 'string').map((m) => m.trim().toLowerCase()).filter(Boolean))]
+    : undefined
   return {
     id: typeof r.id === 'string' && /^[\w.-]+$/.test(r.id) ? r.id : '',
     presetId: typeof r.presetId === 'string' && r.presetId ? r.presetId : 'custom',
@@ -84,8 +96,18 @@ export function normalizeProvider(raw: unknown): AiProviderConfig | null {
     baseURL,
     models,
     apiKeyRef: typeof r.apiKeyRef === 'string' ? r.apiKeyRef : '',
-    keyless: r.keyless === true
+    keyless: r.keyless === true,
+    ...(contextWindow ? { contextWindow } : {}),
+    ...(visionModels && visionModels.length ? { visionModels } : {})
   }
+}
+
+/** 该 provider 下的这个模型能不能读图（按模型名子串匹配，用户可在设置里改） */
+export function supportsVision(provider: AiProviderConfig, model: string): boolean {
+  const list = provider.visionModels ?? []
+  if (!list.length) return false
+  const name = model.toLowerCase()
+  return list.some((token) => name.includes(token))
 }
 
 /** 把可用的 (provider, model) 摊平成扁平列表，设置页与插件页共用 */
@@ -114,13 +136,21 @@ export function buildChatRequest(
   provider: AiProviderConfig,
   model: string,
   apiKey: string | null,
-  messages: ApiMessage[]
+  messages: ApiMessage[],
+  options: { stream?: boolean; maxTokens?: number; temperature?: number } = {}
 ): BuiltRequest {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (!provider.keyless && apiKey) headers.Authorization = `Bearer ${apiKey}`
+  const body: Record<string, unknown> = {
+    model,
+    messages,
+    stream: options.stream !== false
+  }
+  if (typeof options.maxTokens === 'number' && options.maxTokens > 0) body.max_tokens = options.maxTokens
+  if (typeof options.temperature === 'number') body.temperature = options.temperature
   return {
     url: chatEndpoint(provider.baseURL),
     headers,
-    body: { model, messages, stream: true }
+    body
   }
 }

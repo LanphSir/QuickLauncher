@@ -56,6 +56,27 @@ export function jsonValue(label: string, maxBytes: number): Parser<unknown> {
   }
 }
 
+/**
+ * 字符串数组：条数与每项长度都限死。
+ * 附件 id、标签这类"一批标识符"的入参用它，避免插件塞一万个空串进来。
+ */
+export function strArray(
+  label: string,
+  opts: { max?: number; itemMax?: number; pattern?: RegExp } = {}
+): Parser<string[]> {
+  const { max = 16, itemMax = 256, pattern } = opts
+  return (input) => {
+    if (!Array.isArray(input)) fail(`${label} 必须是数组`)
+    if (input.length > max) fail(`${label} 条数过多（上限 ${max}）`)
+    return input.map((item, index) => {
+      if (typeof item !== 'string') fail(`${label}[${index}] 必须是字符串`)
+      if (!item.length || item.length > itemMax) fail(`${label}[${index}] 长度非法（1~${itemMax}）`)
+      if (pattern && !pattern.test(item)) fail(`${label}[${index}] 含非法字符`)
+      return item
+    })
+  }
+}
+
 /** 对象按白名单取字段：插件多传的键一律丢弃，不会漏进业务层 */
 export function object<S extends Record<string, Parser<unknown>>>(
   shape: S

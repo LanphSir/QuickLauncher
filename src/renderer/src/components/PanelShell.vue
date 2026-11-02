@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useMessage } from 'naive-ui'
 import { useLauncherStore } from '../stores/launcher'
 import { useSearch } from '../composables/useSearch'
@@ -122,6 +122,30 @@ async function detach(plugin: PluginSummary): Promise<void> {
   if (!r.ok && r.message) message.error(r.message)
 }
 
+/** 内置 AI 插件的固定 id：把条目信息作为上下文交给它 */
+const AI_PLUGIN_ID = 'com.launcher.ai'
+const hasAi = computed(() => store.plugins.some((p) => p.id === AI_PLUGIN_ID && !p.disabled))
+
+/**
+ * 右键「用 AI 询问」：只带能帮模型判断的字段（名称/类型/命令/目录），
+ * 图标的 base64 与 id 之类对它没意义的东西一律不带。
+ */
+async function askAi(p: PluginSummary): Promise<void> {
+  const about: Record<string, string> = {
+    name: p.name,
+    type: p.type === 'web' ? '插件页面' : '本地程序',
+    source: p.source ?? 'builtin'
+  }
+  if (p.description) about.description = p.description
+  if (p.command) about.command = [p.command, ...(p.args ?? [])].join(' ')
+  if (p.dir) about.dir = p.dir
+  if (p.keywords.length) about.keywords = p.keywords.join('、')
+  if (p.hotkey) about.hotkey = p.hotkey
+
+  const r = await window.panel.openPlugin(AI_PLUGIN_ID, undefined, { askAbout: about })
+  if (!r.ok && r.message) message.error(r.message)
+}
+
 function ctxItemsFor(p: PluginSummary): ContextMenuItem[] {
   const items: ContextMenuItem[] = [
     { key: 'open', label: '打开', icon: 'play', action: () => void open(p) },
@@ -148,6 +172,10 @@ function ctxItemsFor(p: PluginSummary): ContextMenuItem[] {
       icon: 'pencil',
       action: () => void openEdit(p)
     })
+  }
+  // 条目本身的信息作为上下文丢给 AI：「这个怎么改快捷键」比干问有用得多
+  if (hasAi.value && p.id !== AI_PLUGIN_ID) {
+    items.push({ key: 'ask-ai', label: '用 AI 询问', icon: 'spark', action: () => void askAi(p) })
   }
   items.push({
     key: 'search-web',

@@ -161,6 +161,8 @@ const api: PluginApiSurface = {
     send: (request) => invoke('plugin:ai.chat.send', plain(request)),
     stop: (sessionId: string) => invoke('plugin:ai.chat.stop', { sessionId }),
     models: () => invoke('plugin:ai.models'),
+    pick: () => invoke('plugin:ai.attach.pick'),
+    attach: (request) => invoke('plugin:ai.attach.bytes', plain(request)),
     sessions: {
       list: () => invoke('plugin:ai.session.list'),
       get: (id: string) => invoke('plugin:ai.session.get', id),

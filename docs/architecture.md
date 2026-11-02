@@ -506,11 +506,12 @@ manifest 里的 `hotkey` 只是**建议值**（设置页显示成可点的小标
 
 | 层 | 文件 | 职责 |
 |---|---|---|
-| 纯逻辑 | `sse.ts` `chunk.ts` `provider.ts` `sessionModel.ts` | SSE 解码、增量解析、地址/模型 id、消息转换（可单测） |
+| 纯逻辑 | `sse.ts` `chunk.ts` `provider.ts` `sessionModel.ts` `tokens.ts` | SSE 解码、增量解析、地址/模型 id、消息转换、token 估算与裁剪（可单测） |
 | IO | `client.ts` `secrets.ts` `settings.ts` `store.ts` | fetch 流式、密钥加密、provider 配置、会话持久化 |
-| 编排 | `chat.ts` | 一条消息：落盘 → 流式 → 结束时落完整回答 |
-| 通道 | `plugin/api/ai.ts` | 7 条 `plugin:ai.*` + 事件 `plugin:ai.delta` |
-| 界面 | `plugins/ai`（内置插件）+ 设置页「AI」组 | 会话列表、消息流、模型切换、停止 |
+| 附件 | `extract.ts` `pdf.ts` `attach.ts` | 文本/docx/PDF 抽取、图片缩略、暂存表（解析权只在主进程） |
+| 编排 | `chat.ts` `summary.ts` | 一条消息：落盘 → 预算裁剪 → 流式 → 结束时落完整回答 → 异步摘要 |
+| 通道 | `plugin/api/ai.ts` | 9 条 `plugin:ai.*` + 事件 `plugin:ai.delta` |
+| 界面 | `plugins/ai`（内置插件）+ 设置页「AI」组 | 会话列表、消息流、模型切换、停止、附件 |
 
 ### `internalOnly`：谁能花用户的钱
 
@@ -541,6 +542,38 @@ manifest 里的 `hotkey` 只是**建议值**（设置页显示成可点的小标
 系统不支持加密时**拒绝保存**并说明原因，不退回明文。换机器后解不开就当作没配，
 让用户重填，而不是每次请求都报错。
 
+### 上下文预算（v0.6.1）
+
+从新到旧装，装不下就停；**最后一条必留**，单独超预算就从中间截断（保头尾、标注省略字数）；
+裁剪后不以 `assistant` 开头（部分服务端会 400）。
+
+- 估算口径：CJK 1 字 1 token，其余 4 字符 1 token，每条消息 +4。**故意偏高估**——
+  估高只是少带几条历史，估低就是整条请求 400，而用户对那句报错无从下手。
+- 预算 = provider 的 `contextWindow`（未填用全局默认 32768）− 输出预留 4096 − system/摘要固定开销。
+- 图片按每张 800 token 计，因此带图时会明显更早开始丢历史。
+
+### 附件（v0.6.1）
+
+```
+渲染层 File ──base64──▶ plugin:ai.attach.bytes ──▶ attach.ts（判定 + 抽取 + 落盘）
+                                                        │
+                                        attachId ◀──────┘（暂存 30 分钟）
+发送：ai.chat.send({ attachIds })  ──▶ 从暂存表重建 part ──▶ 拼进 user message
+```
+
+- **解析权只在主进程**：页面拿到的是 `attachId`，正文由主进程重建，无法伪造附件内容。
+- 图片原图存 `ai/files/`，消息里只留 360px JPEG 缩略图——否则一张 4MB 图 base64 进会话
+  就是 5.3MB，几十条就把会话文件撑到几十兆（每次保存整体重写）。
+- PDF 用 `unpdf`（pdfjs serverless 构建），ESM-only 故走动态 `import()`；限 80 页 / 20s。
+- 模型不在 `visionModels` 里时带图会被提前拦下，而不是等服务端回一句看不懂的错。
+
+### 滚动摘要（v0.6.1）
+
+只压「这次真正被丢掉的那一段」，上一轮摘要作为输入一起重写（滚雪球），而不是每轮重算全部历史。
+触发、范围、跳过条件由 `summarizeRange()` 纯函数决定；摘要在回答**结束之后**异步跑，
+失败静默；落盘走 `saveSummary()`，只改 `summary`/`summaryUpTo`，**不动 `updatedAt`**——
+否则一条半小时前的对话会在列表里跳到最前，而用户并没有说话。
+
 ## 数据与配置
 
 ```
@@ -554,7 +587,8 @@ manifest 里的 `hotkey` 只是**建议值**（设置页显示成可点的小标
 ├─ search/<pluginId>.json         插件推送的搜索条目（重启后仍可搜）
 ├─ ai/config.json                 AI provider 列表与默认模型（不含密钥）
 ├─ ai/secrets.bin                 API Key（safeStorage 加密，按 ref 索引）
-├─ ai/sessions/<id>.json          AI 会话（一会话一文件）
+├─ ai/files/<id>.<ext>            图片附件原图（消息里只存缩略图 + 文件名）
+├─ ai/sessions/<id>.json          AI 会话（一会话一文件，正文含滚动摘要）
 └─ ai/sessions/index.json         会话列表索引（损坏可按目录重建）
 ```
 

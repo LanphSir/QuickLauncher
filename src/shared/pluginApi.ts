@@ -13,6 +13,8 @@
  * 本文件必须保持"纯数据与类型"：不 import electron / node，四端都能安全引入。
  */
 import type {
+  AiAttachBytesRequest,
+  AiAttachResult,
   AiModelOption,
   AiSendRequest,
   AiSendResult,
@@ -204,6 +206,10 @@ export interface PluginApiTypes {
   'plugin:ai.chat.stop': { req: { sessionId: string }; res: SimpleResult }
   'plugin:ai.models': { req: undefined; res: AiModelOption[] }
 
+  /** 附件：`pick` 走原生对话框，`attach` 收拖拽来的字节（base64） */
+  'plugin:ai.attach.pick': { req: undefined; res: AiAttachResult[] }
+  'plugin:ai.attach.bytes': { req: AiAttachBytesRequest; res: AiAttachResult }
+
   'plugin:ai.session.list': { req: undefined; res: AiSessionMeta[] }
   'plugin:ai.session.get': { req: string; res: AiSessionDetail | null }
   'plugin:ai.session.create': { req: { model?: string }; res: AiSessionDetail }
@@ -243,6 +249,8 @@ export const PLUGIN_PERMS: Record<PluginChannel, PluginPermission | null> = {
   'plugin:ai.chat.send': 'ai',
   'plugin:ai.chat.stop': 'ai',
   'plugin:ai.models': 'ai',
+  'plugin:ai.attach.pick': 'ai',
+  'plugin:ai.attach.bytes': 'ai',
   'plugin:ai.session.list': 'ai',
   'plugin:ai.session.get': 'ai',
   'plugin:ai.session.create': 'ai',
@@ -340,6 +348,10 @@ export interface PluginApiSurface {
     stop(sessionId: string): Promise<SimpleResult>
     /** 可用模型（provider/model），设置页没配时为空数组 */
     models(): Promise<AiModelOption[]>
+    /** 弹原生对话框选文件；返回每个文件的接收结果（失败项带原因，不是整体失败） */
+    pick(): Promise<AiAttachResult[]>
+    /** 接收拖拽进来的文件：读成 base64 传上来，判定与解析都在主进程做 */
+    attach(request: AiAttachBytesRequest): Promise<AiAttachResult>
     sessions: {
       list(): Promise<AiSessionMeta[]>
       get(id: string): Promise<AiSessionDetail | null>

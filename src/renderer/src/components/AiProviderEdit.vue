@@ -19,6 +19,8 @@ const baseURL = ref(props.provider?.baseURL ?? '')
 const modelsText = ref((props.provider?.models ?? []).join(', '))
 const apiKey = ref('')
 const keyless = ref(props.provider?.keyless ?? false)
+const contextWindowText = ref(String(props.provider?.contextWindow ?? ''))
+const visionText = ref((props.provider?.visionModels ?? []).join(', '))
 const saving = ref(false)
 const testing = ref(false)
 const error = ref('')
@@ -32,6 +34,8 @@ function applyPreset(id: string): void {
   baseURL.value = preset.baseURL
   modelsText.value = preset.models.join(', ')
   keyless.value = preset.keyless
+  contextWindowText.value = preset.contextWindow ? String(preset.contextWindow) : ''
+  visionText.value = (preset.visionModels ?? []).join(', ')
 }
 
 if (!editing.value) applyPreset(presetId.value)
@@ -49,6 +53,21 @@ const models = computed(() =>
     .filter(Boolean)
 )
 
+const visionModels = computed(() =>
+  visionText.value
+    .split(/[,，\s]+/)
+    .map((m) => m.trim().toLowerCase())
+    .filter(Boolean)
+)
+
+/** 上下文窗口：留空表示用全局默认；填了但不像话要说清楚，而不是悄悄忽略 */
+const contextWindow = computed(() => {
+  const raw = contextWindowText.value.trim()
+  if (!raw) return 0
+  const value = Number(raw)
+  return Number.isFinite(value) ? Math.floor(value) : NaN
+})
+
 async function save(): Promise<void> {
   error.value = ''
   if (!name.value.trim()) {
@@ -63,6 +82,14 @@ async function save(): Promise<void> {
     error.value = '至少填一个模型名'
     return
   }
+  if (Number.isNaN(contextWindow.value)) {
+    error.value = '上下文窗口要填数字（单位 token），不想改就留空'
+    return
+  }
+  if (contextWindow.value > 0 && contextWindow.value < 1024) {
+    error.value = '上下文窗口太小了（小于 1024 token），留空用默认值即可'
+    return
+  }
   saving.value = true
   try {
     const r = await window.panel.aiSaveProvider({
@@ -72,7 +99,9 @@ async function save(): Promise<void> {
       baseURL: baseURL.value.trim(),
       models: models.value,
       apiKey: apiKey.value.trim() || undefined,
-      keyless: keyless.value
+      keyless: keyless.value,
+      contextWindow: contextWindow.value > 0 ? contextWindow.value : undefined,
+      visionModels: visionModels.value
     })
     if (!r.ok) {
       error.value = r.message ?? '保存失败'
@@ -146,6 +175,31 @@ async function test(): Promise<void> {
         spellcheck="false"
         placeholder="deepseek-chat, deepseek-reasoner"
       />
+
+      <label>上下文窗口（token，可留空）</label>
+      <input
+        v-model="contextWindowText"
+        class="field mono"
+        type="number"
+        min="1024"
+        step="1024"
+        placeholder="留空则默认 32768"
+      />
+      <p class="hint">
+        超出这个长度时会丢掉最早的对话并生成摘要。填小了会白截断，填大了服务端照样报错。
+      </p>
+
+      <label>能读图的模型（逗号分隔，可留空）</label>
+      <input
+        v-model="visionText"
+        class="field mono"
+        type="text"
+        spellcheck="false"
+        placeholder="gpt-4o, qwen-vl"
+      />
+      <p class="hint">
+        按模型名是否包含这些词来判断。没列出来的模型带图片发送会被提前拦下，而不是等一句看不懂的报错。
+      </p>
 
       <div class="key-head">
         <label>API Key</label>
