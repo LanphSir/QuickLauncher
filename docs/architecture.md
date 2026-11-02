@@ -574,11 +574,51 @@ manifest 里的 `hotkey` 只是**建议值**（设置页显示成可点的小标
 失败静默；落盘走 `saveSummary()`，只改 `summary`/`summaryUpTo`，**不动 `updatedAt`**——
 否则一条半小时前的对话会在列表里跳到最前，而用户并没有说话。
 
+### 插件 AI 协议（v0.6.2）
+
+manifest 新增三个字段，全部「坏一项丢一项」，插件本体不受影响：
+
+| 字段 | 校验 | 坏掉的后果 |
+|---|---|---|
+| `apiVersion` | 数字，缺省 1，高于 2 按 2 并告警 | 只影响记录，不拒载 |
+| `window` | 宽 420–2400 / 高 320–1800 的整数 | 回到默认 860×640 |
+| `ai.tools` / `ai.skill` / `ai.mcp` | 插件目录内相对路径且存在 | 只丢该子能力 |
+
+路径校验挡掉 `../`、绝对路径、盘符与 URL：这些写法会把「插件自带文件」变成
+「机器上任意文件」，而工具描述与技能正文都会进模型上下文，等于开了一条读任意文件的路。
+`external` 型插件直接忽略 `ai` 段——它没有页面能接收工具调用，发下去只会超时。
+
+```
+tools.json ──parseToolsSpec（纯函数 + ajv）──▶ AiToolSpec[] + validators
+                                                   │
+SKILL.md  ──parseSkillMd（front-matter）──▶ name/description + body（按需读）
+                                                   │
+                        tools.ts（目录 + 授权）──▶ grantedTools() ──▶ 模型
+```
+
+- **参数用 ajv 校验**：`parameters` 是插件作者写的 JSON Schema，形状完全开放，手写检查
+  只能覆盖一小撮。编译一次、每次调用跑一遍；校验器直接返回「给模型看的原因」
+  （`/expression must be string`），v0.6.3 会把它当作 `tool-result.error` 回给模型。
+- **坏一个工具只丢一个**：名字非法、缺 description、schema 编译不过都只影响自己，
+  错误留在 `AiToolPluginView.errors` 里由设置页展示。
+- **SKILL.md 渐进披露**：只有 `name` + `description` 进目录，正文等模型需要时再读。
+  十几个插件都声明技能也只占几百 token，而不是把几万字说明书塞进 system prompt。
+- **授权按插件、默认全关**：`config.json` 的 `aiToolGrants` 存插件 id 数组。
+  下发前实时计算（授权 + `permissions` 含 `ai` + 插件未停用），不缓存授权结果——
+  撤销后必须立刻不下发，否则「我刚关掉它怎么还在用」无法解释。
+- **缓存按文件指纹失效**：`tools.json` / `SKILL.md` 的 mtime+size 变了才重解析，
+  改完文件刷新设置页即可，不用重启。
+- 面板图标右上角出 AI 徽标（`.ai-badge`），固定按钮出现时徽标滑到右下角让位；
+  徽标表达的是「这个插件支持 AI」，未授权时标题里会写明。
+
+本版只做登记与授权，**执行链路在 v0.6.3**（`plugin:ai.toolCall` 事件 + `tool-result` 回传 +
+风险分级确认 + 审计）。现在声明工具不会被突然调用。
+
 ## 数据与配置
 
 ```
 <userData>/                       %APPDATA%/quick-launcher/
-├─ config.json                    全局配置（hotkey/autostart/pinnedIds/pluginHotkeys）
+├─ config.json                    全局配置（hotkey/autostart/pinnedIds/pluginHotkeys/aiToolGrants）
 ├─ shortcuts.json                 自定义外部应用（schemaVersion + items；可备份/手改）
 ├─ shortcut-icons.json            自定义应用的图标缓存（按 id + 指纹）
 ├─ shortcuts/icons/<id>.<ext>     用户选的自定义图标（复制进 userData）

@@ -10,6 +10,7 @@ import { sendMessage, stopRun } from '../../ai/chat'
 import { modelOptions } from '../../ai/provider'
 import { getAiConfig } from '../../ai/settings'
 import { createSession, deleteSession, getSession, listSessions, renameSession } from '../../ai/store'
+import { grantedTools } from '../../ai/tools'
 import { MAX_ATTACHMENTS } from '../../../shared/ai'
 import { defineApi } from './define'
 import { fail, object, optional, str, strArray } from './validate'
@@ -86,6 +87,16 @@ export const aiApi = [
   defineApi('plugin:ai.models', {
     internalOnly: true,
     handle: () => modelOptions(getAiConfig().providers)
+  }),
+
+  /**
+   * 已授权的插件工具清单（v0.6.2）。
+   * 与设置页的 panel:ai-tools 不同：那条给用户看「谁声明了什么」，
+   * 这条给模型用，只含授权且可用的，未授权一律不下发。
+   */
+  defineApi('plugin:ai.tools', {
+    internalOnly: true,
+    handle: () => grantedTools()
   }),
 
   defineApi('plugin:ai.session.list', {

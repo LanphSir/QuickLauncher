@@ -20,7 +20,8 @@ import type {
   AiSendResult,
   AiSessionDetail,
   AiSessionMeta,
-  AiStreamEvent
+  AiStreamEvent,
+  AiToolEntry
 } from './ai'
 
 /** 插件可申请的权限；未声明的通道（窗口控制/退出/自述）不需要权限 */
@@ -205,6 +206,11 @@ export interface PluginApiTypes {
   'plugin:ai.chat.send': { req: AiSendRequest; res: AiSendResult }
   'plugin:ai.chat.stop': { req: { sessionId: string }; res: SimpleResult }
   'plugin:ai.models': { req: undefined; res: AiModelOption[] }
+  /**
+   * 已授权给 AI 的插件工具清单（v0.6.2）。
+   * 只回「用户授权过的」——未授权时返回空数组，不是全部声明。
+   */
+  'plugin:ai.tools': { req: undefined; res: AiToolEntry[] }
 
   /** 附件：`pick` 走原生对话框，`attach` 收拖拽来的字节（base64） */
   'plugin:ai.attach.pick': { req: undefined; res: AiAttachResult[] }
@@ -249,6 +255,7 @@ export const PLUGIN_PERMS: Record<PluginChannel, PluginPermission | null> = {
   'plugin:ai.chat.send': 'ai',
   'plugin:ai.chat.stop': 'ai',
   'plugin:ai.models': 'ai',
+  'plugin:ai.tools': 'ai',
   'plugin:ai.attach.pick': 'ai',
   'plugin:ai.attach.bytes': 'ai',
   'plugin:ai.session.list': 'ai',
@@ -348,6 +355,11 @@ export interface PluginApiSurface {
     stop(sessionId: string): Promise<SimpleResult>
     /** 可用模型（provider/model），设置页没配时为空数组 */
     models(): Promise<AiModelOption[]>
+    /**
+     * 已授权给 AI 的插件工具。未授权时为空数组——
+     * 界面据此告诉用户「现在模型手上有没有工具」，不必自己拼状态。
+     */
+    tools(): Promise<AiToolEntry[]>
     /** 弹原生对话框选文件；返回每个文件的接收结果（失败项带原因，不是整体失败） */
     pick(): Promise<AiAttachResult[]>
     /** 接收拖拽进来的文件：读成 base64 传上来，判定与解析都在主进程做 */

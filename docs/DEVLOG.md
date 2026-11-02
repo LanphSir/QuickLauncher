@@ -11,6 +11,94 @@
 
 ---
 
+## v0.6.2 — 插件 AI 协议（2026-11-02）
+
+**目标**：让插件能把自己的能力"交给"AI——声明工具、写技能说明、由用户按插件授权。
+这一版只做**登记与授权**，执行链路留给 v0.6.3；先把"谁有什么、谁被允许"做对，
+执行层写出来才不漏。
+
+### 1. manifest 扩展（`plugin/manifestAi.ts`）
+
+新增 `apiVersion` / `window` / `ai` 三个字段，校验逻辑抽成纯函数（`manager.validate` 要摸 fs，
+没法单测）。共同原则与 `hosts` / `features` 一致：**坏一项只丢一项**，插件照常加载。
+
+- `apiVersion`：缺省 1；高于 2 按 2 并告警——未来版本的插件至少还能跑，拒载更糟。
+- `window`：宽 420–2400、高 320–1800；只在**首次分离窗口**时作为默认尺寸，用户拉过就听用户的。
+- `ai.tools` / `ai.skill` / `ai.mcp`：必须是**插件目录内的相对路径**且存在。
+  挡掉 `../`、绝对路径、盘符、URL——这些写法会把「插件自带文件」变成「机器上任意文件」，
+  而工具描述与技能正文都会进模型上下文，等于开了一条读任意文件的通路。
+- `external` 型插件直接忽略 `ai`：没有页面能接收工具调用，发下去只会超时。
+
+### 2. `ai/tools.json`（`ai/toolsSpec.ts`）
+
+`parameters` 用 **ajv** 编译（这是当初在 CLAUDE.md 里预留的依赖例外，本版第一次真用上）。
+理由：schema 形状完全开放（嵌套、枚举、oneOf 都可能），手写检查要么放过错参数，
+要么拒掉合法工具。编译一次、每次调用跑一遍。
+
+- 校验器直接返回**给模型看的一句话**（`/expression must be string`），而不是布尔——
+  v0.6.3 会把它当 `tool-result.error` 回给模型，让它照着改参数重试。
+- `risk` 缺省按 `write`（需确认）：漏写一行就静默放行，代价不可逆，宁可多问一次。
+- `timeoutMs` 夹取到 [1000, 60000]；单个插件最多 32 个工具；description 截到 500 字
+  （模型每轮都要读它，几十个工具就是几千 token）。
+- 坏一个工具只丢一个：名字非法/重名/缺 description/schema 编译不过，其余照常可用。
+
+### 3. `ai/SKILL.md`（`ai/skillFile.ts`）
+
+front-matter 只解析 `name` / `description` 一层，**不引 YAML 解析器**——需要嵌套结构的
+技能文档，用 Markdown 正文表达更自然。
+
+只有 `name` + `description` 进目录，正文按需读（`load_skill`）。多插件场景下，
+把每份 SKILL.md 全文拼进 system prompt 是最容易把上下文吃光的方式。
+
+### 4. 授权与目录（`ai/tools.ts`）
+
+- `config.json` 新增 `aiToolGrants`（插件 id 数组），**默认全空 = 一个都不授权**。
+- 下发条件三样缺一不可：用户授权 + `permissions` 含 `ai` + 插件未停用，**每次实时算**，
+  不缓存授权结果（撤销后必须立刻不下发）。
+- 解析结果按文件 mtime+size 缓存：改完 `tools.json` 刷新设置页即生效，不用重启。
+- 新通道 `plugin:ai.tools`（`internalOnly`）：给 AI 页看「现在手上有几个工具」；
+  设置页走 `panel:ai-tools` / `panel:ai-set-tool-grant`。
+
+### 5. 界面
+
+- 面板图标右上角 AI 徽标（`AppTile`）：固定按钮出现时滑到右下角让位——
+  直接隐藏会让已固定的应用永远看不到标记，而固定恰恰是最常用状态。
+- 设置 → AI → **AI 工具**：逐插件开关、工具与风险等级、技能一句话说明、解析错误。
+  未授权的插件也列出来，否则用户不知道有这能力可开。
+- AI 页底部提示「N 个插件工具可用」，进入时与回到前台时刷新。
+
+### 6. 示例
+
+计算器新增 `public/ai/tools.json`（`calculate`：`risk: read`）+ `public/ai/SKILL.md`，
+manifest 补 `apiVersion: 2` 与 `permissions: ["ai"]`，作为协议的活样例。
+
+### 关键文件
+
+`main/plugin/manifestAi.ts`（新）、`main/plugin/manager.ts`、`main/ai/toolsSpec.ts`（新）、
+`main/ai/skillFile.ts`（新）、`main/ai/tools.ts`（新）、`main/ai/index.ts`、`main/index.ts`、
+`main/config.ts`、`main/windows/pluginHost.ts`、`shared/ai.ts`、`shared/pluginApi.ts`、
+`preload/{panel,plugin}.ts`、`components/{AppTile,AiSettings}.vue`、
+`plugins/{calculator,ai}/public/*`、`tests/{pluginManifestAi,aiToolsSpec,aiSkillFile}.test.ts`
+
+### 验证
+
+- `pnpm typecheck` 0 错（tsconfig.json + tsconfig.web.json）
+- `pnpm test` 228/228（+42：路径越界、坏 schema、重名/缺字段、front-matter 解析与截断）
+- `pnpm build` + `build:plugins` 通过；`out/main` 里 `require("ajv")` 保持外部依赖形态
+- `pnpm smoke` 109/109（+8）：
+  - 探针插件的「一半好一半坏」tools.json → 只保留好工具、错误有记录、插件照常加载
+  - 计算器被识别为 1 工具 + 技能、默认未授权、零解析错误
+  - 未授权时 `appapi.ai.tools()` 为空；授权后出现 `plugin:com.launcher.calculator:calculate`
+  - 面板图标出 AI 徽标且标题写明能力与授权状态
+  - 撤销授权后立即停止下发
+
+### 遗留
+
+- 工具执行、风险确认、审计日志在 v0.6.3；本版声明了不会被调用
+- `mcp` 路径只做存在性校验，真正读取在 v0.6.4
+
+---
+
 ## v0.6.1 — 上下文与附件（2026-11-02）
 
 **目标**：让 AI 真的能"看东西"——把文件拖进来就能问，长对话不再因为超窗口被服务端 400 打回。

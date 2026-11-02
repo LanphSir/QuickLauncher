@@ -106,9 +106,16 @@
     ✅ 图片生成缩略图并以 `image_url` 走多模态数组；✅ 面板条目信息作为上下文可见；
     ✅ `pnpm test` 186/186（+38）；✅ `pnpm smoke` 101/101（+6）
   - 遗留：PDF 中文抽取质量未实测（无样本）；摘要请求仅 mock 端点手验，未做弱网/超时压测
-- [ ] v0.6.2 **插件 AI 协议**：manifest `apiVersion/window/ai` 校验、`ai/tools.json`（ajv）+ `ai/SKILL.md` 解析、
-  `load_skill` 渐进披露、面板图标 AI 徽标、设置页「AI 工具」授权列表与逐插件开关
-  - 验收：给计算器加 `tools.json` 后图标出徽标、授权后工具出现在列表、未授权时不下发；坏一份 tools.json 只丢该插件工具不影响加载
+- [x] v0.6.2 **插件 AI 协议**（已交付：`plugin/manifestAi.ts`（apiVersion / window / ai 段校验，
+  路径必须插件目录内且存在，坏一项丢一项，external 型忽略 ai）、`ai/toolsSpec.ts`（ajv 编译参数
+  schema，校验器直接回「给模型看的原因」）、`ai/skillFile.ts`（front-matter 解析 + 按需加载正文）、
+  `ai/tools.ts`（目录 + 授权 + mtime 缓存、`plugin:ai.tools` internalOnly 通道）、
+  `config.aiToolGrants`（默认全空）、面板 AI 徽标（固定按钮出现时让位到右下角）、
+  设置页「AI 工具」逐插件开关、计算器示例（`calculate` + SKILL.md））
+  - 验收：✅ 计算器声明 tools.json 后图标出徽标、授权后工具进入下发清单、未授权时为空；
+    ✅ 撤销授权立即停止下发；✅ 探针插件「一半好一半坏」的 tools.json 只丢坏工具、
+    插件照常加载且错误有记录；✅ `pnpm test` 228/228（+42）；✅ `pnpm smoke` 109/109（+8）
+  - 遗留：本版只做登记与授权，执行链路见 v0.6.3；`ai.mcp` 仅校验存在，读取在 v0.6.4
 - [ ] v0.6.3 **工具调用**：工具注册表（`launcher.search/open`、剪贴板、文档库、插件工具）、工具宿主（懒建/空闲 60s 回收/崩溃重建）、
   风险分级确认（走 `OverlayHost`）、审计日志、循环与预算上限
   - 验收：「把剪贴板里的地址用翻译插件翻一下」全链路跑通；`dangerous` 未确认必被拒；插件未就绪/超时/报错三种失败都以 `tool-result.error` 回给模型；`audit.jsonl` 有据可查

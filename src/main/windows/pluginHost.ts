@@ -347,7 +347,10 @@ export function detachPlugin(id: string, payload?: PluginOpenPayload): { ok: boo
   }
 
   const saved = getConfig().windowStates?.[id]
-  const rect: WindowRect = saved ?? { width: 860, height: 640 }
+  // 首次分离时用插件声明里的建议尺寸（manifest.window），没有就退回默认值。
+  // 用户拉过窗口后 windowStates 里有记录，以用户的为准。
+  const hint = rec.manifest.window
+  const rect: WindowRect = saved ?? { width: hint?.width ?? 860, height: hint?.height ?? 640 }
   const area = screen.getDisplayMatching({
     x: rect.x ?? 0,
     y: rect.y ?? 0,

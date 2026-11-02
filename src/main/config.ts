@@ -38,6 +38,13 @@ export interface AppConfig {
   windowStates?: Record<string, WindowRect>
   /** 面板失焦后的行为（浮层打开期间一律不收起，与该项无关） */
   blurBehavior: BlurBehavior
+  /**
+   * 允许 AI 调用工具（以及读取技能文档）的插件 id。
+   *
+   * 默认空 = 一个都不授权：工具能读到剪贴板、能改用户数据，
+   * 这种能力必须由用户主动打开，不能因为「插件声明了」就默认信任。
+   */
+  aiToolGrants: string[]
 }
 
 /**
@@ -56,7 +63,8 @@ const DEFAULTS: AppConfig = {
   pluginOverrides: {},
   pluginHotkeys: {},
   windowStates: {},
-  blurBehavior: 'delay'
+  blurBehavior: 'delay',
+  aiToolGrants: []
 }
 
 let config: AppConfig = { ...DEFAULTS }
@@ -72,6 +80,9 @@ export function loadConfig(): AppConfig {
       config = { ...DEFAULTS, ...raw }
       // 手改配置/旧版本升级都可能留下脏值（null、数组、空串），这里一次性洗掉
       config.pluginHotkeys = sanitizeHotkeyMap(config.pluginHotkeys)
+      config.aiToolGrants = Array.isArray(config.aiToolGrants)
+        ? config.aiToolGrants.filter((id): id is string => typeof id === 'string' && Boolean(id))
+        : []
     }
   } catch (err) {
     console.error('[config] 读取失败，使用默认配置', err)

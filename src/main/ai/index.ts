@@ -8,6 +8,7 @@
 import { ipcMain } from 'electron'
 import { loadAiConfig, saveProvider, deleteProvider, setDefaultModel, settingsView, testProvider } from './settings'
 import { stopAll } from './chat'
+import { listToolPlugins, setToolGrant } from './tools'
 import type { ProviderInput } from './settings'
 
 export function initAi(): void {
@@ -32,6 +33,13 @@ export function initAi(): void {
   ipcMain.handle('panel:ai-delete-provider', (_event, id: string) => deleteProvider(String(id)))
   ipcMain.handle('panel:ai-test-provider', (_event, id: string) => testProvider(String(id)))
   ipcMain.handle('panel:ai-set-default-model', (_event, id: string) => setDefaultModel(String(id)))
+
+  // 插件工具目录（v0.6.2）：设置页据此展示「谁声明了什么」并逐插件授权。
+  // 每次调用都重新算：插件可能刚装上/停用，缓存按文件指纹失效，代价是一次 stat。
+  ipcMain.handle('panel:ai-tools', () => listToolPlugins())
+  ipcMain.handle('panel:ai-set-tool-grant', (_event, payload: { pluginId?: unknown; granted?: unknown }) =>
+    setToolGrant(String(payload?.pluginId ?? ''), payload?.granted === true)
+  )
 
   const providers = settingsView().providers.length
   console.log(`[ai] 已初始化，provider ${providers} 个`)

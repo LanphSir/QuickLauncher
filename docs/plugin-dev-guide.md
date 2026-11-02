@@ -24,7 +24,10 @@ my-plugin/
   "permissions": ["storage", "notify"],
   "hosts": ["api.example.com"],     // 仅 net 权限需要：可访问的域白名单
   "features": ["inline"],           // 可选：参与面板内联结果（v0.4.7 起，见对应章节）
-  "hotkey": "Alt+Shift+V"           // 可选：建议启动键（v0.4.12 起，仅作设置页提示）
+  "hotkey": "Alt+Shift+V",          // 可选：建议启动键（v0.4.12 起，仅作设置页提示）
+  "apiVersion": 2,                  // 可选：声明认识 v0.6 的新字段（缺省按 1）
+  "window": { "width": 1040, "height": 740 },           // 可选：插件页建议尺寸
+  "ai": { "tools": "ai/tools.json", "skill": "ai/SKILL.md" }  // 可选：AI 能力（v0.6.2 起）
 }
 ```
 
@@ -205,7 +208,7 @@ onUnmounted(stop)                               // 页面真被销毁时也停
 | `docs` | `appapi.docs.*`（插件自己的文档库目录，路径不出主进程） |
 | `search` | `appapi.search.*`（把插件内的条目注册给主面板搜索，v0.4.2 起） |
 | `net` | `appapi.net.request`（v0.4.6 起；**还要在 manifest `hosts` 里声明可访问的域**） |
-| `ai` | 目前只对内置 AI 插件开放：`appapi.ai.*` 的对话与附件通道标了 `internalOnly`，第三方插件声明了也调不通（v0.6.2 起才会开放「被 AI 调用」的工具协议） |
+| `ai` | 允许被 AI 调用：声明 `ai/tools.json` 后，工具可被模型调用；还要用户在 设置 → AI → AI 工具 里授权（v0.6.2 起）。对话通道 `appapi.ai.*` 仍是 `internalOnly`，只给内置 AI 插件 |
 | `webview` | 在插件页使用 `<webview>` 嵌入第三方网页（v0.2.1 起） |
 
 `window.hide` / `exit` / `info` / `onQuery` / `onShow` / `onHide` / `onDestroy` 不需要权限。
@@ -225,6 +228,118 @@ vue({ compilerOptions: { isCustomElement: (tag) => tag === 'webview' } })
 ```
 
 参考 `plugins/translator/`（多翻译引擎 + `{q}` URL 模板 + 懒创建 webview 保留状态）。
+
+## 让 AI 能用你的插件（v0.6.2 起）
+
+插件可以把自己的能力声明成「工具」，让内置 AI 助手在对话里调用；也可以写一份
+`SKILL.md` 教模型「什么时候该用、怎么用」。两者都是可选的，插件不声明照样能跑。
+
+> 本版（v0.6.2）只做**登记与授权**：工具会被识别、展示、按授权过滤；
+> 真正的调用链路（模型发 `tool-call` → 插件页执行 → 回 `tool-result`）在 v0.6.3 接入。
+> 现在声明了不会突然被调用，可以放心先把声明写好。
+
+### 目录结构
+
+```
+my-plugin/
+├─ plugin.json
+└─ ai/
+   ├─ tools.json    工具声明（模型能调用什么）
+   └─ SKILL.md      技能说明（怎么用，按需读取）
+```
+
+`plugin.json` 里写清两件事：**路径**与**权限**。
+
+```jsonc
+{
+  "apiVersion": 2,
+  "permissions": ["ai"],                                   // 缺这行 = 拒绝执行
+  "ai": { "tools": "ai/tools.json", "skill": "ai/SKILL.md" }
+}
+```
+
+- 三个路径（`tools` / `skill` / `mcp`）都必须是**插件目录内的相对路径**且文件存在。
+  写 `../`、绝对路径、URL 会被拒——它会把「插件自带文件」变成「机器上任意文件」。
+- 缺一个或写错一个只丢那一项能力，插件本身照常加载。设置页会显示具体原因。
+- `external` 型插件不支持 `ai`（没有页面能接收工具调用，发下去也只会超时）。
+
+### `ai/tools.json`
+
+```json
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "calculate",
+      "title": "计算表达式",
+      "description": "计算四则运算表达式并返回精确结果。用户问「等于多少」时用，不要心算。",
+      "risk": "read",
+      "timeoutMs": 5000,
+      "parameters": {
+        "type": "object",
+        "properties": { "expression": { "type": "string" } },
+        "required": ["expression"]
+      }
+    }
+  ]
+}
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `name` | 是 | 插件内唯一。小写字母开头，只含 `a-z0-9_`，≤48 字符 |
+| `description` | 是 | **模型靠它决定要不要调用**。写清场景与返回什么，别写「执行操作」这种空话 |
+| `title` | 否 | 界面显示名，缺省用 `name` |
+| `risk` | 否 | `read` / `write` / `dangerous`，缺省按 `write`（需确认）——漏写时宁可多问一次 |
+| `timeoutMs` | 否 | 单次调用超时，夹取到 1000–60000，缺省 8000 |
+| `parameters` | 否 | JSON Schema（用 ajv 校验模型给的参数）。缺省为无参数 |
+
+`risk` 的含义（v0.6.3 起生效）：
+
+| 值 | 行为 | 典型场景 |
+|---|---|---|
+| `read` | 自动放行 | 计算、翻译、查天气、读剪贴板内容 |
+| `write` | 每次确认（可记住） | 写文件、发请求、改用户数据 |
+| `dangerous` | 每次确认，**不可记住** | 执行命令、删文件、发消息 |
+
+模型看到的名字是 `plugin:<插件 id>:<name>`（如 `plugin:com.launcher.calculator:calculate`），
+不会和其他插件的同名工具打架；执行时主进程按它反查插件，不接受模型自己拼的名字。
+
+**一份 tools.json 里坏一项只丢一项**：某个工具名不合法、缺 description、schema 编译不过，
+只丢那个工具，其余照常可用，设置页会把原因列出来。
+
+### `ai/SKILL.md`
+
+```markdown
+---
+name: 翻译
+description: 中英互译与术语对照；用户提到翻译、英文、多语言时使用
+---
+
+# 用法
+
+（这里写详细规则、示例、注意事项）
+```
+
+- front-matter 只解析 `name` / `description` 这一层，不引 YAML 解析器。
+- 没有 front-matter 时，用第一个一二级标题当 `name`、首个非空段落当 `description`。
+- **只有 `name` + `description` 会进上下文**，正文等模型需要时再按需读取（`load_skill`）。
+  这样十几个插件都声明技能也只占几百 token，而不是几千上万。
+
+### 授权与可见性
+
+- 工具**默认全部关闭**。用户在 设置 → AI → AI 工具 里按插件打开开关，才有工具下发给模型。
+- 撤销授权是立即生效的（每次下发都现算，不缓存授权结果）。
+- 授权的插件，其工具数量会体现在面板图标右上角的 AI 徽标上（悬浮看说明）；
+  未授权时徽标仍显示，但说明里会写「未授权给 AI」——徽标表达的是「这个插件支持 AI」，
+  不是「已经在用」。
+- 插件被停用时，工具一并不下发。
+
+### 调试
+
+- 设置 → AI → AI 工具 里能看到：识别到几个工具、每个的风险等级、技能说明的一句话、
+  以及所有被丢掉项的原因。
+- 改完 `tools.json` / `SKILL.md` 不用重启：读取按文件 mtime 失效，改完刷新设置页即可（v0.6.2 起）。
 
 ## 搜索贡献：让插件里的内容被主面板直接搜到（v0.4.2 起）
 

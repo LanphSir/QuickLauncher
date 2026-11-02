@@ -35,6 +35,20 @@ const picking = ref(false)
 const dragging = ref(false)
 /** 面板右键「用 AI 询问」带过来的条目信息，只作用于紧接着的这一条消息 */
 const askAbout = ref<Record<string, string> | null>(null)
+/**
+ * 已授权给 AI 的插件工具数量。
+ * 只用来给用户一句提示——「模型手上有没有工具」直接影响它该怎么答；
+ * 具体有哪些工具在设置 → AI → AI 工具里看。
+ */
+const toolCount = ref(0)
+
+async function refreshToolCount(): Promise<void> {
+  try {
+    toolCount.value = (await api.ai.tools()).length
+  } catch {
+    toolCount.value = 0
+  }
+}
 
 const configured = computed(() => models.value.length > 0)
 const messages = computed<AiChatMessage[]>(() => current.value?.messages ?? [])
@@ -351,6 +365,7 @@ function onDelta(event: AiStreamEvent): void {
 
 onMounted(async () => {
   api.ai.onDelta(onDelta)
+  void refreshToolCount()
 
   // 打开插件时把面板搜索词当草稿：搜「写个正则」再回车打开，不用重敲
   api.onQuery((payload) => {
@@ -368,7 +383,11 @@ onMounted(async () => {
       void nextTick(() => composer.value?.focus())
     }
   })
-  api.onShow(() => void refreshSessions())
+  api.onShow(() => {
+    void refreshSessions()
+    // 用户可能刚在设置里开了某个插件的授权，回来时提示要跟着变
+    void refreshToolCount()
+  })
 
   const onKey = (event: KeyboardEvent): void => {
     if (event.key !== 'Escape') return
@@ -511,7 +530,11 @@ onMounted(async () => {
           <button class="ghost attach-btn" :disabled="picking || busy" @click="pickFiles">
             {{ picking ? '读取中…' : '添加文件' }}
           </button>
-          <span class="tip">{{ configured ? 'Enter 发送 · Esc 退出' : '先去 设置 → AI 配置模型' }}</span>
+          <span class="tip">{{
+            configured
+              ? `Enter 发送 · Esc 退出${toolCount ? ` · ${toolCount} 个插件工具可用` : ''}`
+              : '先去 设置 → AI 配置模型'
+          }}</span>
           <button class="send" :disabled="(!draft.trim() && !attachments.length) || busy" @click="send">
             {{ busy ? '生成中' : '发送' }}
           </button>

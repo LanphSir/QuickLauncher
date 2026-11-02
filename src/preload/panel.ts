@@ -43,6 +43,9 @@ const api = {
   aiDeleteProvider: (id: string) => ipcRenderer.invoke('panel:ai-delete-provider', id),
   aiTestProvider: (id: string) => ipcRenderer.invoke('panel:ai-test-provider', id),
   aiSetDefaultModel: (id: string) => ipcRenderer.invoke('panel:ai-set-default-model', id),
+  aiTools: () => ipcRenderer.invoke('panel:ai-tools'),
+  aiSetToolGrant: (pluginId: string, granted: boolean) =>
+    ipcRenderer.invoke('panel:ai-set-tool-grant', { pluginId, granted }),
   installPlugin: (mode: 'dir' | 'zip') => ipcRenderer.invoke('panel:install-plugin', mode),
   uninstallPlugin: (id: string) => ipcRenderer.invoke('panel:uninstall-plugin', id),
   setPluginDisabled: (id: string, disabled: boolean) =>

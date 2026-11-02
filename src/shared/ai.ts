@@ -329,3 +329,75 @@ export const SUMMARY_TRIGGER_MESSAGES = 6
 
 /** 摘要正文的字数上限（不是 token），控制它别把预算又吃回去 */
 export const SUMMARY_MAX_CHARS = 800
+
+/* ------------------------------------------------------------------ *
+ * 插件 AI 协议（v0.6.2）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 工具风险等级。
+ *
+ * 分级的目的是「把确认花在真正会造成后果的操作上」：读一下剪贴板就弹窗，
+ * 用户两天就会养成无脑点确定的习惯，那时确认等于没有。
+ */
+export type AiToolRisk = 'read' | 'write' | 'dangerous'
+
+/** 插件 `ai/tools.json` 里的一个工具声明（校验后的形态） */
+export interface AiToolSpec {
+  /** 插件内唯一短名：只允许小写字母、数字、下划线 */
+  name: string
+  title: string
+  /** 给模型看的一句话：什么时候该用它、返回什么。写含糊了模型就不会调 */
+  description: string
+  risk: AiToolRisk
+  /** 单次调用超时（毫秒），已夹取到 [1000, 60000] */
+  timeoutMs: number
+  /** 参数的 JSON Schema（ajv 已编译通过，否则这个工具在加载时就被丢掉） */
+  parameters: Record<string, unknown>
+}
+
+/**
+ * 工具条目：下发给模型时用全局名，避免两个插件都叫 `search` 时打架。
+ * 模型看到的是 `plugin:com.launcher.calculator:calculate`，
+ * 授权与执行都按它反查插件，不接受模型自己拼的名字。
+ */
+export interface AiToolEntry extends AiToolSpec {
+  fullName: string
+  pluginId: string
+  pluginName: string
+}
+
+/** manifest 的 `ai` 段（校验后剩下的部分）：都是插件目录内的相对路径 */
+export interface PluginAiMeta {
+  tools?: string
+  skill?: string
+  /** v0.6.4 才读；现在只做「存在且是相对路径」的校验 */
+  mcp?: string
+}
+
+/** 设置页「AI 工具」分组里的一行 = 一个插件的 AI 能力 */
+export interface AiToolPluginView {
+  pluginId: string
+  pluginName: string
+  disabled: boolean
+  /** 用户是否授权（未授权时这些工具不下发给模型） */
+  granted: boolean
+  tools: { name: string; title: string; risk: AiToolRisk }[]
+  /** 有 SKILL.md 时的一句话说明，界面用来解释「这个插件还会教模型怎么用它」 */
+  skill?: { name: string; description: string }
+  /** 解析中被丢掉的内容（坏一个工具只丢一个，插件照常加载） */
+  errors: string[]
+}
+
+/** 单个插件最多声明多少个工具：多了既撑爆上下文，也说明该拆插件了 */
+export const MAX_TOOLS_PER_PLUGIN = 32
+
+export const DEFAULT_TOOL_TIMEOUT_MS = 8000
+export const MIN_TOOL_TIMEOUT_MS = 1000
+export const MAX_TOOL_TIMEOUT_MS = 60_000
+
+/** 工具 description 的字数上限：模型每轮都要读它，几十个工具就是几千 token */
+export const MAX_TOOL_DESCRIPTION = 500
+
+/** 技能一句话说明的上限（正文按需读取，不进上下文） */
+export const MAX_SKILL_DESCRIPTION = 300

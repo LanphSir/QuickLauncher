@@ -41,6 +41,7 @@ import {
 } from './plugin/manager'
 import { initGateway } from './plugin/gateway'
 import { initAi, shutdownAi } from './ai'
+import { listToolPlugins } from './ai/tools'
 import { installPluginProtocol, registerPluginSchemePrivileges } from './plugin/protocol'
 import { clearPluginSession } from './plugin/sessions'
 import { forgetInline, queryInline } from './plugin/inline'
@@ -211,27 +212,36 @@ function registerPanelIpc(): void {
 
   ipcMain.handle('panel:get-plugins', () => {
     const { pinnedIds, pluginHotkeys } = getConfig()
-    return listPlugins().map((rec) => ({
-      id: rec.manifest.id,
-      name: rec.manifest.name,
-      version: rec.manifest.version,
-      description: rec.manifest.description,
-      type: rec.manifest.type,
-      keywords: rec.manifest.keywords ?? [],
-      icon: rec.iconDataUrl,
-      pinned: pinnedIds.includes(rec.manifest.id),
-      permissions: rec.manifest.permissions ?? [],
-      features: rec.manifest.features ?? [],
-      source: rec.source,
-      disabled: rec.disabled,
-      command: rec.manifest.type === 'external' ? rec.manifest.command : undefined,
-      args: rec.manifest.type === 'external' ? rec.manifest.args : undefined,
-      // 快捷启动键：hotkey 是用户配的（生效中），suggestion 只是插件作者的建议值
-      hotkey: pluginHotkeys?.[rec.manifest.id] ?? '',
-      hotkeySuggestion: rec.manifest.hotkey,
-      hotkeyError: pluginHotkeyErrors.get(rec.manifest.id),
-      dir: rec.dir
-    }))
+    // AI 能力摘要（v0.6.2）：面板图标据此出徽标。未授权的插件也算「支持 AI」——
+    // 徽标表达的是「这个插件能和 AI 协作」，授没授权是设置页里的事。
+    const aiMap = new Map(listToolPlugins().map((v) => [v.pluginId, v]))
+    return listPlugins().map((rec) => {
+      const ai = aiMap.get(rec.manifest.id)
+      return {
+        id: rec.manifest.id,
+        name: rec.manifest.name,
+        version: rec.manifest.version,
+        description: rec.manifest.description,
+        type: rec.manifest.type,
+        keywords: rec.manifest.keywords ?? [],
+        icon: rec.iconDataUrl,
+        pinned: pinnedIds.includes(rec.manifest.id),
+        permissions: rec.manifest.permissions ?? [],
+        features: rec.manifest.features ?? [],
+        source: rec.source,
+        disabled: rec.disabled,
+        command: rec.manifest.type === 'external' ? rec.manifest.command : undefined,
+        args: rec.manifest.type === 'external' ? rec.manifest.args : undefined,
+        // 快捷启动键：hotkey 是用户配的（生效中），suggestion 只是插件作者的建议值
+        hotkey: pluginHotkeys?.[rec.manifest.id] ?? '',
+        hotkeySuggestion: rec.manifest.hotkey,
+        hotkeyError: pluginHotkeyErrors.get(rec.manifest.id),
+        dir: rec.dir,
+        ...(ai
+          ? { ai: { tools: ai.tools.length, skill: Boolean(ai.skill), granted: ai.granted } }
+          : {})
+      }
+    })
   })
 
   ipcMain.handle('panel:open-plugin', (_event, { id, query, intent }: { id: string; query?: string; intent?: Record<string, unknown> }) => {

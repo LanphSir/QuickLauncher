@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "calculate",
+      "title": "计算表达式",
+      "description": "计算一个四则运算表达式，支持括号与小数，返回精确结果。用户问「123*45+6 等于多少」「(12+3)/5」这类需要精确算术时用；不要自己心算后回答。",
+      "risk": "read",
+      "timeoutMs": 5000,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "expression": {
+            "type": "string",
+            "description": "要计算的表达式，例如 (12+3)*4"
+          }
+        },
+        "required": ["expression"]
+      }
+    }
+  ]
+}

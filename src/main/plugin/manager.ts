@@ -4,7 +4,9 @@ import { join } from 'node:path'
 import AdmZip from 'adm-zip'
 import { getConfig } from '../config'
 import { PLUGIN_FEATURES } from '../../shared/pluginApi'
+import type { PluginAiMeta } from '../../shared/ai'
 import { readDevServers } from './devServers'
+import { normalizeAiSection, normalizeApiVersion, normalizeWindowHint } from './manifestAi'
 import { listShortcuts } from '../services/shortcuts'
 import { cachedIcon } from '../services/shortcutIcons'
 import type { ShortcutEntry } from '../services/shortcutModel'
@@ -47,6 +49,15 @@ export interface PluginManifest {
    * 快捷键是占系统全局资源的，默认替用户占一个键很容易撞车，让用户亲手确认更稳妥。
    */
   hotkey?: string
+  /**
+   * 插件协议版本。缺省视为 1；`2` 表示「认识 v0.6 的新字段」（ai / window）。
+   * 这里只做记录与告警，不影响加载——老插件永远能跑。
+   */
+  apiVersion?: number
+  /** 插件页建议尺寸：用户手动调整过就听用户的，这里只作首次打开时的默认值 */
+  window?: { width: number; height: number }
+  /** AI 能力声明（路径均已校验存在且在插件目录内） */
+  ai?: PluginAiMeta
 }
 
 export interface PluginRecord {
@@ -124,6 +135,19 @@ function validate(raw: unknown, dir: string): PluginManifest | null {
       delete m.hotkey
     }
   }
+
+  // v0.6 协议字段：同样是「坏一项丢一项」，插件本体照常加载
+  const warn = (message: string): void => console.warn(`[plugin] ${dir}: ${message}`)
+  m.apiVersion = normalizeApiVersion(m.apiVersion, warn)
+
+  const windowHint = normalizeWindowHint(m.window, warn)
+  if (windowHint) m.window = windowHint
+  else delete m.window
+
+  const ai = normalizeAiSection(m.ai, (rel) => existsSync(join(dir, rel)), warn, m.type)
+  if (ai) m.ai = ai
+  else delete m.ai
+
   return m as unknown as PluginManifest
 }
 

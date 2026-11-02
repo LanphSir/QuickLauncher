@@ -18,6 +18,16 @@ const emit = defineEmits<{
 const hovering = ref(false)
 const fallbackName = computed(() => fallbackIconFor(props.plugin))
 const fallbackBg = computed(() => gradientFor(props.plugin))
+/** 徽标的悬浮说明：告诉用户「它到底能和 AI 干什么」，不是一个没有含义的小图标 */
+const aiTitle = computed(() => {
+  const ai = props.plugin.ai
+  if (!ai) return ''
+  const parts: string[] = []
+  if (ai.tools > 0) parts.push(`${ai.tools} 个工具`)
+  if (ai.skill) parts.push('技能说明')
+  const what = parts.join(' + ') || 'AI 能力'
+  return ai.granted ? `可被 AI 调用：${what}` : `支持 ${what}（未授权给 AI，去 设置 → AI 打开）`
+})
 </script>
 
 <template>
@@ -45,6 +55,14 @@ const fallbackBg = computed(() => gradientFor(props.plugin))
       </span>
       <span v-if="plugin.type === 'external'" class="ext-badge" title="外部程序">
         <AppIcon name="external-link" :size="9" :stroke-width="2.6" />
+      </span>
+      <span
+        v-if="plugin.ai"
+        class="ai-badge"
+        :class="{ 'made-way': hovering || plugin.pinned }"
+        :title="aiTitle"
+      >
+        <AppIcon name="spark" :size="9" :stroke-width="2.8" />
       </span>
     </div>
     <div class="tile-label" :title="plugin.description || plugin.name">{{ plugin.name }}</div>
@@ -130,6 +148,32 @@ const fallbackBg = computed(() => gradientFor(props.plugin))
   color: #b25e09;
   border: 1px solid #f0e2cf;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/*
+ * AI 徽标默认在图标右上角。但那里正是固定按钮出现的位置（悬停/已固定），
+ * 所以徽标要"让位"——滑到右下角。直接隐藏会让已固定的应用永远看不到 AI 标记，
+ * 而固定恰恰是最常用的状态。
+ */
+.ai-badge {
+  position: absolute;
+  right: -3px;
+  top: -3px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  color: #7c3aed;
+  border: 1px solid #e4dcfb;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  transition: top 0.12s ease, bottom 0.12s ease;
+}
+
+.ai-badge.made-way {
+  top: auto;
+  bottom: -3px;
 }
 
 .tile-label {

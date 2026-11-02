@@ -590,12 +590,32 @@ writeFileSync(
       type: 'web',
       entry: 'index.html',
       keywords: ['smoke-probe'],
-      permissions: ['net'],
-      hosts: ['127.0.0.1']
+      permissions: ['net', 'ai'],
+      hosts: ['127.0.0.1'],
+      // 故意指向一份「一半好一半坏」的 tools.json：验证坏工具只丢自己
+      ai: { tools: 'ai/tools.json' }
     },
     null,
     2
   )
+)
+mkdirSync(join(PROBE_DIR, 'ai'), { recursive: true })
+writeFileSync(
+  join(PROBE_DIR, 'ai', 'tools.json'),
+  JSON.stringify({
+    version: 1,
+    tools: [
+      {
+        name: 'probe_echo',
+        title: '回显',
+        description: '把参数原样返回，冒烟用',
+        risk: 'read',
+        parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] }
+      },
+      // 缺 description：模型无从判断何时调用，必须被丢掉
+      { name: 'probe_broken', title: '坏的', parameters: { type: 'object' } }
+    ]
+  })
 )
 // 探针页只做两件事：记录可见性事件、供 CDP 调用 appapi
 writeFileSync(
@@ -612,6 +632,17 @@ await evaluate(ws, 'window.panel.setPluginDisabled("com.launcher.notepad", true)
 await evaluate(ws, 'window.panel.setPluginDisabled("com.launcher.notepad", false)')
 const probeListed = await evaluate(ws, `window.panel.getPlugins().then(l => l.some(p => p.id === "${PROBE_ID}"))`)
 check('临时探针插件可被扫描(无需重启)', probeListed === true)
+
+// 坏工具只丢自己：probe 的 tools.json 里有一个缺 description 的工具
+const probeAi = await evaluate(
+  ws,
+  `window.panel.aiTools().then(l => l.find(p => p.pluginId === "${PROBE_ID}") || null)`
+)
+check(
+  '坏 tools.json 只丢坏工具、插件照常加载',
+  probeAi?.tools?.length === 1 && (probeAi?.errors?.length ?? 0) >= 1 && probeAi.tools[0].name === 'probe_echo',
+  `工具 ${probeAi?.tools?.length ?? 0} 个 / 错误 ${probeAi?.errors?.length ?? 0} 条`
+)
 
 let probeOk = false
 try {
@@ -994,6 +1025,8 @@ let aiMock = null
 let aiProviderId = ''
 /** 本次冒烟新建的会话：清理时只删它，绝不碰用户自己的对话 */
 let aiSessionId = ''
+/** 冒烟开始前用户是否已经授权过计算器：是的话结束时不替用户撤销 */
+let calcGrantedBefore = true
 /** 附件段另开的会话，同样只删自己的 */
 const extraSessionIds = []
 /** mock 端点收到的最后一次请求体：用来断言多模态 content、附件是否真的进了上下文 */
@@ -1248,6 +1281,66 @@ try {
     `${parts.length} 个内容块`
   )
 
+  // ---- 插件 AI 协议（v0.6.2）：能力识别 / 授权 / 徽标 / 撤销 ----
+  const toolViews = await evaluate(ws, 'window.panel.aiTools()')
+  const calcAi = (toolViews ?? []).find((p) => p.pluginId === 'com.launcher.calculator')
+  calcGrantedBefore = calcAi?.granted === true
+  check(
+    '插件 AI 能力被识别(计算器：1 工具 + 技能)',
+    calcAi?.tools?.length === 1 && calcAi?.tools[0].name === 'calculate' && calcAi?.skill?.name === '计算器',
+    JSON.stringify(calcAi ?? {}).slice(0, 150)
+  )
+  check('AI 工具默认不授权', calcAi?.granted === false)
+  check('工具声明零解析错误', (calcAi?.errors?.length ?? 0) === 0, (calcAi?.errors ?? []).join('; '))
+
+  const toolsBefore = await evaluateIn('ai', 'window.appapi.ai.tools()')
+  check(
+    '未授权时工具不下发给模型',
+    Array.isArray(toolsBefore) && toolsBefore.length === 0,
+    `实际 ${toolsBefore?.length ?? '?'} 条`
+  )
+
+  await evaluate(ws, `window.panel.aiSetToolGrant('com.launcher.calculator', true)`)
+  const toolsAfter = await evaluateIn('ai', 'window.appapi.ai.tools()')
+  check(
+    '授权后工具进入下发清单(全局名带插件 id)',
+    toolsAfter?.length === 1 &&
+      toolsAfter[0].fullName === 'plugin:com.launcher.calculator:calculate' &&
+      toolsAfter[0].risk === 'read',
+    JSON.stringify(toolsAfter?.[0] ?? {}).slice(0, 120)
+  )
+
+  // 徽标要在面板首页才看得到：退出插件 → 搜出计算器 → 查 DOM
+  await evaluate(ws, 'window.panel.exitPlugin()')
+  await new Promise((r) => setTimeout(r, 400))
+  await evaluate(ws, `(() => {
+    const input = document.querySelector('.search')
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+    setter.call(input, '计算')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  const badge = await waitFor(async () => {
+    const found = await evaluate(ws, `(() => {
+      const tile = Array.from(document.querySelectorAll('.tile')).find(
+        (t) => (t.querySelector('.tile-label')?.textContent || '').includes('计算器')
+      )
+      const b = tile?.querySelector('.ai-badge')
+      return b ? { title: b.getAttribute('title') || '' } : null
+    })()`)
+    return found ?? null
+  })
+  check('面板图标出 AI 徽标且说明能力', Boolean(badge?.title?.includes('工具')), badge?.title ?? '(未找到)')
+
+  // 撤销后必须立刻不下发——授权状态不能有任何缓存滞后
+  await evaluate(ws, `window.panel.aiSetToolGrant('com.launcher.calculator', false)`)
+  await evaluate(ws, `window.panel.openPlugin('com.launcher.ai')`)
+  const toolsRevoked = await evaluateIn('ai', 'window.appapi.ai.tools()')
+  check(
+    '撤销授权后立即停止下发',
+    Array.isArray(toolsRevoked) && toolsRevoked.length === 0,
+    `实际 ${toolsRevoked?.length ?? '?'} 条`
+  )
+
   // 面板右键「用 AI 询问」：条目信息经 intent 带进 AI 页，界面上要能看到引用条
   await evaluate(
     ws,
@@ -1271,6 +1364,10 @@ try {
   }
   if (aiSessionId) {
     await evaluateIn('ai', `window.appapi.ai.sessions.remove(${JSON.stringify(aiSessionId)})`).catch(() => {})
+  }
+  // 只撤我们自己开的授权：用户本来就开着的不能被冒烟关掉
+  if (!calcGrantedBefore) {
+    await evaluate(ws, `window.panel.aiSetToolGrant('com.launcher.calculator', false)`).catch(() => {})
   }
   for (const id of extraSessionIds) {
     await evaluateIn('ai', `window.appapi.ai.sessions.remove(${JSON.stringify(id)})`).catch(() => {})

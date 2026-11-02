@@ -34,6 +34,8 @@ interface PluginSummary {
   hotkeySuggestion?: string
   /** 快捷键当前没生效的原因（冲突/被占用）；空表示正常或未设置 */
   hotkeyError?: string
+  /** AI 能力摘要：有它就在图标右上角出 AI 徽标（tools 为已声明的工具数） */
+  ai?: { tools: number; skill: boolean; granted: boolean }
 }
 
 /** 自定义外部应用：存在 userData/shortcuts.json，扫描时注入插件表（source='shortcut'） */
@@ -125,6 +127,20 @@ interface AiProviderSaveResult {
   settings?: AiSettingsView
 }
 
+/** 工具风险：read 自动放行/ write 需确认 / dangerous 每次确认 */
+type AiToolRiskView = 'read' | 'write' | 'dangerous'
+
+/** 设置 → AI → AI 工具：一行 = 一个声明了 AI 能力的插件 */
+interface AiToolPluginView {
+  pluginId: string
+  pluginName: string
+  disabled: boolean
+  granted: boolean
+  tools: { name: string; title: string; risk: AiToolRiskView }[]
+  skill?: { name: string; description: string }
+  errors: string[]
+}
+
 interface PanelApi {
   getPlugins(): Promise<PluginSummary[]>
   openPlugin(
@@ -168,6 +184,9 @@ interface PanelApi {
   /** 探活：GET /models，同时验证地址与密钥 */
   aiTestProvider(id: string): Promise<{ ok: boolean; message?: string; models?: string[] }>
   aiSetDefaultModel(id: string): Promise<AiProviderSaveResult>
+  /** AI 工具目录（v0.6.2）：每个声明了 AI 能力的插件一行，含授权开关与解析错误 */
+  aiTools(): Promise<AiToolPluginView[]>
+  aiSetToolGrant(pluginId: string, granted: boolean): Promise<{ ok: boolean; message?: string }>
   /** 自定义外部应用（设置 → 外部应用） */
   getShortcuts(): Promise<ShortcutEntry[]>
   getShortcut(id: string): Promise<ShortcutEntry | null>

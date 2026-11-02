@@ -11,9 +11,9 @@ Electron 38 + TypeScript(strict) + Vue 3 + Pinia + electron-vite + pnpm workspac
 pnpm dev              # 开发模式（会先构建内置插件再启动 electron-vite dev）
 pnpm dev:plugin <name> # 单个插件改走 vite dev server（HMR），改插件代码不用重构建/重启
 pnpm typecheck        # 三端类型检查（tsconfig.json + tsconfig.web.json）
-pnpm test             # 单元测试 186 项（纯逻辑：校验器/内联归一化/存储分片与配额/LRU 策略/监听计划/失焦判定/面板布局/快捷键计划与注册表/自定义应用模型/AI 的 SSE 与增量解析/地址与模型 id/会话转换/token 预算与截断/附件抽取与编码回退/摘要触发条件）
+pnpm test             # 单元测试 228 项（纯逻辑：校验器/内联归一化/存储分片与配额/LRU 策略/监听计划/失焦判定/面板布局/快捷键计划与注册表/自定义应用模型/AI 的 SSE 与增量解析/地址与模型 id/会话转换/token 预算与截断/附件抽取与编码回退/摘要触发条件/manifest 新字段校验/tools.json 解析与参数校验/SKILL.md 解析）
 pnpm build:plugins    # 仅构建内置插件（plugins/*/dist）
-pnpm smoke            # CDP 功能冒烟 101 项（含 AI：mock 端点跑通配置→流式→停止→附件→多模态）（需先另起: npx electron . --remote-debugging-port=9222）
+pnpm smoke            # CDP 功能冒烟 109 项（含 AI：mock 端点跑通配置→流式→停止→附件→多模态→插件工具授权）（需先另起: npx electron . --remote-debugging-port=9222）
                       # 注意本机 shell 里若带 ELECTRON_RUN_AS_NODE=1，electron 会当 node 跑，启动前 unset
 pnpm dist             # 打包 Windows 安装包 → release/<version>/
 node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
@@ -49,6 +49,9 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
   比 pdfjs 全家桶小一个量级；ESM-only，只能动态 `import()` 加载）。再要加别的先讨论。
   实测结论：v0.6.0/v0.6.1 都没用上 `ai`/`@ai-sdk/*`——SSE 与多模态请求自己写不到 200 行，
   引两个依赖反而多一层不可控。留着例外，但**别为了"当初说好可以"而用它**。
+  `ajv` 在 v0.6.2 首次落地（`main/ai/toolsSpec.ts`）：插件写的 `parameters` 是开放形状的
+  JSON Schema，手写校验只能覆盖一小撮。主进程产物里保持 `require("ajv")` 外部依赖形态，
+  必须留在 `dependencies`（不能挪 devDependencies，否则打包缺模块）。
 
 ## 4. 插件开发（高频任务）
 
@@ -98,6 +101,9 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 | `-webkit-app-region` 吞掉缩放热区 | drag region 按**文档顺序**做 drag 加/no-drag 减，与 DOM 层叠无关——no-drag 元素必须在 drag 元素之后（见 PanelShell 模板中 `.rz` 的位置注释） |
 | 插件页白屏、只显示骨架 HTML | manifest 放到插件根目录而不是 `public/`：扫描器命中源码目录，入口成了未被 vite 处理的 `index.html`。manifest/icon 一律进 `public/` |
 | `fs.watch` 监听插件目录会刷屏 | 插件构建会整目录重写 JS/CSS，按文件名只认 `plugin.json` / `dist`，且事件必须合并（300ms）；见 `plugin/watcher.ts` |
+| 插件 manifest 里的 `ai` 路径被当成"随便写个相对路径" | 一律过 `safeRelative()`：挡 `../`、绝对路径、盘符、URL。工具描述与 SKILL 正文都会进模型上下文，越界路径等于开了一条读任意文件的路 |
+| `tools.json` 用 ajv 编译 schema 会抛异常 | 编译要逐个 try/catch 并**只丢该工具**（`toolsSpec.parseToolsSpec`）；一处 schema 写错不该让整个插件的工具全消失，更不该让插件加载失败 |
+| AI 工具授权状态被缓存 | `grantedTools()` 每次现算，不要缓存结果：用户撤权后工具还在下发，是无法解释的行为。只缓存 `tools.json` / `SKILL.md` 的解析结果（按 mtime+size） |
 | 重扫后已打开视图仍用旧 manifest | 只更新注册表不够，必须 `pluginHost.refreshPluginRecords()` 重新登记 `callerRegistry`（权限/名称变了）并按需换源，否则改了权限仍被拒 |
 | 存储配额超限别返回 `false` | 插件会把 `false` 当"已存上"，静默丢数据；`pluginStorage.set` 返回 `{ok,message}`，API 层抛错让插件侧 catch 到原因 |
 | 渲染层根容器 `height:100%` 失效 | naive-ui Provider 包裹 div 无高度会逐层塌缩；PanelShell 的 `.shell` 用 `100vh` 锚定窗口视口，勿改回 100% |

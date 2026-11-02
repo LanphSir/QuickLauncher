@@ -437,7 +437,7 @@ async function revealDir(p: PluginSummary): Promise<void> {
           <section class="card">
             <h3>关于</h3>
             <p class="hint">
-              QuickLauncher v0.6.1 — 全局快捷键唤起的插件化工具面板。<br />
+              QuickLauncher v0.6.2 — 全局快捷键唤起的插件化工具面板。<br />
               Electron + Vue 3 · 插件进程级隔离 · 自定义插件协议（见 docs/plugin-dev-guide.md）
             </p>
           </section>

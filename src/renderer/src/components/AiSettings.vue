@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NButton, NPopconfirm, NSelect, useMessage } from 'naive-ui'
+import { NButton, NPopconfirm, NSelect, NSwitch, useMessage } from 'naive-ui'
 import AppIcon from './AppIcon.vue'
 import AiProviderEdit from './AiProviderEdit.vue'
 import { closeOverlay, openOverlay } from '../composables/useOverlay'
@@ -17,12 +17,38 @@ const modelOptions = computed(() => {
 })
 
 const testing = ref('')
+const toolPlugins = ref<AiToolPluginView[]>([])
+const toolBusy = ref('')
+
+const grantedCount = computed(() => toolPlugins.value.filter((p) => p.granted).length)
 
 async function load(): Promise<void> {
   settings.value = await window.panel.aiGetSettings()
+  toolPlugins.value = await window.panel.aiTools()
 }
 
 onMounted(() => void load())
+
+const RISK_LABEL: Record<AiToolRiskView, string> = {
+  read: '只读',
+  write: '需确认',
+  dangerous: '每次确认'
+}
+
+async function toggleGrant(view: AiToolPluginView, granted: boolean): Promise<void> {
+  toolBusy.value = view.pluginId
+  try {
+    const r = await window.panel.aiSetToolGrant(view.pluginId, granted)
+    if (!r.ok) {
+      message.error(r.message ?? '设置失败')
+      return
+    }
+    // 重新拉一遍而不是本地改标志位：插件可能刚被停用、tools.json 可能刚被改
+    toolPlugins.value = await window.panel.aiTools()
+  } finally {
+    toolBusy.value = ''
+  }
+}
 
 function addProvider(): void {
   let id = 0
@@ -151,6 +177,56 @@ async function setDefault(model: string): Promise<void> {
       「测试」会请求 <code>/models</code> 验证地址与密钥，不会消耗对话额度。
     </p>
   </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h3>AI 工具</h3>
+      <span class="count">{{ grantedCount }}/{{ toolPlugins.length }} 已授权</span>
+    </div>
+
+    <div v-for="p in toolPlugins" :key="p.pluginId" class="tool-plugin">
+      <div class="p-main">
+        <div class="p-name">
+          {{ p.pluginName }}
+          <span v-if="p.disabled" class="p-tag warn">已停用</span>
+          <span v-else-if="p.granted" class="p-tag">可被调用</span>
+        </div>
+        <div class="p-meta">
+          <template v-if="p.tools.length">
+            {{ p.tools.length }} 个工具：
+            <span v-for="t in p.tools" :key="t.name" class="tool-chip" :title="t.name">
+              {{ t.title }}
+              <em :class="`risk-${t.risk}`">{{ RISK_LABEL[t.risk] }}</em>
+            </span>
+          </template>
+          <template v-else>没有可用的工具声明</template>
+        </div>
+        <div v-if="p.skill" class="p-skill">
+          <span class="skill-name">{{ p.skill.name }}</span>{{ p.skill.description }}
+        </div>
+        <div v-for="e in p.errors" :key="e" class="p-error">{{ e }}</div>
+      </div>
+      <div class="p-actions">
+        <NSwitch
+          size="small"
+          :value="p.granted"
+          :disabled="p.disabled || toolBusy === p.pluginId"
+          @update:value="(v: boolean) => toggleGrant(p, v)"
+        />
+      </div>
+    </div>
+
+    <p v-if="!toolPlugins.length" class="empty">
+      还没有插件声明 AI 能力。插件在自己的 <code>plugin.json</code> 里加
+      <code>ai: { "tools": "ai/tools.json" }</code> 并声明 <code>permissions: ["ai"]</code> 后，
+      这里就会出现它的开关。
+    </p>
+
+    <p class="hint">
+      授权的插件，其工具才会出现在模型手上；未授权时工具与技能文档都不下发。
+      工具能读到剪贴板、能改你的数据，所以默认全部关闭。
+    </p>
+  </section>
 </template>
 
 <style scoped>
@@ -267,5 +343,71 @@ async function setDefault(model: string): Promise<void> {
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+/* ---- AI 工具 ---- */
+.tool-plugin {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid #f4f5f6;
+}
+
+.tool-plugin:first-of-type {
+  border-top: none;
+}
+
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 4px 2px 0;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: #f4f5f6;
+  color: #1f2329;
+  font-size: 11.5px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.tool-chip em {
+  font-style: normal;
+  font-size: 10.5px;
+}
+
+.risk-read {
+  color: #2f7d4f;
+}
+
+.risk-write {
+  color: #b25d09;
+}
+
+.risk-dangerous {
+  color: #c0392b;
+}
+
+.p-skill {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: #8f959e;
+  line-height: 1.6;
+}
+
+.skill-name {
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: #f2f0fd;
+  color: #6b4fd8;
+}
+
+.p-error {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: #b25d09;
+  line-height: 1.6;
 }
 </style>
