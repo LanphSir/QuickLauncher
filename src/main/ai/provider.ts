@@ -12,9 +12,34 @@ export type ApiContentPart =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string } }
 
+/** 模型发起的一次工具调用（请求体里的形态） */
+export interface ApiToolCall {
+  id: string
+  type: 'function'
+  function: { name: string; arguments: string }
+}
+
+/** 下发给模型的工具声明 */
+export interface ApiToolDef {
+  type: 'function'
+  function: {
+    name: string
+    description: string
+    parameters: Record<string, unknown>
+  }
+}
+
 export interface ApiMessage {
-  role: 'system' | 'user' | 'assistant'
-  content: string | ApiContentPart[]
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  /**
+   * 带 tool_calls 的 assistant 消息 content 可以是 null（模型只调工具、
+   * 不写正文），所以这里允许 null —— 传空串有的端点会当成一条空消息。
+   */
+  content: string | ApiContentPart[] | null
+  /** assistant 要求调用的工具 */
+  tool_calls?: ApiToolCall[]
+  /** role=tool 时指向被回应的那次调用 */
+  tool_call_id?: string
 }
 
 export interface BuiltRequest {
@@ -137,7 +162,13 @@ export function buildChatRequest(
   model: string,
   apiKey: string | null,
   messages: ApiMessage[],
-  options: { stream?: boolean; maxTokens?: number; temperature?: number } = {}
+  options: {
+    stream?: boolean
+    maxTokens?: number
+    temperature?: number
+    /** 可调用工具；空数组/不传时**完全不出现** tools 字段 */
+    tools?: ApiToolDef[]
+  } = {}
 ): BuiltRequest {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (!provider.keyless && apiKey) headers.Authorization = `Bearer ${apiKey}`
@@ -148,6 +179,9 @@ export function buildChatRequest(
   }
   if (typeof options.maxTokens === 'number' && options.maxTokens > 0) body.max_tokens = options.maxTokens
   if (typeof options.temperature === 'number') body.temperature = options.temperature
+  // 没有工具时一个字段都不加：部分兼容实现看到空 tools 数组会直接 400，
+  // 而"没配工具"是最常见的情况，不能让它变成报错
+  if (options.tools?.length) body.tools = options.tools
   return {
     url: chatEndpoint(provider.baseURL),
     headers,

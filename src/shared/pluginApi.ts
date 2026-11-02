@@ -21,7 +21,9 @@ import type {
   AiSessionDetail,
   AiSessionMeta,
   AiStreamEvent,
-  AiToolEntry
+  AiToolCallRequest,
+  AiToolEntry,
+  AiToolReply
 } from './ai'
 
 /** 插件可申请的权限；未声明的通道（窗口控制/退出/自述）不需要权限 */
@@ -63,6 +65,14 @@ export type PluginFeature = (typeof PLUGIN_FEATURES)[number]
  * 但仍在这里声明一次，避免主进程与 preload 各写一遍字符串。
  */
 export const AI_DELTA_CHANNEL = 'plugin:ai.delta'
+
+/**
+ * 主进程 → 插件页的工具调用通道（v0.6.3）。
+ *
+ * 与 AI_DELTA_CHANNEL 一样不是 invoke（没有请求/响应配对），所以不进 PluginApiTypes；
+ * 插件用 `appapi.ai.onToolCall` 接，执行完通过 `plugin:ai.tool.reply` 回执。
+ */
+export const AI_TOOL_CALL_CHANNEL = 'plugin:ai.tool-call'
 
 export interface PluginInfo {
   id: string
@@ -211,6 +221,19 @@ export interface PluginApiTypes {
    * 只回「用户授权过的」——未授权时返回空数组，不是全部声明。
    */
   'plugin:ai.tools': { req: undefined; res: AiToolEntry[] }
+  /**
+   * 工具执行回执（v0.6.3）。不是 internalOnly：第三方插件正是被调用的那一方。
+   * 主进程按 callId 核对「这个回执是不是发给我正等的那个插件的」，串不了台。
+   */
+  'plugin:ai.tool.reply': { req: AiToolReply; res: SimpleResult }
+  /**
+   * 风险确认（v0.6.3）：AI 页代替用户回答「允许/拒绝」。
+   * internalOnly —— 第三方插件若能自己批自己的授权，确认就形同虚设。
+   */
+  'plugin:ai.tool.confirm': {
+    req: { requestId: string; allow: boolean; remember?: boolean }
+    res: SimpleResult
+  }
 
   /** 附件：`pick` 走原生对话框，`attach` 收拖拽来的字节（base64） */
   'plugin:ai.attach.pick': { req: undefined; res: AiAttachResult[] }
@@ -256,6 +279,8 @@ export const PLUGIN_PERMS: Record<PluginChannel, PluginPermission | null> = {
   'plugin:ai.chat.stop': 'ai',
   'plugin:ai.models': 'ai',
   'plugin:ai.tools': 'ai',
+  'plugin:ai.tool.reply': 'ai',
+  'plugin:ai.tool.confirm': 'ai',
   'plugin:ai.attach.pick': 'ai',
   'plugin:ai.attach.bytes': 'ai',
   'plugin:ai.session.list': 'ai',
@@ -347,8 +372,12 @@ export interface PluginApiSurface {
     /**
      * 流式增量。事件自带 sessionId/messageId：切走会话再切回来时，
      * 用它对上"这条增量属于哪条消息"，不要把别的会话的字拼进来。
+     *
+     * 可以注册多个订阅者（互不顶掉），**返回取消订阅的函数**。
+     * 为什么不是 `offDelta(callback)`：回调经 contextBridge 传给 preload 时会被包一层，
+     * 两边的函数对象不保证同一个，按引用删除会静默失效（表现为事件被处理两遍）。
      */
-    onDelta(callback: (event: AiStreamEvent) => void): void
+    onDelta(callback: (event: AiStreamEvent) => void): () => void
     /** 发一条消息；sessionId 缺省表示新建会话。返回的 messageId 与后续增量一致 */
     send(request: AiSendRequest): Promise<AiSendResult>
     /** 停止当前会话的生成：已生成内容会以 stopped 标记保留 */
@@ -360,6 +389,16 @@ export interface PluginApiSurface {
      * 界面据此告诉用户「现在模型手上有没有工具」，不必自己拼状态。
      */
     tools(): Promise<AiToolEntry[]>
+    /**
+     * 接收一次工具调用（v0.6.3，需 `ai` 权限 + manifest 声明了 `ai.tools`）。
+     *
+     * 回调要么返回字符串（直接作为结果给模型），要么返回 `{ ok, result?, error? }`。
+     * 抛错等于失败：主进程会把错误文本回给模型，它据此决定重试或换路。
+     * 超时（工具声明的 timeoutMs）后主进程不再等这个回执。
+     */
+    onToolCall(callback: (call: AiToolCallRequest) => unknown | Promise<unknown>): void
+    /** 回答一次风险确认（AI 插件页专用，internalOnly） */
+    confirmTool(requestId: string, allow: boolean, remember?: boolean): Promise<SimpleResult>
     /** 弹原生对话框选文件；返回每个文件的接收结果（失败项带原因，不是整体失败） */
     pick(): Promise<AiAttachResult[]>
     /** 接收拖拽进来的文件：读成 base64 传上来，判定与解析都在主进程做 */

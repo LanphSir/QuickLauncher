@@ -1,7 +1,7 @@
 // 功能冒烟测试：通过 CDP 驱动真实运行的 QuickLauncher
 // 用法: 先启动 npx electron . --remote-debugging-port=9222，再运行 node scripts/smoke.mjs
 import { createServer } from 'node:http'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const CDP = 'http://127.0.0.1:9222'
@@ -1047,6 +1047,7 @@ try {
         } catch {
           lastChatBody = null
         }
+        const payload = lastChatBody ?? {}
         // 摘要走非流式：返回一次性 JSON，而不是 SSE
         if (lastChatBody?.stream === false) {
           res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -1058,23 +1059,103 @@ try {
           return
         }
         const slow = String(body).includes('SLOW')
-        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
-        const pieces = slow
-          ? Array.from({ length: 40 }, (_, i) => `片段${i} `)
-          : ['你', '好', '，我是本地', ' mock 端点。']
-        let i = 0
-        const timer = setInterval(() => {
-          if (res.writableEnded) return clearInterval(timer)
-          if (i < pieces.length) {
-            res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: pieces[i++] } }] })}\n\n`)
+
+        const writeText = (pieces, delayMs = 15) => {
+          res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
+          let i = 0
+          const timer = setInterval(() => {
+            if (res.writableEnded) return clearInterval(timer)
+            if (i < pieces.length) {
+              res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: pieces[i++] } }] })}\n\n`)
+              return
+            }
+            clearInterval(timer)
+            res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 11, completion_tokens: 7 } })}\n\n`)
+            res.write('data: [DONE]\n\n')
+            res.end()
+          }, delayMs)
+          res.on('close', () => clearInterval(timer))
+        }
+
+        // ---- v0.6.3 工具调用的假模型 ----
+        // 真实模型的行为没法在 CI 里复现，这里按用户话里的标记决定调哪个工具，
+        // 分支写在「有没有 tool 结果」上，跟真实模型的轮次语义一致。
+        const messages = Array.isArray(payload.messages) ? payload.messages : []
+        const toolNames = Array.isArray(payload.tools)
+          ? payload.tools.map((t) => t.function?.name).filter(Boolean)
+          : []
+        const toolMsgs = messages.filter((m) => m.role === 'tool')
+        const lastUser = [...messages].reverse().find((m) => m.role === 'user')
+        const userText =
+          typeof lastUser?.content === 'string' ? lastUser.content : JSON.stringify(lastUser?.content ?? '')
+
+        const findTool = (needle) => toolNames.find((n) => n.includes(needle)) ?? null
+        const callTool = (name, args) => {
+          if (!name) {
+            writeText(['（模型没有拿到这个工具）'])
             return
           }
-          clearInterval(timer)
-          res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 11, completion_tokens: 7 } })}\n\n`)
+          res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
+          const frames = [
+            {
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: `call_mock_${Date.now().toString(36)}`,
+                        type: 'function',
+                        function: { name, arguments: '' }
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: JSON.stringify(args) } }] } }] },
+            { choices: [{ delta: {}, finish_reason: 'tool_calls' }] }
+          ]
+          for (const frame of frames) res.write(`data: ${JSON.stringify(frame)}\n\n`)
           res.write('data: [DONE]\n\n')
           res.end()
-        }, slow ? 60 : 15)
-        res.on('close', () => clearInterval(timer))
+        }
+
+        if (toolMsgs.length) {
+          const failed = toolMsgs.find((m) => String(m.content).startsWith('执行失败'))
+          if (failed) {
+            writeText([`工具没有成功：${String(failed.content).slice(0, 60)}`])
+            return
+          }
+          const called = messages
+            .filter((m) => m.role === 'assistant' && Array.isArray(m.tool_calls))
+            .flatMap((m) => m.tool_calls.map((t) => t.function?.name ?? ''))
+          const lastCall = called[called.length - 1] ?? ''
+          if (lastCall.includes('calculate')) {
+            writeText(['计算结果是 5541。'])
+            return
+          }
+          if (lastCall.includes('clipboard_read')) {
+            const clip = String(toolMsgs[toolMsgs.length - 1].content ?? '').trim()
+            callTool(findTool('launcher_open'), { target: 'com.launcher.translator', query: clip })
+            return
+          }
+          writeText(['已经用翻译插件打开了剪贴板里的地址。'])
+          return
+        }
+
+        if (toolNames.length) {
+          if (userText.includes('DANGER')) return callTool(findTool('probe_wipe'), {})
+          if (userText.includes('CLIP')) return callTool(findTool('clipboard_read'), {})
+          if (userText.includes('CALC')) return callTool(findTool('calculate'), { expression: '123*45+6' })
+          if (userText.includes('TIMEOUT')) return callTool(findTool('probe_slow'), {})
+          if (userText.includes('BOOM')) return callTool(findTool('probe_boom'), {})
+        }
+
+        writeText(
+          slow ? Array.from({ length: 40 }, (_, i) => `片段${i} `) : ['你', '好', '，我是本地', ' mock 端点。'],
+          slow ? 60 : 15
+        )
       })
       return
     }
@@ -1355,6 +1436,302 @@ try {
     String(askChip ?? '').includes('冒烟应用'),
     String(askChip ?? '(无)').slice(0, 40)
   )
+
+  // ---------- v0.6.3：工具调用（内置 + 插件 + 确认 + 审计） ----------
+  // 探针插件负责三种失败形态：超时、报错、需要高危确认
+  const TOOL_PROBE_ID = 'com.smoke.probe-ai'
+  const TOOL_PROBE_DIR = join(process.cwd(), 'plugins', 'probe-ai')
+  rmSync(TOOL_PROBE_DIR, { recursive: true, force: true })
+  mkdirSync(join(TOOL_PROBE_DIR, 'ai'), { recursive: true })
+  writeFileSync(
+    join(TOOL_PROBE_DIR, 'plugin.json'),
+    JSON.stringify({
+      id: TOOL_PROBE_ID,
+      name: '工具探针',
+      version: '0.0.0',
+      type: 'web',
+      entry: 'index.html',
+      permissions: ['ai'],
+      apiVersion: 2,
+      ai: { tools: 'ai/tools.json' }
+    })
+  )
+  writeFileSync(
+    join(TOOL_PROBE_DIR, 'ai', 'tools.json'),
+    JSON.stringify({
+      version: 1,
+      tools: [
+        {
+          name: 'probe_wipe',
+          title: '清空数据',
+          description: '高危操作，用来验证每次都要确认',
+          risk: 'dangerous',
+          parameters: { type: 'object', properties: {} }
+        },
+        {
+          name: 'probe_slow',
+          title: '慢工具',
+          description: '故意超过自己的超时时间，用来验证超时回执',
+          risk: 'read',
+          timeoutMs: 1000,
+          parameters: { type: 'object', properties: {} }
+        },
+        {
+          name: 'probe_boom',
+          title: '会报错的工具',
+          description: '执行时抛错，用来验证错误回给模型',
+          risk: 'read',
+          parameters: { type: 'object', properties: {} }
+        }
+      ]
+    })
+  )
+  writeFileSync(
+    join(TOOL_PROBE_DIR, 'index.html'),
+    `<!doctype html><meta charset="utf-8"><title>probe-ai</title><body>probe-ai
+<script>
+  window.appapi.ai.onToolCall(async (call) => {
+    if (call.name === 'probe_slow') {
+      await new Promise((r) => setTimeout(r, 2500))
+      return '慢工具有结果了'
+    }
+    if (call.name === 'probe_boom') throw new Error('探针故意报错')
+    if (call.name === 'probe_wipe') return '不该执行到这里：高危工具必须经用户确认'
+    return 'ok'
+  })
+</script></body>`
+  )
+  await evaluate(ws, 'window.panel.setPluginDisabled("com.launcher.notepad", true)')
+  await evaluate(ws, 'window.panel.setPluginDisabled("com.launcher.notepad", false)')
+  const toolProbe = await waitFor(async () => {
+    const list = await evaluate(ws, 'window.panel.aiTools()')
+    const found = (list ?? []).find((p) => p.pluginId === TOOL_PROBE_ID)
+    return found && found.tools.length === 3 ? found : null
+  })
+  check(
+    '工具探针插件声明被识别（3 个工具）',
+    toolProbe?.tools?.length === 3 && (toolProbe?.errors?.length ?? 0) === 0,
+    JSON.stringify(toolProbe?.tools?.map((t) => `${t.name}:${t.risk}`) ?? [])
+  )
+
+  await evaluate(ws, `window.panel.aiSetToolGrant('com.launcher.calculator', true)`)
+  await evaluate(ws, `window.panel.aiSetToolGrant(${JSON.stringify(TOOL_PROBE_ID)}, true)`)
+
+  /** 发一条消息并等 done；返回本次全部事件 */
+  async function toolTurn(text) {
+    const sent = await evaluateIn(
+      'ai',
+      `(async () => {
+        window.__toolEvents = []
+        // 先退订上一轮：onDelta 支持多个订阅者，不退订的话每条增量
+        // 会被每一轮的闭包各推一次，断言里全是重复事件
+        if (window.__toolOff) window.__toolOff()
+        window.__toolOff = window.appapi.ai.onDelta((e) => window.__toolEvents.push(e))
+        return window.appapi.ai.send({ text: ${JSON.stringify(text)}, model: ${JSON.stringify(mockModel)} })
+      })()`
+    )
+    if (sent?.sessionId) extraSessionIds.push(sent.sessionId)
+    const events = await waitFor(async () => {
+      const list = await evaluateIn('ai', 'window.__toolEvents')
+      return list?.some((e) => e.type === 'done') ? list : null
+    }, 15000, 120)
+    return { sent, events: events ?? [] }
+  }
+
+  const pick = (events, type) => events.filter((e) => e.type === type)
+  const doneOf = (events) => pick(events, 'done')[0] ?? null
+  const textOfEvents = (events) => pick(events, 'text').map((e) => e.delta).join('')
+
+  /** 等确认框出现，可选点按钮；返回框内信息用于断言 */
+  async function confirmDialog(action) {
+    return waitFor(async () => {
+      return await evaluateIn(
+        'ai',
+        `(() => {
+          const box = document.querySelector('.confirm-box')
+          if (!box) return null
+          const info = {
+            title: document.querySelector('.confirm-title')?.textContent?.trim() || '',
+            risk: document.querySelector('.confirm-sub .tool-risk')?.textContent?.trim() || '',
+            warn: Boolean(document.querySelector('.confirm-warn')),
+            remember: Boolean(document.querySelector('.confirm-remember'))
+          }
+          ${
+            action
+              ? `const btn = document.querySelector('.confirm-actions .${action === 'allow' ? 'send' : 'ghost'}'); if (!btn) return null; btn.click(); info.clicked = btn.textContent.trim()`
+              : ''
+          }
+          return info
+        })()`
+      )
+    }, 8000, 120)
+  }
+
+  // 1. 内置工具 + 插件工具：read 风险直接执行
+  const calc = await toolTurn('CALC 帮我算一下 123*45+6')
+  const calcCalls = pick(calc.events, 'tool-call')
+  const calcResults = pick(calc.events, 'tool-result')
+  check(
+    '插件工具被调用并返回结果（read 不需确认）',
+    calcCalls.length === 1 &&
+      calcCalls[0].call.title.includes('计算') &&
+      calcResults.length === 1 &&
+      calcResults[0].result.ok === true &&
+      String(calcResults[0].result.text).includes('5541'),
+    `${calcCalls[0]?.call?.title ?? '(未调用)'} → ${String(calcResults[0]?.result?.text ?? '').slice(0, 40)}`
+  )
+  check(
+    '工具结果回到模型后继续生成',
+    doneOf(calc.events)?.error === undefined && textOfEvents(calc.events).includes('5541'),
+    textOfEvents(calc.events).slice(0, 40)
+  )
+
+  const calcMessage = await evaluateIn(
+    'ai',
+    `window.appapi.ai.sessions.get(${JSON.stringify(calc.sent?.sessionId ?? '')}).then((d) => {
+      const last = d.messages[d.messages.length - 1]
+      const call = (last.parts || []).find((p) => p.type === 'tool_call')
+      const result = (last.parts || []).find((p) => p.type === 'tool_result')
+      return { role: last.role, call: call?.title ?? '', ok: result?.ok ?? null, text: result?.text ?? '' }
+    })`
+  )
+  check(
+    '工具调用与结果落进会话（切走再回来还在）',
+    calcMessage?.role === 'assistant' && Boolean(calcMessage?.call) && calcMessage?.ok === true && calcMessage.text.includes('5541'),
+    JSON.stringify(calcMessage ?? {}).slice(0, 90)
+  )
+
+  // 2. 验收链路：剪贴板 → 翻译插件（中间有一次 write 风险确认）
+  await evaluateIn('ai', `window.appapi.clipboard.writeText('https://example.com/hello?q=1')`)
+  const clipRun = (async () => toolTurn('CLIP 把剪贴板里的地址用翻译插件翻一下'))()
+  const dialog = await confirmDialog('allow')
+  const clip = await clipRun
+  check(
+    '写操作先弹确认（显示风险与参数）',
+    dialog?.title?.includes('打开') === true && dialog?.risk === '会改动' && dialog?.remember === true,
+    JSON.stringify(dialog ?? {}).slice(0, 100)
+  )
+  const clipCalls = pick(clip.events, 'tool-call')
+  const clipResults = pick(clip.events, 'tool-result')
+  check(
+    '确认后链路跑通（读剪贴板 → 打开翻译插件）',
+    clipCalls.length === 2 &&
+      clipCalls[0].call.apiName === 'clipboard_read' &&
+      clipCalls[1].call.apiName === 'launcher_open' &&
+      clipResults.length === 2 &&
+      clipResults.every((e) => e.result.ok === true) &&
+      String(clipResults[0].result.text).includes('example.com'),
+    `${clipCalls.map((c) => c.call.apiName).join(' → ')} / ${clipResults.map((r) => (r.result.ok ? 'ok' : r.result.error)).join(',')}`
+  )
+  check(
+    '模型拿到结果后给出最终回答',
+    doneOf(clip.events)?.error === undefined && textOfEvents(clip.events).includes('翻译插件'),
+    textOfEvents(clip.events).slice(0, 40)
+  )
+
+  // 翻译插件真的收到了那段地址（query 透传到 webview 的 src 里）
+  const translatorSrc = await waitFor(async () => {
+    const target = (await targets()).find((t) => t.url.startsWith('plugin://com.launcher.translator/'))
+    if (!target) return null
+    const tws = await connect(target.webSocketDebuggerUrl)
+    try {
+      await send(tws, 'Runtime.enable')
+      return await evaluate(tws, `document.querySelector('webview')?.getAttribute('src') || ''`)
+    } finally {
+      tws.close()
+    }
+  }, 8000, 250)
+  check(
+    '翻译插件带着地址被打开（query 生效）',
+    String(translatorSrc ?? '').includes('example.com'),
+    String(translatorSrc ?? '(无 webview)').slice(0, 80)
+  )
+
+  // 3. 拒绝：write 风险被用户否掉，模型收到失败原因
+  const rejectRun = (async () => toolTurn('CLIP 拒绝 这次别打开'))()
+  const denyDialog = await confirmDialog('deny')
+  const rejected = await rejectRun
+  const denyResult = pick(rejected.events, 'tool-result').find((e) => e.result.ok === false)
+  check(
+    '用户拒绝后工具不执行且失败原因回到模型',
+    denyDialog?.clicked === '拒绝' &&
+      Boolean(denyResult) &&
+      String(denyResult.result.error).includes('拒绝') &&
+      textOfEvents(rejected.events).includes('工具没有成功'),
+    String(denyResult?.result?.error ?? '(无失败结果)').slice(0, 50)
+  )
+
+  // 4. dangerous：每次都问，且不给「不再询问」
+  const dangerRun = (async () => toolTurn('DANGER 清空我的数据'))()
+  const dangerDialog = await confirmDialog('deny')
+  const danger = await dangerRun
+  const dangerResult = pick(danger.events, 'tool-result')[0]
+  check(
+    'dangerous 工具必须确认且没有「不再询问」',
+    dangerDialog?.risk === '高风险' && dangerDialog?.warn === true && dangerDialog?.remember === false,
+    JSON.stringify(dangerDialog ?? {}).slice(0, 100)
+  )
+  check(
+    'dangerous 未获准时不执行',
+    dangerResult?.result.ok === false && String(dangerResult.result.error).includes('拒绝'),
+    String(dangerResult?.result?.error ?? '(无)').slice(0, 50)
+  )
+
+  // 5. 插件超时 / 插件报错：两种失败都以 tool-result.error 回给模型
+  const slow = await toolTurn('TIMEOUT 调一下慢工具')
+  const slowResult = pick(slow.events, 'tool-result')[0]
+  check(
+    '插件超时按超时回给模型',
+    slowResult?.result.ok === false && String(slowResult.result.error).includes('超时'),
+    String(slowResult?.result?.error ?? '(无)').slice(0, 60)
+  )
+
+  const boom = await toolTurn('BOOM 调一下会报错的工具')
+  const boomResult = pick(boom.events, 'tool-result')[0]
+  check(
+    '插件抛错按错误回给模型',
+    boomResult?.result.ok === false && String(boomResult.result.error).includes('探针故意报错'),
+    String(boomResult?.result?.error ?? '(无)').slice(0, 60)
+  )
+
+  // 6. 审计：userData/ai/audit.jsonl 里有据可查
+  const auditFile = (() => {
+    const base = process.env.APPDATA || join(process.env.USERPROFILE || '', 'AppData', 'Roaming')
+    if (!existsSync(base)) return null
+    for (const dir of readdirSync(base)) {
+      const file = join(base, dir, 'ai', 'audit.jsonl')
+      if (existsSync(file)) return file
+    }
+    return null
+  })()
+  let auditLines = []
+  try {
+    auditLines = auditFile
+      ? readFileSync(auditFile, 'utf-8')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line))
+          .filter((entry) => extraSessionIds.includes(entry.sessionId))
+      : []
+  } catch {
+    auditLines = []
+  }
+  const auditOpen = auditLines.find((e) => e.tool === 'launcher_open' && e.ok === true)
+  const auditDeny = auditLines.find((e) => e.tool.endsWith('probe_wipe'))
+  check(
+    '审计日志记录了每一次工具调用',
+    auditLines.length >= 6 && Boolean(auditOpen) && auditOpen.confirm === 'allowed',
+    auditFile ? `${auditLines.length} 条 / ${String(auditOpen?.tool ?? '')}` : '未找到 audit.jsonl'
+  )
+  check(
+    '审计里能查到被拒绝的高危调用',
+    Boolean(auditDeny) && auditDeny.ok === false && auditDeny.risk === 'dangerous' && auditDeny.confirm === 'denied',
+    JSON.stringify(auditDeny ?? {}).slice(0, 100)
+  )
+
+  // 收回探针与授权，退出插件页（断言失败也不留垃圾）
+  await evaluate(ws, `window.panel.aiSetToolGrant(${JSON.stringify(TOOL_PROBE_ID)}, false)`).catch(() => {})
+  await evaluate(ws, 'window.panel.exitPlugin()').catch(() => {})
 } finally {
   // 清理：先删 provider（连带密钥），再删本次冒烟建的会话，最后关假端点。
   // 注意只能删 aiSessionId —— 早期版本这里是"删除列出的所有会话"，
@@ -1369,6 +1746,10 @@ try {
   if (!calcGrantedBefore) {
     await evaluate(ws, `window.panel.aiSetToolGrant('com.launcher.calculator', false)`).catch(() => {})
   }
+  await evaluate(ws, `window.panel.aiSetToolGrant('com.smoke.probe-ai', false)`).catch(() => {})
+  rmSync(join(process.cwd(), 'plugins', 'probe-ai'), { recursive: true, force: true })
+  await evaluate(ws, 'window.panel.setPluginDisabled("com.launcher.notepad", true)').catch(() => {})
+  await evaluate(ws, 'window.panel.setPluginDisabled("com.launcher.notepad", false)').catch(() => {})
   for (const id of extraSessionIds) {
     await evaluateIn('ai', `window.appapi.ai.sessions.remove(${JSON.stringify(id)})`).catch(() => {})
   }

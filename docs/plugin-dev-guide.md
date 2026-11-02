@@ -229,14 +229,19 @@ vue({ compilerOptions: { isCustomElement: (tag) => tag === 'webview' } })
 
 参考 `plugins/translator/`（多翻译引擎 + `{q}` URL 模板 + 懒创建 webview 保留状态）。
 
-## 让 AI 能用你的插件（v0.6.2 起）
+## 让 AI 能用你的插件（v0.6.2 起声明，v0.6.3 起可被调用）
 
 插件可以把自己的能力声明成「工具」，让内置 AI 助手在对话里调用；也可以写一份
 `SKILL.md` 教模型「什么时候该用、怎么用」。两者都是可选的，插件不声明照样能跑。
 
-> 本版（v0.6.2）只做**登记与授权**：工具会被识别、展示、按授权过滤；
-> 真正的调用链路（模型发 `tool-call` → 插件页执行 → 回 `tool-result`）在 v0.6.3 接入。
-> 现在声明了不会突然被调用，可以放心先把声明写好。
+完整链路是：模型发 `tool_calls` → 主进程校验参数与风险 → 必要时弹确认框 →
+插件页 `onToolCall` 执行 → 回执折成 `tool-result` 交回模型 → 模型继续说话或再调工具。
+一轮对话最多 4 个工具轮次、8 次调用，超了就停并告诉模型「预算用尽」。
+
+> 声明了工具但没写 `onToolCall` 也不会崩：主进程等到超时后按失败回给模型
+> （`工具超时（Ns）`），模型会换个办法回答。所以可以先写声明、后补实现。
+
+不过 `risk` 一定要填对——它决定用户会不会被打扰，见下面的对照表。
 
 ### 目录结构
 
@@ -307,6 +312,57 @@ my-plugin/
 
 **一份 tools.json 里坏一项只丢一项**：某个工具名不合法、缺 description、schema 编译不过，
 只丢那个工具，其余照常可用，设置页会把原因列出来。
+
+### 接住调用：`appapi.ai.onToolCall`
+
+只是声明工具还不够，插件页要注册一个回调来执行它。签名是同步或 `async` 都行，
+**返回值就是回给模型的 `result`**：
+
+```ts
+window.appapi.ai.onToolCall((call) => {
+  // call.name 是插件内短名（tools.json 里的 name），不是全局名
+  // call.args 已经过 parameters 的 schema 校验，可以直接用
+  if (call.name !== 'calculate') return { ok: false, error: `没有这个工具：${call.name}` }
+
+  const expression = String(call.args.expression ?? '').trim()
+  if (!expression) return { ok: false, error: 'expression 不能为空' }
+
+  try {
+    return `计算结果：${evaluate(expression)}`   // 字符串 → 原样进上下文
+  } catch (err) {
+    return { ok: false, error: `算不出来：${(err as Error).message}` }
+  }
+})
+```
+
+约定与坑：
+
+- **返回字符串最省事**，模型直接读。返回对象会被 `JSON.stringify`，可读性差，不适合给模型看。
+- **失败不要 throw 到外面**：返回 `{ ok: false, error }` 或直接 throw 都可以，主进程都会折成
+  `执行失败：…` 回给模型；throw 的好处是自己不用包一层，坏处是拿不到自定义措辞。
+- **结果会被截断**：单条结果超过 4000 字截断（`MAX_TOOL_RESULT_CHARS`），preload 侧先按
+  16000 字截一次防止把内存打爆。要返回大段内容，自己在插件里先摘要。
+- **不要在回调里等用户操作**：超时（`timeoutMs`，默认 8 秒）到了主进程直接放弃这次调用。
+  需要用户确认的场景，应该把 `risk` 标成 `write`/`dangerous`，由主进程弹确认框，
+  而不是插件自己再弹一个。
+- **页面没起来就收不到**：工具调用发给插件页，所以插件页必须先加载完。宿主会自动
+  预热（懒建一次，空闲 60 秒回收，崩溃了下次调用重建），插件不用自己常驻。
+- **`callId` 不用管**：回执由 preload 自动带上并对齐，插件只要返回值。
+
+### 危险工具的用户确认流程
+
+`write` / `dangerous` 的工具，主进程会先在 AI 面板里弹一张确认卡片：
+
+```ts
+window.appapi.ai.confirmTool(requestId, allow, remember?)   // 插件一般不用自己调
+```
+
+- 卡片默认焦点在**拒绝**，Esc 等同拒绝；`dangerous` 没有「本次会话不再询问」的勾选。
+- 60 秒不点按拒绝处理（`TOOL_CONFIRM_TIMEOUT_MS`），模型收到的是「用户未确认」。
+- 用户勾了「本次会话不再询问」后，同一工具在本会话内直接放行——`dangerous` 除外。
+- 所有调用（含被拒、超时、失败）都写进 `userData/ai/audit.jsonl`，用户可查。
+
+这条流程只走主进程，插件无法绕过，也无法伪造「已确认」。
 
 ### `ai/SKILL.md`
 

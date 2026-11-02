@@ -1,13 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import {
   AI_DELTA_CHANNEL,
+  AI_TOOL_CALL_CHANNEL,
   type InlineQuery,
   type PluginApiSurface,
   type PluginApiTypes,
   type PluginChannel,
   type PluginQueryPayload
 } from '../shared/pluginApi'
-import type { AiStreamEvent } from '../shared/ai'
+import type { AiStreamEvent, AiToolCallRequest, AiToolReply } from '../shared/ai'
 
 /** 通道与入参/返回值都由 shared/pluginApi 的契约约束，桥这一层不再手写类型 */
 function invoke<C extends PluginChannel>(
@@ -68,16 +69,105 @@ ipcRenderer.on('plugin:inline-query', (_event, payload: InlineQuery) => {
  * AI 流式增量：与内联查询不同，这里不能"只留最后一条"——每个 token 都要拼进消息。
  * 但缓冲要封顶：页面还没注册回调时来了上万条事件，攒着也没用（那多半是上一个
  * 会话的残流），超过 500 条丢最旧的。
+ *
+ * 回调是**一组**而不是一个：页面里可能同时有对话框和后台统计两个订阅者，
+ * 「后注册的顶掉先注册的」会让先注册的那个静默失聪（v0.6.3 工具确认框
+ * 就是这么被顶掉过的）。
  */
-let aiDeltaHandler: ((event: AiStreamEvent) => void) | null = null
+const aiDeltaHandlers = new Set<(event: AiStreamEvent) => void>()
 const pendingAiDeltas: AiStreamEvent[] = []
+let aiBufferFlushed = false
 ipcRenderer.on(AI_DELTA_CHANNEL, (_event, payload: AiStreamEvent) => {
   if (!payload || typeof payload !== 'object') return
-  if (aiDeltaHandler) aiDeltaHandler(payload)
-  else {
-    pendingAiDeltas.push(payload)
-    if (pendingAiDeltas.length > 500) pendingAiDeltas.shift()
+  if (aiDeltaHandlers.size) {
+    for (const handler of aiDeltaHandlers) {
+      try {
+        handler(payload)
+      } catch (err) {
+        console.error('[appapi] ai.onDelta 回调异常', err)
+      }
+    }
+    return
   }
+  pendingAiDeltas.push(payload)
+  if (pendingAiDeltas.length > 500) pendingAiDeltas.shift()
+})
+
+/**
+ * 工具调用（v0.6.3）：主进程把「模型要调你的某个工具」推过来。
+ *
+ * 页面刚加载、插件还没注册处理函数时到达的调用先缓冲（最多 8 条）——
+ * did-finish-load 与 Vue 的 onMounted 之间有个很短的窗口，丢掉一次调用
+ * 的表现是模型那边莫名超时，很难查。
+ */
+let toolHandler: ((call: AiToolCallRequest) => unknown | Promise<unknown>) | null = null
+const pendingToolCalls: AiToolCallRequest[] = []
+
+/** 插件回调的返回值 → 主进程认的回执格式：字符串直接当结果，对象按 ok/result 取 */
+function normalizeToolReply(callId: string, value: unknown): AiToolReply {
+  if (value && typeof value === 'object' && 'ok' in (value as Record<string, unknown>)) {
+    const v = value as { ok?: unknown; result?: unknown; error?: unknown }
+    return {
+      callId,
+      ok: v.ok === true,
+      ...(v.result !== undefined ? { result: clipToolResult(v.result) } : {}),
+      ...(typeof v.error === 'string' ? { error: v.error } : {})
+    }
+  }
+  if (value === undefined || value === null) return { callId, ok: true, result: '（插件没有返回内容）' }
+  return { callId, ok: true, result: clipToolResult(value) }
+}
+
+/**
+ * 结果体积上限。通道那边有 64KB 的硬限制，超了整条回执会被拒，
+ * 表现是「插件明明回话了，模型却等到超时」——那是最难查的一种失败。
+ * 这里提前截断并把话说清楚，模型至少知道结果是完整的还是被截的。
+ */
+const MAX_RESULT_CHARS = 16_000
+
+function clipToolResult(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return value.length > MAX_RESULT_CHARS
+      ? `${value.slice(0, MAX_RESULT_CHARS)}…（结果过长已截断，原文 ${value.length} 字）`
+      : value
+  }
+  try {
+    const serialized = JSON.stringify(value)
+    if (serialized && serialized.length > MAX_RESULT_CHARS) {
+      return `${serialized.slice(0, MAX_RESULT_CHARS)}…（结果过长已截断，原文 ${serialized.length} 字）`
+    }
+  } catch {
+    return String(value)
+  }
+  return value
+}
+
+async function runToolHandler(call: AiToolCallRequest): Promise<void> {
+  const handler = toolHandler
+  if (!handler) return
+  let reply: AiToolReply
+  try {
+    reply = normalizeToolReply(call.callId, await handler(call))
+  } catch (err) {
+    reply = { callId: call.callId, ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+  try {
+    await invoke('plugin:ai.tool.reply', plain(reply))
+  } catch (err) {
+    // 回执送不回去（例如已经超时被拒），工具本身的结果就到此为止；
+    // 主进程那边会按超时给模型一个明确的失败原因
+    console.error('[appapi] 工具回执发送失败', err)
+  }
+}
+
+ipcRenderer.on(AI_TOOL_CALL_CHANNEL, (_event, payload: AiToolCallRequest) => {
+  if (!payload || typeof payload !== 'object' || typeof payload.callId !== 'string') return
+  if (toolHandler) {
+    void runToolHandler(payload)
+    return
+  }
+  pendingToolCalls.push(payload)
+  if (pendingToolCalls.length > 8) pendingToolCalls.shift()
 })
 
 /**
@@ -155,13 +245,37 @@ const api: PluginApiSurface = {
   },
   ai: {
     onDelta: (callback: (event: AiStreamEvent) => void) => {
-      aiDeltaHandler = callback
-      while (pendingAiDeltas.length) callback(pendingAiDeltas.shift()!)
+      /*
+       * 在这里包一层再入表：回调穿过 contextBridge 后两端的函数对象不是同一个，
+       * 按引用删除会失败。包装函数在 preload 侧创建、闭包持有，身份稳定。
+       */
+      const wrapper = (event: AiStreamEvent): void => {
+        try {
+          callback(event)
+        } catch (err) {
+          console.error('[appapi] ai.onDelta 回调异常', err)
+        }
+      }
+      aiDeltaHandlers.add(wrapper)
+      // 缓冲只补给第一个注册者：后来者是"中途才开始听"，不该收到之前的事件
+      if (!aiBufferFlushed) {
+        aiBufferFlushed = true
+        while (pendingAiDeltas.length) wrapper(pendingAiDeltas.shift()!)
+      }
+      return () => {
+        aiDeltaHandlers.delete(wrapper)
+      }
     },
     send: (request) => invoke('plugin:ai.chat.send', plain(request)),
     stop: (sessionId: string) => invoke('plugin:ai.chat.stop', { sessionId }),
     models: () => invoke('plugin:ai.models'),
     tools: () => invoke('plugin:ai.tools'),
+    onToolCall: (callback: (call: AiToolCallRequest) => unknown | Promise<unknown>) => {
+      toolHandler = callback
+      while (pendingToolCalls.length) void runToolHandler(pendingToolCalls.shift()!)
+    },
+    confirmTool: (requestId: string, allow: boolean, remember?: boolean) =>
+      invoke('plugin:ai.tool.confirm', { requestId, allow, remember }),
     pick: () => invoke('plugin:ai.attach.pick'),
     attach: (request) => invoke('plugin:ai.attach.bytes', plain(request)),
     sessions: {

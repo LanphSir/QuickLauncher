@@ -6,12 +6,14 @@
  */
 import type { BuiltRequest } from './provider'
 import { createSseDecoder } from './sse'
-import { parseChatChunk } from './chunk'
+import { parseChatChunk, type ToolCallDelta } from './chunk'
 
 export interface StreamHandlers {
   onText(delta: string): void
   onReasoning(delta: string): void
   onUsage(input: number, output: number): void
+  /** 工具调用增量：碎片由调用方按 index 归并（见 chat.ts 的 ToolCallCollector） */
+  onToolCall?(delta: ToolCallDelta): void
 }
 
 /** 把各家五花八门的错误体压成一句人话：状态码给方向，正文给细节 */
@@ -74,6 +76,7 @@ export async function streamChat(
     if (delta.error) throw new AiHttpError(delta.error, 200)
     if (delta.reasoning) handlers.onReasoning(delta.reasoning)
     if (delta.text) handlers.onText(delta.text)
+    if (delta.toolCalls) for (const call of delta.toolCalls) handlers.onToolCall?.(call)
     if (delta.usage) handlers.onUsage(delta.usage.input, delta.usage.output)
     return delta.stop === true
   }

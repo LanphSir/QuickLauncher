@@ -6,16 +6,27 @@
  * 2. `[DONE]` 结束标记
  * 3. 某些网关在流中途塞一条 `{"error":{...}}`（HTTP 已经是 200，错误只在流里）
  */
+/** 流式 tool_calls 增量：名字只在前几帧出现，参数是一点点拼起来的 JSON 字符串 */
+export interface ToolCallDelta {
+  /** 同一次响应里的序号：并行调用时靠它把碎片归到同一个调用上 */
+  index: number
+  id?: string
+  name?: string
+  args?: string
+}
+
 export interface ChatDelta {
   text?: string
   reasoning?: string
   usage?: { input: number; output: number }
   /** 收到 [DONE]：正常收尾 */
   stop?: boolean
-  /** finish_reason，如 stop / length */
+  /** finish_reason，如 stop / length / tool_calls */
   finish?: string
   /** 流内错误，调用方应立即中止并报给界面 */
   error?: string
+  /** 本帧携带的工具调用增量（可能为空数组以外的一到多条） */
+  toolCalls?: ToolCallDelta[]
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -28,6 +39,35 @@ function str(value: unknown): string | undefined {
 
 function num(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+/**
+ * 解析 `delta.tool_calls`。
+ *
+ * 形态（OpenAI 兼容端点一致）：
+ * 第一帧带 id 与 function.name，后续帧只带 index 与 arguments 的碎片。
+ * 这里不做拼接——拼接要跨帧，属于有状态的事，交给调用方；
+ * 本函数只保证「能读出来的字段都读出来，读不出来就跳过这一项」。
+ */
+function parseToolCalls(raw: unknown): ToolCallDelta[] {
+  if (!Array.isArray(raw)) return []
+  const out: ToolCallDelta[] = []
+  for (const item of raw) {
+    const record = asRecord(item)
+    if (!record) continue
+    const fn = asRecord(record.function)
+    const delta: ToolCallDelta = {
+      index: typeof record.index === 'number' && Number.isFinite(record.index) ? record.index : out.length
+    }
+    const id = str(record.id)
+    if (id) delta.id = id
+    const name = str(fn?.name)
+    if (name) delta.name = name
+    // arguments 可能是空串（部分网关先发一帧空的占位），空串没有信息量
+    if (typeof fn?.arguments === 'string' && fn.arguments) delta.args = fn.arguments
+    out.push(delta)
+  }
+  return out
 }
 
 export function parseChatChunk(data: string): ChatDelta | null {
@@ -60,6 +100,8 @@ export function parseChatChunk(data: string): ChatDelta | null {
     // 思维链字段各家叫法不一：DeepSeek 用 reasoning_content，部分网关用 reasoning
     const reasoning = str(delta.reasoning_content) ?? str(delta.reasoning)
     if (reasoning) out.reasoning = reasoning
+    const calls = parseToolCalls(delta.tool_calls)
+    if (calls.length) out.toolCalls = calls
   }
   const finish = str(first?.finish_reason)
   if (finish) out.finish = finish

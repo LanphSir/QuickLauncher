@@ -1,7 +1,8 @@
-# AI 应用与插件 AI 协议（设计稿）
+# AI 应用与插件 AI 协议（设计稿 + 实现校正）
 
-> 状态：设计定稿，实现中（`feat/ai` 分支，v0.6.0 → v0.6.4）。
+> 状态：v0.6.0 → v0.6.3 已落地，v0.6.4（MCP）待做。
 > 决策日期 2026-11-02。本文回答三个问题：**放在哪、怎么调、出问题谁负责**。
+> 第 4–6 节已按 v0.6.3 的实际实现校正过（与设计稿不一致处均已标注原因）；
 > 版本与验收见 [ROADMAP.md](ROADMAP.md)；每版交付后补 [DEVLOG.md](DEVLOG.md)。
 
 ## 0. 结论与已定决策
@@ -41,27 +42,39 @@
 3. **网关不认 AI**：`gateway.ts` 只加一个"内部通道"判定，不认识任何 `ai.*` 语义；
    具体能力全在 `plugin/api/ai.ts` 里。
 
-## 2. 目录与文件规划
+## 2. 目录与文件规划（按 v0.6.3 实际落地）
 
 ```
 src/main/ai/
   index.ts         initAi()：注册 panel:ai-* 通道、装配工具注册表、启动时迁移旧配置
-  provider.ts      provider 预设与解析（baseURL/apiKey/model/headers/params）
+  provider.ts      provider 预设与解析（baseURL/apiKey/model/headers/params），buildChatRequest
+  client.ts        SSE 流式请求、分片回调、中止
+  sse.ts           增量解析器（半包/多行 data/注释行）
+  chunk.ts         OpenAI delta 归一化（含 delta.tool_calls → ToolCallDelta）
   secrets.ts       safeStorage 加解密的密钥存取（userData/ai/secrets.bin）
   store.ts         会话持久化（userData/ai/sessions/<id>.json + index.json）
-  chat.ts          流式对话主循环（工具调用轮次、AbortController、事件出口）
-  audit.ts         工具调用审计（userData/ai/audit.jsonl，200 字摘要、按 8MB 轮转）
-  schema.ts        tools.json 的 JSON Schema 校验（ajv）
-  tools/
-    registry.ts    合并内置 + 插件 + MCP；命名空间、上限、按会话启用
-    builtin.ts     launcher.search / launcher.open / clipboard.read / docs.search / load_skill
-    pluginTools.ts 读 ai/tools.json、预热、调用、超时与取消
-    toolHost.ts    隐藏 webContents 池（懒建、idle 60s 回收、崩溃重建）
-  mcp/
-    client.ts      @modelcontextprotocol/sdk 封装（stdio + http）
-    manager.ts     进程生命周期、崩溃重启（≤3）、命名空间 mcp:<server>:<tool>
+  sessionModel.ts  会话 → ChatTurn 的转换（工具调用/结果成对带出、失败措辞）
+  tokens.ts        token 估算、预算、fitTurns 截断
+  summary.ts       长对话摘要（触发条件 + keptStart 计算）
+  chat.ts          流式对话主循环（工具轮次、AbortController、事件出口）
+  audit.ts         工具调用审计（userData/ai/audit.jsonl，2MB 轮转）
+  toolsSpec.ts     ai/tools.json 解析 + ajv 校验器（坏一项只丢一项）
+  tools.ts         grantedToolList()：按授权/启用状态现算下发给模型的工具
+  toolNames.ts     全局名 ↔ API 名互转（[A-Za-z0-9_-]{1,64}，超长用 FNV-1a 短哈希）
+  toolCatalog.ts   合并内置 + 插件工具，排序、防撞名、byApiName 反查
+  builtinTools.ts  7 个内置工具：launcher_search/open、clipboard_read/write、docs_search/read、skill_read
+  toolExec.ts      统一执行流水：校验 → 确认 → 执行 → 审计 → 出错折成 tool-result.error
+  confirm.ts       风险分级、会话级放行、确认等待与超时、cancelConfirms
+  toolCalls.ts     ToolCallCollector：按 index 归并流式 tool_calls 分片
+  toolHost.ts      把调用送进插件页并等回执（懒建、10s 就绪、空闲 60s 回收、崩溃重试一次）
+  attach.ts / extract.ts / pdf.ts   附件抽取与编码回退
+  settings.ts      AI 设置（模型、授权开关、确认模式）
+  mcp/             v0.6.4：@modelcontextprotocol/sdk 封装 + 进程生命周期
 plugins/ai/        AI 对话界面（独立 vite 工程，自带样式，不引 naive-ui）
 ```
+
+设计稿原计划拆成 `tools/` 子目录（registry/builtin/pluginTools/toolHost），
+实际落在 `ai/` 平铺——这些文件都只服务 AI 主循环，多一层目录只增加 import 噪音。
 
 核心渲染层只改四处：设置页新增「AI」分组、`AppTile`/`AppManage` 的 AI 徽标、
 `PluginDetail` 的能力展示、`env.d.ts` 的 `window.panel.ai*` 类型。
@@ -181,58 +194,89 @@ description: 中英互译、术语对照；用户提到翻译/英文/多语言�
 
 ### 4.5 新通道与权限
 
+> 下表为**实际落地**的通道（v0.6.3 收尾时按代码校正；设计稿原来的 `toolResult` /
+> `toolStatus` / `toolCall` 三个名字改成了下面的点分命名）。
+
 | 通道 | 方向 | 用途 | 权限 |
 |---|---|---|---|
-| `plugin:ai.toolResult` | 插件 → 主进程 | 回 `{callId, ok, result\|error}` | `ai` |
-| `plugin:ai.toolStatus` | 插件 → 主进程 | 上报就绪/工具异常 | `ai` |
+| `plugin:ai.tools` | 设置页 → 主进程 | 列出识别到的工具（含被丢弃项的原因） | — |
+| `plugin:ai.tool.reply` | 插件 → 主进程 | 回 `{callId, ok, result\|error}`，`jsonValue` 上限 64KB | `ai` |
+| `plugin:ai.tool.confirm` | AI 页 → 主进程 | 回答确认框 `{requestId, allow, remember}`（`internalOnly`） | `ai` |
 | `plugin:ai.chat.send` | AI 插件 → 主进程 | 发消息（`internalOnly`） | `ai` |
-| `plugin:ai.chat.stop` | AI 插件 → 主进程 | 中断当前生成 | `ai` |
-| `plugin:ai.session.*` | AI 插件 → 主进程 | 列表/读取/改名/删除 | `ai` |
-| `plugin:ai.toolCall`（事件） | 主进程 → 插件页 | `{callId, name, args, deadline}` | — |
+| `plugin:ai.chat.stop` | AI 插件 → 主进程 | 中断当前生成（`internalOnly`） | `ai` |
+| `plugin:ai.session.*` | AI 插件 → 主进程 | 列表/读取/改名/删除（`internalOnly`） | `ai` |
+| `plugin:ai.tool-call`（事件） | 主进程 → 插件页 | `{callId, name, args}`，`AI_TOOL_CALL_CHANNEL` | — |
 | `plugin:ai.delta`（事件） | 主进程 → AI 页 | `{messageId, seq, kind, …}` | — |
+
+没有单独的「就绪上报」通道：就绪由宿主侧判定——`warmPluginContents()` 拿到视图后
+轮询 `wc.isLoading()`（预算 `TOOL_HOST_READY_MS`=10s），加载完就发；
+插件不需要主动报活，也不该假设自己是常驻的。
 
 **`internalOnly`**：网关新增一个布尔判定（3 行），只有 `source === 'builtin'` 且
 `manifest.id === 'com.launcher.ai'` 的调用方能过。理由：模型调用是花用户的钱，
 不能让任何第三方插件偷偷发起对话。
 
 事件流复用 `plugin:inline-query` 那套（`wc.send` + preload 缓冲 + seq 丢弃过期），
-`kind` 取值：`text` / `reasoning` / `tool-call` / `tool-result` / `usage` / `done` / `error`。
+`kind` 取值：`text` / `reasoning` / `tool-call` / `tool-result` / `tool-confirm` /
+`tool-confirm-close` / `usage` / `done` / `error`。
+
+> `onDelta` 踩过的坑：contextBridge 传过来的回调在两侧是不同函数对象，
+> `offDelta(cb)` 按引用删不掉（`ipcRenderer.off` 永远匹配不上）。已改为
+> **多订阅者集合 + 返回退订闭包**，否则「后来者顶掉前者」会让 AI 页收不到确认事件。
 
 ## 5. 工具调用时序
 
+实际实现（`main/ai/chat.ts` → `toolExec.ts` → `toolHost.ts`）：
+
 ```
-模型返回 tool_calls
-  → registry 解析（命名空间 → 执行方）
-  → ajv 校验参数（失败即把错误回给模型，不执行）
-  → 授权检查：features+permissions+用户开关；risk ≠ read 且 confirmMode ≠ never → 弹确认
-  → 执行
-      builtin：直接在主进程调（搜索索引 / 剪贴板 / 文档库都是现成服务）
-      plugin ：toolHost 取 wc → 未就绪则等 did-finish-load（预算 800ms）
-               → send 'plugin:ai-tool-call' → 等 'ai.toolResult'（tool.timeoutMs ?? 8s）
-      mcp    ：client.callTool（v0.6.4）
-  → 结果归一化：截断到 16KB / 4000 字，标为 data（不是 system）
-  → 回填 tool 消息 → 继续循环（上限 maxRounds，超限提示"本轮工具调用已达上限"）
+模型流式返回 delta.tool_calls（按 index 分片）
+  → ToolCallCollector 归并（id 只取首帧，无 name 的槽丢弃）
+  → 名字反查：api 名（[A-Za-z0-9_-]{1,64}）→ fullName，如
+     plugin_com_launcher_calculator_calculate → plugin:com.launcher.calculator:calculate
+  → executeToolCall()：
+      a. 参数 JSON.parse 失败 → 直接回 error，不执行
+      b. ajv 校验 parameters → 失败回 error，不执行
+      c. needsConfirm(risk)：read 直通；write 查会话放行；dangerous 必问
+      d. askConfirm()：主进程推 tool-confirm 给 AI 页 → 等 tool.confirm 回执
+         （TOOL_CONFIRM_TIMEOUT_MS=60s，超时按 denied；取消对话即全部 cancelConfirms）
+      e. 执行（超时统一取 tool.timeoutMs，缺省 8s、夹在 1–60s）
+         builtin：主进程内直调，withTimeout(timeoutMs)
+         plugin ：toolHost → warmPluginContents → waitReady(10s)
+                  → send 'plugin:ai.tool-call' → 等 'plugin:ai.tool.reply'
+                  → 崩溃/被回收 retryable 重建重试一次
+         mcp    ：v0.6.4
+      f. writeAudit()：无论成功/失败/被拒都写一行
+  → 结果归一化：单条 ≤4000 字（MAX_TOOL_RESULT_CHARS），preload 侧先按 16000 字截
+  → 回填 role:'tool' 消息 → 继续循环
+     （MAX_TOOL_ROUNDS=4 轮 / MAX_TOOL_CALLS=8 次，超限补「未执行」结果再收尾）
 ```
 
 失败路径必须显式，不许静默：`插件未就绪`、`工具超时`、`插件返回错误`、`用户拒绝`
 四种都作为 `tool-result.error` 回给模型，让模型自己决定换个办法。
 
-**工具宿主（toolHost）**：插件工具执行需要页面在场，但 LRU 上限只有 5，
-不能让 AI 把用户的插件视图挤掉。做法：单独一组隐藏 webContents（不挂窗口、不进 LRU、
-不参与 inline），首次使用时懒建，空闲 60s 销毁；崩溃重建一次，再崩溃就禁用该插件工具
-并在界面提示。
+**成对约束**：`assistant.tool_calls` 与 `role:'tool'` 必须一一对应，否则下一次请求
+会被端点 400。所以触上限、用户停止、请求失败这三种收尾路径都要先把「未执行」结果补上
+再发请求。只调工具不说话的 assistant 消息用 `content: null`（空串同样会 400）。
+
+**工具宿主（toolHost）**：插件工具执行需要页面在场。设计稿原打算单独建一组隐藏
+webContents，实际实现改为**复用 `pluginHost` 的视图**（`warmPluginContents`）——
+同一插件双实例会踩存储与生命周期，代价是占 LRU 里的名额（上限 5）。
+用完空闲 60s 回收（用户正开着该插件则不动），崩溃重建一次再失败就如实回报。
 
 ## 6. 安全模型
 
-| 面 | 措施 |
+| 面 | 措施（v0.6.3 实际实现） |
 |---|---|
 | API Key | `safeStorage.encryptString` 密文落盘；渲染层/插件层只拿掩码；日志与审计里脱敏 |
-| 工具越权 | 三重门：manifest `features:["ai"]` + `permissions:["ai"]` + 设置页开关（默认关） |
-| 提示注入 | 工具返回内容一律标 data 段；`shell.openExternal`、文件写入类归 `dangerous`；绝不执行模型给出的原样命令 |
-| MCP | 命令 argv 人工确认 + 指纹绑定；`cwd` 限制在用户选择的目录；stdout/stderr 各留 64KB；连续 3 次崩溃停用 |
-| 成本 | 会话级 token 预算 + 用量显示；单轮 maxRounds 6；工具结果截断（长结果最容易烧 token） |
-| 审计 | `audit.jsonl` 每次调用一行：时间、会话、来源、工具、参数摘要、结果摘要、耗时、是否用户确认 |
-| 数据 | 会话与审计都在 `userData/ai/`，与插件 `data/` 平级、互不可见 |
+| 工具越权 | 四重门：manifest `permissions:["ai"]` + `ai.tools` 声明有效 + 设置页开关（默认全体关闭）+ 每次下发现算授权（撤销立即生效） |
+| 用户确认 | 确认框渲染在 **AI 页内**（插件页是原生 `WebContentsView`，会盖住 `OverlayHost`）；默认焦点在「拒绝」、Esc 拒绝；`dangerous` 不给「本次会话不再询问」；60s 超时按拒绝 |
+| 提示注入 | 工具返回内容一律作为 `role:'tool'` 的 data 消息回填，不拼进 system；`shell.openExternal`、写入类归 `dangerous`；绝不执行模型给出的原样命令 |
+| 名字伪造 | 模型只能用 api 名（`[A-Za-z0-9_-]{1,64}`），主进程用 `byApiName` 反查真实工具；反查不到的调用直接失败，不接受模型自己拼的 `plugin:` 名 |
+| 回执伪造 | `toolHost` 用 `getCaller(sender)` 核对回执来源必须等于目标插件，且 `callId` 必须在 pending 里；迟到的回执按 callId 找不到等待者即丢弃（不能污染下一轮） |
+| MCP | 命令 argv 人工确认 + 指纹绑定；`cwd` 限制在用户选择的目录；stdout/stderr 各留 64KB；连续 3 次崩溃停用（v0.6.4） |
+| 成本 | 会话级 token 预算 + 用量显示；单轮 `MAX_TOOL_ROUNDS=4` / `MAX_TOOL_CALLS=8`；工具结果截断到 4000 字（长结果最容易烧 token） |
+| 审计 | `userData/ai/audit.jsonl` 每次调用一行：时间、会话、来源、工具、参数摘要、结果摘要、耗时、`confirm`（`allowed`/`denied`/`timeout`/`not-required`）；2MB 轮转 |
+| 数据 | 会话与审计都在 `userData/ai/`，与插件 `data/<pluginId>/` 平级、互不可见 |
 
 ## 7. 与现有代码的接缝
 

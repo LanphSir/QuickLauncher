@@ -5,7 +5,13 @@
  * 靠手点是发现不了的。
  */
 import { randomUUID } from 'node:crypto'
-import type { AiChatMessage, AiFilePart, AiMessagePart } from '../../shared/ai'
+import type {
+  AiChatMessage,
+  AiFilePart,
+  AiMessagePart,
+  AiToolCallPart,
+  AiToolResultPart
+} from '../../shared/ai'
 import type { ApiMessage } from './provider'
 import type { ChatTurn } from './tokens'
 
@@ -38,6 +44,25 @@ export function filesOf(message: AiChatMessage): AiFilePart[] {
   return message.parts.filter((p): p is AiFilePart => p.type === 'file')
 }
 
+/** 取出工具调用与结果（按出现顺序） */
+export function toolCallsOf(message: AiChatMessage): AiToolCallPart[] {
+  return message.parts.filter((p): p is AiToolCallPart => p.type === 'tool_call')
+}
+
+export function toolResultsOf(message: AiChatMessage): AiToolResultPart[] {
+  return message.parts.filter((p): p is AiToolResultPart => p.type === 'tool_result')
+}
+
+/**
+ * 工具结果给模型看的那段文字。
+ * 失败也要回话：「什么也没发生」会让模型以为调用成功了，
+ * 于是拿着空结果继续答，比直接报错更误导。
+ */
+export function resultTextForModel(result: AiToolResultPart): string {
+  if (result.ok) return result.text || '（无输出）'
+  return `执行失败：${result.error ?? '未知原因'}`
+}
+
 /** 纯图片消息没有正文，给一句占位——content 为空数组时部分服务端直接 400 */
 const IMAGE_ONLY_PLACEHOLDER = '（见下图）'
 
@@ -62,14 +87,33 @@ export function turnsOf(messages: AiChatMessage[]): ChatTurn[] {
     const body = textOf(message).trim()
     let text = [body, ...blocks].filter(Boolean).join('\n\n')
     if (!text && images.length) text = IMAGE_ONLY_PLACEHOLDER
-    if (!text && !images.length) continue
+    // 只调工具、一个字没说的回答也是有效的一轮：没有它，后面的
+    // 「工具结果」消息就找不到主人，整条历史在服务端会 400
+    const hasToolCalls = message.role === 'assistant' && message.parts.some((p) => p.type === 'tool_call')
+    if (!text && !images.length && !hasToolCalls) continue
 
-    out.push({
+    const turn: ChatTurn = {
       messageId: message.id,
       role: message.role === 'assistant' ? 'assistant' : 'user',
       text,
       images: images.map((f) => ({ fileId: f.fileId as string, mime: f.mime }))
-    })
+    }
+
+    // 工具调用只可能属于 assistant。调用与结果必须成对进入请求体：
+    // 只有 tool 结果、没有对应 assistant.tool_calls 的消息会被端点直接拒掉
+    if (message.role === 'assistant') {
+      const calls = toolCallsOf(message)
+      if (calls.length) {
+        turn.toolCalls = calls.map((c) => ({ id: c.callId, apiName: c.apiName, args: c.args }))
+        const results = new Map(toolResultsOf(message).map((r) => [r.callId, r]))
+        turn.toolResults = calls
+          .map((c) => results.get(c.callId))
+          .filter((r): r is AiToolResultPart => Boolean(r))
+          .map((r) => ({ callId: r.callId, text: resultTextForModel(r) }))
+      }
+    }
+
+    out.push(turn)
   }
   return out
 }

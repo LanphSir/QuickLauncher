@@ -457,6 +457,25 @@ export function getActivePluginId(): string | null {
   return activeId
 }
 
+/**
+ * 回收一个「用户没在看」的插件视图（v0.6.3，工具宿主用）。
+ *
+ * 工具调用会把插件页拉起来（甚至用户从没打开过它），用完不能一直占着渲染进程。
+ * 判据三个都不满足才回收：
+ * - 面板里正开着它（activeId）；
+ * - 已分离到独立窗口（用户看得见）；
+ * - 页面自认为可见（visible，分离窗口最小化以外的正常展示态）。
+ *
+ * 返回 true 表示真的销毁了；false 表示它正被使用，调用方下次再试。
+ */
+export function releaseIdlePluginView(id: string): boolean {
+  const entry = viewCache.get(id)
+  if (!entry) return false
+  if (activeId === id || entry.host || entry.visible) return false
+  destroyPlugin(id)
+  return true
+}
+
 /** 把当前插件页分离为独立窗口（面板外框随即收起、回到主页尺寸） */
 export function detachActivePlugin(): { ok: boolean; message?: string } {
   if (!activeId) return { ok: false, message: '当前没有打开的插件' }

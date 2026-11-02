@@ -41,7 +41,9 @@ import {
 } from './plugin/manager'
 import { initGateway } from './plugin/gateway'
 import { initAi, shutdownAi } from './ai'
-import { listToolPlugins } from './ai/tools'
+import { setLauncherBridge, setSkillLoader } from './ai/builtinTools'
+import { loadSkillBody, listToolPlugins } from './ai/tools'
+import { shutdownToolHost } from './ai/toolHost'
 import { installPluginProtocol, registerPluginSchemePrivileges } from './plugin/protocol'
 import { clearPluginSession } from './plugin/sessions'
 import { forgetInline, queryInline } from './plugin/inline'
@@ -77,6 +79,7 @@ import {
 import { warmShortcutIcons } from './services/shortcutIcons'
 import type { ShortcutEntry } from './services/shortcutModel'
 import { clearSearchEntries, loadSearchIndexes, querySearch } from './services/searchIndex'
+import { keywordMatch } from '../shared/search'
 
 /** 唤起面板并回到主页 */
 function togglePanelWithHome(): void {
@@ -111,6 +114,55 @@ function activatePlugin(
 
 /** 插件快捷键当前没生效的原因（key 为插件 id）；getPlugins 和设置页共用这一份 */
 let pluginHotkeyErrors = new Map<string, string>()
+
+/**
+ * AI 内置工具需要的启动器能力（v0.6.3）。
+ *
+ * 用注入而不是让 ai/ 直接 import 本文件：index.ts 已经 import 了 ai，
+ * 反过来再 import 一定成环。这里只交出两件事——「搜」和「开」，
+ * 其余的（剪贴板、文档库）内置工具自己就能做。
+ */
+function aiSearch(query: string): { kind: 'plugin' | 'shortcut' | 'entry'; id: string; name: string; description?: string }[] {
+  const q = query.trim()
+  if (!q) return []
+  const out: { kind: 'plugin' | 'shortcut' | 'entry'; id: string; name: string; description?: string }[] = []
+
+  for (const rec of listPlugins()) {
+    if (rec.disabled) continue
+    const words = [rec.manifest.name, ...(rec.manifest.keywords ?? [])]
+    // 与面板搜索同一套匹配规则：面板搜得到的，AI 也应该找得到
+    if (!words.some((w) => keywordMatch(q, w))) continue
+    out.push({
+      kind: rec.source === 'shortcut' ? 'shortcut' : 'plugin',
+      id: rec.manifest.id,
+      name: rec.manifest.name,
+      description: rec.manifest.description ?? ''
+    })
+  }
+
+  // 插件注册的条目（手册章节、笔记等）：带上所属插件，模型据此决定要不要打开
+  for (const hit of querySearch(q, listPlugins(), 6)) {
+    out.push({
+      kind: 'entry',
+      id: `${hit.pluginId}#${hit.id}`,
+      name: hit.title,
+      description: `属于插件 ${hit.pluginName}（${hit.pluginId}）${hit.subtitle ? ` · ${hit.subtitle}` : ''}`
+    })
+  }
+  return out.slice(0, 12)
+}
+
+function aiOpen(target: string, query?: string): { ok: boolean; message?: string } {
+  const value = target.trim()
+  if (!value) return { ok: false, message: '没有指定要打开什么' }
+  const usable = listPlugins().filter((p) => !p.disabled)
+  const rec =
+    usable.find((p) => p.manifest.id === value) ??
+    usable.find((p) => p.manifest.name === value) ??
+    usable.find((p) => p.manifest.name.includes(value) || value.includes(p.manifest.name))
+  if (!rec) return { ok: false, message: `没有找到「${value}」：可以先用 launcher_search 搜一下准确名称或 id` }
+  return activatePlugin(rec.manifest.id, query ? { query } : undefined)
+}
 
 /**
  * 把「配置里的快捷键」同步成「系统里真正注册的快捷键」。
@@ -662,6 +714,9 @@ if (!app.requestSingleInstanceLock()) {
     const panel = createPanelWindow()
     initPluginHost(panel)
     initGateway()
+    // AI 内置工具的两条依赖：启动器的搜/开能力、插件技能正文读取
+    setSkillLoader(loadSkillBody)
+    setLauncherBridge({ search: aiSearch, open: aiOpen })
     initAi()
     registerPanelIpc()
 
@@ -717,6 +772,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   // 先掐掉在飞的模型请求，别让 quit 阶段还挂着 socket
   shutdownAi()
+  shutdownToolHost()
   unregisterAll()
   // 存储写盘是防抖的：退出前把还在排队的分片落下去，否则最后几次 set 会丢
   pluginStorage.flushAll()

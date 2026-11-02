@@ -15,7 +15,7 @@ import { getConfig, updateConfig } from '../config'
 import type { AiToolEntry, AiToolPluginView, PluginAiMeta } from '../../shared/ai'
 import { getPlugin, listPlugins, type PluginRecord } from '../plugin/manager'
 import { parseSkillMd, type ParsedSkill } from './skillFile'
-import { parseToolsSpec, toolFullName, type ToolsParseResult } from './toolsSpec'
+import { parseToolsSpec, toolFullName, type ToolValidator, type ToolsParseResult } from './toolsSpec'
 
 interface CacheEntry {
   /** 文件指纹（mtime+size）：变了就重解析，避免每次读 IPC 都碰磁盘 */
@@ -162,26 +162,42 @@ export function listToolPlugins(): AiToolPluginView[] {
   return out
 }
 
+/** 一个已授权的工具 + 它的参数校验器（执行链要用，v0.6.3） */
+export interface GrantedTool {
+  entry: AiToolEntry
+  validate: ToolValidator
+}
+
 /**
  * 下发给模型的工具清单：**授权 + 有 ai 权限 + 插件未停用**，三样缺一不可。
  * 停用的插件仍要排除——用户停用它是为了不用它，工具偷偷还能调就自相矛盾了。
  */
-export function grantedTools(): AiToolEntry[] {
-  const out: AiToolEntry[] = []
+export function grantedToolList(): GrantedTool[] {
+  const out: GrantedTool[] = []
   for (const rec of listPlugins()) {
     if (rec.disabled || !rec.manifest.ai || !hasAiPermission(rec)) continue
     if (!isPluginGranted(rec.manifest.id)) continue
     const entry = stateOf(rec)
     for (const spec of entry.tools.tools) {
+      const validate = entry.tools.validators.get(spec.name)
+      // 没有校验器的工具不该被调用：那意味着 schema 当时没编译成功
+      if (!validate) continue
       out.push({
-        ...spec,
-        fullName: toolFullName(rec.manifest.id, spec.name),
-        pluginId: rec.manifest.id,
-        pluginName: rec.manifest.name
+        entry: {
+          ...spec,
+          fullName: toolFullName(rec.manifest.id, spec.name),
+          pluginId: rec.manifest.id,
+          pluginName: rec.manifest.name
+        },
+        validate
       })
     }
   }
   return out
+}
+
+export function grantedTools(): AiToolEntry[] {
+  return grantedToolList().map((t) => t.entry)
 }
 
 /** 按全局名反查工具：执行前用它确认「这个工具真的被授权过」，不信任模型给的名字 */

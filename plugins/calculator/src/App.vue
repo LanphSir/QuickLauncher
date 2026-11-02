@@ -27,6 +27,7 @@ const KEY_MAP: Record<string, string> = {
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
   setupInline()
+  setupTools()
 })
 onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 
@@ -66,6 +67,30 @@ function setupInline(): void {
 
 function exit(): void {
   void window.appapi.exit()
+}
+
+/**
+ * 工具调用（v0.6.3）：ai/tools.json 里声明的 `calculate` 在这里执行。
+ *
+ * 为什么放在插件里而不是主进程：这个插件的能力就是「把它自己的求值器算出来的结果
+ * 交出去」。主进程替它算，等于把插件的能力搬到更高权限的地方，也让
+ * 「插件声明了什么就只能做什么」这条约束失效。
+ *
+ * 返回值刻意给成一句话而不是裸数字：模型读文本最稳，也顺手把表达式回显了，
+ * 用户看到「计算结果：5465」时能对上自己问的是什么。
+ */
+function setupTools(): void {
+  window.appapi.ai.onToolCall((call) => {
+    if (call.name !== 'calculate') return { ok: false, error: `这个插件没有名为 ${call.name} 的工具` }
+    const expression = String((call.args as Record<string, unknown>).expression ?? '').trim()
+    if (!expression) return { ok: false, error: 'expression 不能为空' }
+    try {
+      return `计算结果：${format(evaluate(expression))}\n表达式：${expression}`
+    } catch (err) {
+      // 除零、括号不配对等：把原因交给模型，它会换个写法或直接告诉用户
+      return { ok: false, error: `算不出来：${err instanceof Error ? err.message : String(err)}` }
+    }
+  })
 }
 
 function onKeydown(e: KeyboardEvent): void {

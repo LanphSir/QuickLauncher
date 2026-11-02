@@ -53,7 +53,49 @@ export interface AiFilePart {
   error?: string
 }
 
-export type AiMessagePart = AiTextPart | AiReasoningPart | AiFilePart
+/**
+ * 一次工具调用（v0.6.3）。
+ *
+ * `name` 是给界面看的可读名（`计算器 · 计算表达式`），`apiName` 是真正发给模型、
+ * 也真正回传执行的那个函数名。为什么两者分开：OpenAI 的函数名只允许
+ * `[A-Za-z0-9_-]{1,64}`，而插件工具的全局名是 `plugin:<id>:<name>`（带冒号与点），
+ * 直接下发会被端点拒绝。改名只发生在「模型这一侧」，授权与执行仍按 fullName 反查。
+ */
+export interface AiToolCallPart {
+  type: 'tool_call'
+  /** 模型给的调用 id，工具结果要靠它配对 */
+  callId: string
+  /** 下发给模型的函数名（已合法化） */
+  apiName: string
+  /** 全局工具名，如 `plugin:com.launcher.calculator:calculate` 或 `launcher.search` */
+  fullName: string
+  /** 界面上的短标题 */
+  title: string
+  /** 参数原文（JSON 字符串，已截断） */
+  args: string
+  risk: AiToolRisk
+  pluginId?: string
+  pluginName?: string
+}
+
+/** 工具执行结果。ok=false 时 error 里是给模型看的原因，它据此决定重试还是换路 */
+export interface AiToolResultPart {
+  type: 'tool_result'
+  callId: string
+  ok: boolean
+  /** 成功时的文本结果（已按上限截断） */
+  text: string
+  /** 失败原因（超时/被拒/插件报错/参数不合法） */
+  error?: string
+  durationMs?: number
+}
+
+export type AiMessagePart =
+  | AiTextPart
+  | AiReasoningPart
+  | AiFilePart
+  | AiToolCallPart
+  | AiToolResultPart
 
 export interface AiChatMessage {
   id: string
@@ -187,8 +229,35 @@ export type AiStreamEvent =
       /** 最后一条被截断（附件或正文过长） */
       truncated?: boolean
     }
+  /**
+   * 模型决定调用工具（已通过参数校验，等待执行）。
+   * 界面据此插入一行「正在调用 X」——用户必须看得见"它现在在动你的东西"。
+   */
+  | { type: 'tool-call'; sessionId: string; messageId: string; call: AiToolCallPart }
+  /** 工具执行结束（成功或失败都发） */
+  | { type: 'tool-result'; sessionId: string; messageId: string; result: AiToolResultPart }
+  /** 需要用户确认才能继续：界面必须弹出确认框，没回应就按超时拒绝处理 */
+  | { type: 'tool-confirm'; sessionId: string; messageId: string; request: AiConfirmRequest }
+  /** 确认框已关闭（超时/被同一请求的其他动作收尾），界面据此收起 */
+  | { type: 'tool-confirm-close'; sessionId: string; messageId: string; requestId: string }
   /** 后台生成完滚动摘要：界面据此提示"更早的对话已压缩" */
   | { type: 'summary'; sessionId: string; text: string }
+
+/** 风险确认请求：主进程 → AI 插件页 */
+export interface AiConfirmRequest {
+  requestId: string
+  /** 全局工具名，界面用于展示"哪个插件的哪个工具" */
+  fullName: string
+  title: string
+  pluginName?: string
+  risk: AiToolRisk
+  /** 参数原文（已截断），用户要能看清"它到底要传什么进去" */
+  args: string
+  /** 多久没有回应就按拒绝处理 */
+  timeoutMs: number
+  /** 该工具本次会话内已被放行过：界面可提示"这次不再问" */
+  rememberable: boolean
+}
 
 /** 发一条消息：sessionId 缺省表示新建会话 */
 export interface AiSendRequest {
@@ -401,3 +470,59 @@ export const MAX_TOOL_DESCRIPTION = 500
 
 /** 技能一句话说明的上限（正文按需读取，不进上下文） */
 export const MAX_SKILL_DESCRIPTION = 300
+
+/* ------------------------------------------------------------------ *
+ * 工具执行（v0.6.3）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 主进程 → 插件页的一次工具调用。
+ * 插件真正执行的是自己声明过的工具，`name` 是插件内短名（不是全局名）。
+ */
+export interface AiToolCallRequest {
+  callId: string
+  /** 插件内工具短名，与 tools.json 里的 name 一致 */
+  name: string
+  /** 已通过 schema 校验的参数对象 */
+  args: Record<string, unknown>
+}
+
+/**
+ * 插件 → 主进程的执行结果。
+ * `result` 可以是任意可 JSON 序列化的值：字符串原样给模型，
+ * 对象会被序列化（模型读 JSON 没问题，但插件最好自己给一段可读文本）。
+ */
+export interface AiToolReply {
+  callId: string
+  ok: boolean
+  result?: unknown
+  error?: string
+}
+
+/**
+ * 一轮用户消息里最多来回几轮工具调用。
+ * 不设上限时，模型完全可能「调工具 → 再调同一个工具 → …」把额度烧穿；
+ * 4 轮足够覆盖「读剪贴板 → 打开翻译 → 总结」这类真实链路。
+ */
+export const MAX_TOOL_ROUNDS = 4
+
+/** 一轮用户消息里最多执行多少次工具（模型可能一次要求并行调用很多个） */
+export const MAX_TOOL_CALLS = 8
+
+/** 单条工具结果进入上下文的字数上限（再多就把这轮对话挤没了） */
+export const MAX_TOOL_RESULT_CHARS = 4000
+
+/** 工具参数原文落档/展示的字数上限 */
+export const MAX_TOOL_ARGS_CHARS = 2000
+
+/**
+ * 确认弹窗的等待上限。超时按「拒绝」处理而不是「同意」：
+ * 用户走开了、面板被藏起来了都不能变成一次静默授权。
+ */
+export const TOOL_CONFIRM_TIMEOUT_MS = 60_000
+
+/** 工具页面被拉起后等它就绪的上限（插件是本地页面，慢到这个程度基本是坏了） */
+export const TOOL_HOST_READY_MS = 10_000
+
+/** 工具宿主空闲多久后回收插件视图（用户没在看它，没必要占一个渲染进程） */
+export const TOOL_HOST_IDLE_MS = 60_000

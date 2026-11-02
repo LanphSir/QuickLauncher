@@ -11,6 +11,111 @@
 
 ---
 
+## v0.6.3 — 工具调用（2026-11-02）
+
+**目标**：让 v0.6.2 登记好的工具真正跑起来——模型可以调启动器自身的能力和插件的工具，
+有副作用的操作先问人，每次调用留痕。验收口径是那句「把剪贴板里的地址用翻译插件翻一下」
+能从头走到尾。
+
+### 1. 工具目录（`ai/toolCatalog.ts`、`ai/toolNames.ts`、`ai/builtinTools.ts`）
+
+内置 7 个工具：`launcher_search`、`launcher_open`、`clipboard_read`、`clipboard_write`、
+`docs_search`、`docs_read`、`skill_read`。它们和插件工具一样走 `toolsSpec` 解析——
+参数校验、描述长度上限、风险缺省值**同一套代码**，不会出现「内置的松、插件的紧」。
+
+两个必须在这里解决的事：
+
+- **函数名合法化**。OpenAI 的函数名只允许 `[A-Za-z0-9_-]{1,64}`，而插件工具的全局名是
+  `plugin:<id>:<name>`（带冒号与点），直接下发会被端点 400。下发前换成
+  `plugin_com_launcher_calculator_calculate`，并保留「函数名 → 工具」反查表；
+  执行前一律按表反查，**模型给的名字不能当身份**。超长 id 用 前缀+短哈希 防撞名。
+- **目录每次发消息重建**。用户刚撤销授权，下一条消息就不该再看到那个工具；
+  不做跨轮缓存（`tools.json` 的解析结果仍按 mtime 缓存，那是另一回事）。
+
+内置工具不需要授权开关（读的是启动器自身状态，不涉及第三方数据），但写操作照样受风险分级。
+
+### 2. 执行链（`ai/toolExec.ts`）
+
+顺序固定：**解析参数 → schema 校验 → 风险确认 → 执行 → 审计**。不能换：先确认后校验，
+用户点了「允许」才被告知参数不合法；先执行后确认，那是先斩后奏。
+
+失败一律变成 `tool-result`（ok=false + 给模型看的原因）而**不是抛出去结束这一轮**：
+模型拿到「超时」「参数不对」「用户拒绝了」还能换个办法，直接断掉对话用户只能看到一句报错。
+
+### 3. 工具宿主（`ai/toolHost.ts`）
+
+插件工具的执行必须发生在**插件自己的页面里**：数据、权限、存储在它的渲染进程，
+主进程替它执行等于把插件能力搬进一个权限更高的地方。
+
+- 复用 `pluginHost` 的视图（`warmPluginContents`）而不是另建一套隐藏 webContents：
+  同一插件两个实例会互相踩存储与生命周期，代价比省下的几十 MB 更大。
+- 页面没起来就先等加载（10s），等不到回「页面没有就绪」而不是让模型干等超时。
+- 超时用工具自己声明的 `timeoutMs`；迟到的回执按 callId 找不到等待者，直接丢弃。
+- 崩溃/被回收：**重建一次**再试；再失败就如实回报。业务报错不重试（参数错了重试也一样）。
+- 空闲 60s 回收视图，但用户正开着它（面板激活/分离窗口/可见）就不动。
+- 回执照 callId + `callerRegistry` 双重核对来源，任何插件都不能冒充别的插件回结果。
+
+### 4. 风险确认（`ai/confirm.ts`）
+
+- `read` 直接执行；`write` 每次问（可勾「本次会话内不再询问」）；`dangerous` 每次问且**不可记住**。
+- **超时按拒绝**（60s）：用户走开、面板被收起都不能变成一次静默授权。
+- 点停止会立刻把等待中的确认按拒绝收尾，否则那个 Promise 还要挂满 60 秒。
+- **确认框画在 AI 页里，不是主面板的 OverlayHost**：插件页是原生 WebContentsView，
+  盖在核心渲染层之上，OverlayHost 的弹窗只会出现在它下面（用户看到的是被遮住的对话）。
+  交互规则与 OverlayHost 对齐：遮罩、Esc = 拒绝、默认焦点不给「允许」。
+
+### 5. 回合循环（`ai/chat.ts`、`ai/toolCalls.ts`）
+
+- 流式 `tool_calls` 碎片**按 index 归并**：并行调用时两路碎片交错到达，按顺序拼会把
+  A 的参数接到 B 上；id 只在第一帧出现，不能拿「这帧没 id」当新调用。
+- 上限：单条消息 4 轮、8 次调用。触到上限时给未执行的调用补一条「未执行」结果再收尾——
+  assistant 的 `tool_calls` 缺对应 `tool` 消息会让下一次请求直接 400。
+- 工具调用与结果**都落进会话**（`tool_call` / `tool_result` part），切走再回来、下次继续
+  都还在；只调工具没写正文的回答不会被当成空消息丢掉。
+- 用户停止：正在等的确认/执行立即收尾，已产生的部分保留并标 `stopped`。
+
+### 6. 协议变更
+
+- `plugin:ai.tool.reply`（非 internalOnly，插件是回执方）+ `plugin:ai.tool.confirm`
+  （internalOnly：能自批的确认等于没有确认）。
+- `appapi.ai.onToolCall(handler)`：回调返回字符串或 `{ok,result,error}`；抛错按失败回执。
+- `appapi.ai.onDelta` 改为**支持多个订阅者并返回退订函数**。原来的「后注册的顶掉先注册的」
+  在这一版直接咬了一口：工具确认事件被测试脚本的监听器顶掉，界面永远收不到确认框，
+  每次 tool 调用都卡到超时。顺带发现 `offDelta(callback)` 这种按引用取消在 contextBridge
+  两侧不可靠，改成返回闭包。
+
+### 7. 审计（`ai/audit.ts`）
+
+`userData/ai/audit.jsonl`，一行一次调用：时间、会话、消息、工具、来源插件、风险、
+参数（截断 2000 字）、是否确认（allowed/denied/timeout/not-required）、耗时、错误。
+只追加不重写；超过 2MB 轮转为 `audit.1.jsonl`（审计被自动删掉比占 2MB 更糟）。
+
+### 关键文件
+
+`src/main/ai/{toolCatalog,toolNames,builtinTools,toolExec,toolHost,toolCalls,confirm,audit}.ts`（新）、
+`src/main/ai/{chat,chunk,client,provider,tokens,sessionModel,tools}.ts`、
+`src/main/plugin/api/ai.ts`、`src/main/windows/pluginHost.ts`（`releaseIdlePluginView`）、
+`src/main/index.ts`（启动器能力注入）、`src/preload/plugin.ts`、`src/shared/{ai,pluginApi}.ts`、
+`plugins/ai/src/App.vue`（工具卡片 + 确认框）、`plugins/calculator/src/App.vue`（`calculate` 执行端）
+
+### 验证
+
+- `pnpm test` 247/247（+19）：工具名映射与撞名、流式碎片按 index 归并、`tool_calls` 解析、
+  确认的分级/超时/会话记忆、工具调用进入历史（成对、无结果不伪造）
+- `pnpm smoke` 124/124（+15，全部跑在本地 mock 端点上）：
+  计算器工具调用并回结果、工具结果回填后继续生成、调用与结果落进会话、
+  写操作弹确认并显示风险与参数、**「剪贴板 → 翻译插件」全链路**（确认允许 → 翻译页 webview
+  带着那段地址打开）、用户拒绝后不执行且原因回到模型、`dangerous` 不给「不再询问」且未获准不执行、
+  插件超时/插件抛错都以 tool-result.error 回给模型、审计日志有据可查（含被拒的高危调用）
+- 手工：AI 页工具卡片（进行中/成功/失败三态）与确认框的样式、Esc 拒绝
+
+### 遗留
+
+- 「插件页面未就绪」这条失败路径没有在冒烟里造出来（要伪造加载失败），只做了代码路径与手工验证
+- 确认超时固定 60s，没有做「面板被藏起时自动暂停计时」
+- 内置工具没有在设置页列出（AI 页欢迎语里说了它们存在），用户不能逐个关掉
+- 工具宿主复用 pluginHost 的视图，因此会占用 5 个常驻视图的名额；真实使用中若感到插件被频繁收复，再考虑独立宿主
+
 ## v0.6.2 — 插件 AI 协议（2026-11-02）
 
 **目标**：让插件能把自己的能力"交给"AI——声明工具、写技能说明、由用户按插件授权。

@@ -7,13 +7,15 @@
 import { BrowserWindow, dialog } from 'electron'
 import { attachBytes, attachPath } from '../../ai/attach'
 import { sendMessage, stopRun } from '../../ai/chat'
+import { answerConfirm } from '../../ai/confirm'
 import { modelOptions } from '../../ai/provider'
 import { getAiConfig } from '../../ai/settings'
 import { createSession, deleteSession, getSession, listSessions, renameSession } from '../../ai/store'
 import { grantedTools } from '../../ai/tools'
+import { handlePluginToolReply } from '../../ai/toolHost'
 import { MAX_ATTACHMENTS } from '../../../shared/ai'
 import { defineApi } from './define'
-import { fail, object, optional, str, strArray } from './validate'
+import { fail, jsonValue, object, optional, str, strArray } from './validate'
 
 /** 会话 id 是 randomUUID：只允许字母数字与连字符，避免被当成路径片段 */
 const sessionId = str('sessionId', { max: 64, pattern: /^[\w-]+$/ })
@@ -97,6 +99,40 @@ export const aiApi = [
   defineApi('plugin:ai.tools', {
     internalOnly: true,
     handle: () => grantedTools()
+  }),
+
+  /**
+   * 工具执行回执（v0.6.3）。
+   *
+   * 刻意**不是** internalOnly：第三方插件正是被调用的那一方。
+   * 身份由网关锚定（sender → 插件记录），toolHost 再核对「这个插件是不是
+   * 正等这个 callId 的那一个」，两层都过才认。
+   */
+  defineApi('plugin:ai.tool.reply', {
+    parse: object({
+      callId: str('callId', { max: 80, pattern: /^[\w-]+$/ }),
+      ok: (input) => input === true,
+      result: optional(jsonValue('result', 64 * 1024)),
+      error: optional(str('error', { max: 2000 }))
+    }),
+    handle: ({ sender }, reply) => handlePluginToolReply(sender, reply)
+  }),
+
+  /**
+   * 风险确认的答复。internalOnly：能自批的工具授权等于没有授权。
+   * 返回 ok=false 不是错误（多半是超时后按钮才被点到），界面直接收起即可。
+   */
+  defineApi('plugin:ai.tool.confirm', {
+    internalOnly: true,
+    parse: object({
+      requestId: str('requestId', { max: 64, pattern: /^[\w-]+$/ }),
+      allow: (input) => input === true,
+      remember: optional((input) => input === true)
+    }),
+    handle: (_ctx, { requestId, allow, remember }) => {
+      const handled = answerConfirm(requestId, allow, remember === true)
+      return { ok: handled, message: handled ? undefined : '这次确认已经结束（可能已超时）' }
+    }
   }),
 
   defineApi('plugin:ai.session.list', {

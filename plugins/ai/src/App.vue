@@ -3,12 +3,15 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import type {
   AiAttachResult,
   AiChatMessage,
+  AiConfirmRequest,
   AiFilePart,
   AiMessagePart,
   AiModelOption,
   AiSessionDetail,
   AiSessionMeta,
-  AiStreamEvent
+  AiStreamEvent,
+  AiToolCallPart,
+  AiToolResultPart
 } from '../../../src/shared/ai'
 
 const api = window.appapi
@@ -42,6 +45,27 @@ const askAbout = ref<Record<string, string> | null>(null)
  */
 const toolCount = ref(0)
 
+/**
+ * 工具调用的风险确认（v0.6.3）。
+ *
+ * 确认框必须画在这一页里，而不是主面板的核心浮层：插件视图是原生层，
+ * 盖在核心渲染层之上，那边的弹窗再漂亮也会被这段对话挡在后面。
+ */
+const confirmReq = ref<AiConfirmRequest | null>(null)
+const rememberConfirm = ref(false)
+
+async function answerConfirm(allow: boolean): Promise<void> {
+  const req = confirmReq.value
+  if (!req) return
+  confirmReq.value = null
+  try {
+    await api.ai.confirmTool(req.requestId, allow, allow && rememberConfirm.value)
+  } catch {
+    // 超时后按钮才被点到：请求已经结束，界面收起就够了，不必再报错
+  }
+  rememberConfirm.value = false
+}
+
 async function refreshToolCount(): Promise<void> {
   try {
     toolCount.value = (await api.ai.tools()).length
@@ -64,6 +88,31 @@ function reasoningOf(message: AiChatMessage): string {
 
 function filesOf(message: AiChatMessage): AiFilePart[] {
   return message.parts.filter((p): p is AiFilePart => p.type === 'file')
+}
+
+/** 消息正文里要按顺序渲染的部分：推理单独折叠、工具结果挂回它对应的调用上 */
+function bodyParts(message: AiChatMessage): AiMessagePart[] {
+  return message.parts.filter((p) => p.type !== 'reasoning' && p.type !== 'tool_result')
+}
+
+function resultOf(message: AiChatMessage, callId: string): AiToolResultPart | undefined {
+  return message.parts.find((p): p is AiToolResultPart => p.type === 'tool_result' && p.callId === callId)
+}
+
+function hasToolParts(message: AiChatMessage): boolean {
+  return message.parts.some((p) => p.type === 'tool_call')
+}
+
+/** 还没拿到结果 = 正在执行（界面上转圈的那个） */
+function toolRunning(message: AiChatMessage, call: AiToolCallPart): boolean {
+  return !resultOf(message, call.callId)
+}
+
+/** 风险标签：只读 / 会改动 / 高风险。用户看一眼就知道这次要不要细看参数 */
+const RISK_LABEL: Record<string, string> = { read: '只读', write: '会改动', dangerous: '高风险' }
+
+function riskLabel(risk: string): string {
+  return RISK_LABEL[risk] ?? risk
 }
 
 function humanSize(bytes: number): string {
@@ -311,6 +360,21 @@ async function copy(text: string): Promise<void> {
 }
 
 function onDelta(event: AiStreamEvent): void {
+  /*
+   * 确认请求**不受会话过滤**：用户可能已经切到别的会话在看历史，
+   * 但那个正在跑的对话马上要动他的东西。丢掉这条事件等于让工具一直等到超时
+   * ——而且用户完全不知道发生过什么。
+   */
+  if (event.type === 'tool-confirm') {
+    confirmReq.value = event.request
+    rememberConfirm.value = false
+    return
+  }
+  if (event.type === 'tool-confirm-close') {
+    if (confirmReq.value?.requestId === event.requestId) confirmReq.value = null
+    return
+  }
+
   // 切走会话后上一个会话的残流会继续到几帧：不是当前会话就丢掉，
   // 否则字会拼到别人的消息里（比丢几帧难查得多）
   if (!current.value || event.sessionId !== current.value.id) return
@@ -340,12 +404,31 @@ function onDelta(event: AiStreamEvent): void {
     usage.value = { input: event.input, output: event.output }
     return
   }
+  if (event.type === 'tool-call') {
+    const message = findMessage(event.messageId)
+    // 同一 callId 只插一次：重复事件（重连、多路推送）会让界面上出现两张一样的卡片
+    if (message && !message.parts.some((p) => p.type === 'tool_call' && p.callId === event.call.callId)) {
+      message.parts.push(event.call)
+    }
+    scrollToEnd()
+    return
+  }
+  if (event.type === 'tool-result') {
+    const message = findMessage(event.messageId)
+    if (message && !message.parts.some((p) => p.type === 'tool_result' && p.callId === event.result.callId)) {
+      message.parts.push(event.result)
+    }
+    scrollToEnd()
+    return
+  }
   if (event.type === 'done') {
     const message = findMessage(event.messageId)
     if (message) {
       if (event.stopped) message.stopped = true
       if (event.error) message.error = event.error
     }
+    // 生成结束时不该还留着确认框：那一轮已经收尾了
+    confirmReq.value = null
     busy.value = false
     // 超预算时的两种"被裁剪"要让用户看见，否则他会以为模型忘了前面聊过什么
     if (event.dropped) {
@@ -391,6 +474,12 @@ onMounted(async () => {
 
   const onKey = (event: KeyboardEvent): void => {
     if (event.key !== 'Escape') return
+    // 确认框优先：Esc = 拒绝。这里不能用「关掉弹窗但保持等待」，
+    // 那样用户会以为事情没发生，实际请求还挂着
+    if (confirmReq.value) {
+      void answerConfirm(false)
+      return
+    }
     // 有草稿或待发附件先清掉：误按 Esc 直接退出会把刚准备的东西弄丢
     if (draft.value || attachments.value.length || askAbout.value) {
       draft.value = ''
@@ -459,7 +548,8 @@ onMounted(async () => {
           <div class="welcome-title">问点什么</div>
           <p v-if="configured">
             支持多轮对话与会话切换；回答流式输出，随时可以停止。文件可以拖进来，或点「添加文件」。
-            按 Esc 退出插件。
+            模型还能调用启动器的内置能力（搜索、打开插件、剪贴板、文档库）和你授权过的插件工具，
+            有副作用的操作会先弹确认。按 Esc 退出插件。
           </p>
           <p v-else>
             还没配置模型。打开 <b>设置 → AI</b> 添加一个服务（DeepSeek / 通义 / Kimi / OpenAI / 本机 Ollama），
@@ -490,8 +580,42 @@ onMounted(async () => {
               </div>
             </div>
 
-            <div v-if="textOf(m)" class="pre">{{ textOf(m) }}</div>
-            <div v-else-if="!m.error && !m.stopped && !filesOf(m).length" class="typing">正在生成…</div>
+            <template v-for="(p, i) in bodyParts(m)" :key="i">
+              <div v-if="p.type === 'text'" class="pre">{{ p.text }}</div>
+              <div
+                v-else-if="p.type === 'tool_call'"
+                class="tool-card"
+                :class="{
+                  bad: !!resultOf(m, p.callId) && resultOf(m, p.callId)?.ok === false,
+                  run: toolRunning(m, p)
+                }"
+              >
+                <div class="tool-head">
+                  <span class="tool-state">
+                    {{ toolRunning(m, p) ? '⋯' : resultOf(m, p.callId)?.ok ? '✓' : '✗' }}
+                  </span>
+                  <span class="tool-title">{{ p.title }}</span>
+                  <span class="tool-risk" :class="`risk-${p.risk}`">{{ riskLabel(p.risk) }}</span>
+                  <span v-if="p.pluginName" class="tool-from">{{ p.pluginName }}</span>
+                </div>
+                <template v-if="resultOf(m, p.callId)">
+                  <div v-if="resultOf(m, p.callId)?.ok" class="tool-out">{{ resultOf(m, p.callId)?.text }}</div>
+                  <div v-else class="tool-err">{{ resultOf(m, p.callId)?.error }}</div>
+                </template>
+                <div v-else class="tool-out">正在执行…</div>
+                <details class="tool-args">
+                  <summary>参数</summary>
+                  <div class="pre">{{ p.args || '（无）' }}</div>
+                </details>
+              </div>
+            </template>
+
+            <div
+              v-if="!textOf(m) && !hasToolParts(m) && !m.error && !m.stopped && !filesOf(m).length"
+              class="typing"
+            >
+              正在生成…
+            </div>
             <div v-if="m.stopped" class="flag">已停止</div>
             <div v-if="m.error" class="flag err">{{ m.error }}</div>
             <div v-if="m.role === 'assistant' && textOf(m)" class="acts">
@@ -543,6 +667,38 @@ onMounted(async () => {
 
       <div v-if="toast" class="toast">{{ toast }}</div>
     </main>
+
+    <!--
+      风险确认：画在本页的最上层。
+      按钮顺序固定「拒绝在左、允许在右」，且默认焦点不给「允许」——
+      用户按回车就要能过关的确认框，等于没有确认。
+    -->
+    <div v-if="confirmReq" class="confirm-mask" role="dialog" aria-modal="true">
+      <div class="confirm-box">
+        <div class="confirm-title">允许执行「{{ confirmReq.title }}」？</div>
+        <div class="confirm-sub">
+          <span class="confirm-from">{{ confirmReq.pluginName || '启动器内置工具' }}</span>
+          <span class="tool-risk" :class="`risk-${confirmReq.risk}`">{{ riskLabel(confirmReq.risk) }}</span>
+          <span class="confirm-full">{{ confirmReq.fullName }}</span>
+        </div>
+        <pre class="confirm-args">{{ confirmReq.args || '（无参数）' }}</pre>
+        <div v-if="confirmReq.risk === 'dangerous'" class="confirm-warn">
+          这是高风险操作，每次都会询问；「不再询问」对它不生效。
+        </div>
+        <label v-else-if="confirmReq.rememberable" class="confirm-remember">
+          <input v-model="rememberConfirm" type="checkbox" />
+          本次会话内不再询问这个工具
+        </label>
+        <div class="confirm-actions">
+          <span class="confirm-tip">
+            Esc 取消 · {{ Math.round(confirmReq.timeoutMs / 1000) }} 秒内没有选择将按拒绝处理
+          </span>
+          <span class="spacer" />
+          <button class="ghost" @click="answerConfirm(false)">拒绝</button>
+          <button class="send" @click="answerConfirm(true)">允许</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -820,6 +976,231 @@ onMounted(async () => {
 .typing {
   color: #a1a6ad;
   font-size: 12.5px;
+}
+
+/*
+ * 工具卡片：一次调用一行，读起来像「它做了什么」而不是一堆 JSON。
+ * 进行中、成功、失败三种状态靠左边那个符号区分——颜色只是辅助，
+ * 色弱用户也要能分辨。
+ */
+.tool-card {
+  margin: 6px 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  background: #fbfcfd;
+  font-size: 12.5px;
+}
+
+.tool-card.run {
+  border-style: dashed;
+}
+
+.tool-card.bad {
+  border-color: #f3c7cf;
+  background: #fdf6f7;
+}
+
+.tool-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+
+.tool-state {
+  width: 14px;
+  text-align: center;
+  color: #8f959e;
+}
+
+.tool-card.bad .tool-state {
+  color: #d03050;
+}
+
+.tool-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-risk {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  line-height: 16px;
+  font-weight: 400;
+}
+
+.risk-read {
+  background: #eef2f5;
+  color: #6b7280;
+}
+
+.risk-write {
+  background: #fff4e5;
+  color: #a4620a;
+}
+
+.risk-dangerous {
+  background: #fdecee;
+  color: #c0293f;
+}
+
+.tool-from {
+  flex: none;
+  font-size: 11px;
+  color: #a1a6ad;
+  font-weight: 400;
+}
+
+.tool-out {
+  margin-top: 5px;
+  color: #4e5561;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.tool-err {
+  margin-top: 5px;
+  color: #c0293f;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tool-args {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: #8f959e;
+}
+
+.tool-args summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.tool-args .pre {
+  margin-top: 4px;
+  max-height: 140px;
+  overflow: auto;
+  background: #f5f6f8;
+  font-size: 11.5px;
+}
+
+/* 确认框 */
+.confirm-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 18, 25, 0.32);
+}
+
+.confirm-box {
+  width: min(520px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 16px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 12px 40px rgba(15, 18, 25, 0.18);
+}
+
+.confirm-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.confirm-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: #8f959e;
+  flex-wrap: wrap;
+}
+
+.confirm-full {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: #b0b5bc;
+}
+
+.confirm-args {
+  margin-top: 10px;
+  padding: 8px 10px;
+  max-height: 200px;
+  overflow: auto;
+  border-radius: 8px;
+  background: #f5f6f8;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.confirm-warn {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: #c0293f;
+}
+
+.confirm-remember {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: #6b7280;
+  cursor: pointer;
+}
+
+.confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.confirm-tip {
+  font-size: 11px;
+  color: #a1a6ad;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.confirm-actions .send {
+  padding: 0 14px;
+  height: 28px;
+  border-radius: 7px;
+  background: #5b6ef5;
+  color: #fff;
+  font-size: 12.5px;
+}
+
+.confirm-actions .send:hover {
+  background: #4b5ee6;
+}
+
+.confirm-actions .ghost {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 7px;
+  border: 1px solid #e5e7eb;
+  font-size: 12.5px;
+  color: #4e5561;
+}
+
+.confirm-actions .ghost:hover {
+  background: #f5f6f8;
 }
 
 .flag {

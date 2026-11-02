@@ -1,30 +1,44 @@
 /**
  * 对话编排：一条用户消息进 → 流式增量出 → 结束时落一条完整回答。
  *
- * 两个刻意的取舍：
+ * v0.6.3 起多了一层：模型可以在回答中间要求调用工具，主进程执行完把结果交回，
+ * 再让模型接着说。一轮用户消息最多 MAX_TOOL_ROUNDS 次来回、MAX_TOOL_CALLS 次调用。
+ *
+ * 几个刻意的取舍：
  * 1. **回答只在结束时落盘**。中途被停止/失败/进程被杀，会话里只有用户那条问题，
  *    不会留下一条"永远正在输入"的半截消息（下次打开也没法分辨它到底是死是活）。
  * 2. **增量合并后再发 IPC**。逐 token `send` 在长回答里会打上几千次 IPC，
  *    合并到 16ms 一帧对界面没有任何区别，成本降一个量级。
+ * 3. **工具调用与结果成对出现**。历史里只要有 assistant.tool_calls，就必须有
+ *    对应的 tool 结果消息，否则下一次请求会被服务端直接拒掉——所以中途触到
+ *    上限/被停止时，宁可补一条「未执行」的结果，也不留半对。
  */
 import type { WebContents } from 'electron'
 import { AI_DELTA_CHANNEL } from '../../shared/pluginApi'
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
+  MAX_TOOL_CALLS,
+  MAX_TOOL_ROUNDS,
   type AiChatMessage,
   type AiMessagePart,
   type AiSendRequest,
   type AiSendResult,
-  type AiStreamEvent
+  type AiStreamEvent,
+  type AiToolCallPart,
+  type AiToolResultPart
 } from '../../shared/ai'
 import { getAttachments, readImageDataUrl } from './attach'
 import { AiHttpError, streamChat } from './client'
-import { buildChatRequest, modelId, type ApiContentPart, type ApiMessage } from './provider'
-import { createMessage, newMessageId, titleFromText, turnsOf } from './sessionModel'
+import { buildChatRequest, modelId, type ApiContentPart, type ApiMessage, type ApiToolCall } from './provider'
+import { createMessage, newMessageId, resultTextForModel, titleFromText, turnsOf } from './sessionModel'
 import { getAiConfig, resolveModel } from './settings'
 import { createSession, getSession, saveSession, saveSummary } from './store'
+import { cancelConfirms } from './confirm'
 import { summarizeHistory, summarizeRange } from './summary'
 import { estimateTokens, fitTurns, type ChatTurn } from './tokens'
+import { buildToolCatalog } from './toolCatalog'
+import { ToolCallCollector } from './toolCalls'
+import { describeCall, executeToolCall } from './toolExec'
 
 interface ActiveRun {
   controller: AbortController
@@ -109,6 +123,34 @@ function createEmitter(sender: WebContents | null, sessionId: string, messageId:
   }
 }
 
+/**
+ * 消息片段的追加器。
+ *
+ * 与 emitter 并行维护一份「落档用的 parts」：界面看到的是事件流，磁盘上存的是 parts。
+ * 两者必须按同样的规则合并（连续同类片段并进同一个 part），否则用户切走会话再切回来，
+ * 会看到和刚才不一样的排版。
+ */
+function createPartWriter(parts: AiMessagePart[]) {
+  return {
+    text(delta: string): void {
+      const last = parts[parts.length - 1]
+      if (last?.type === 'text') last.text += delta
+      else parts.push({ type: 'text', text: delta })
+    },
+    reasoning(delta: string): void {
+      const last = parts[parts.length - 1]
+      if (last?.type === 'reasoning') last.text += delta
+      else parts.push({ type: 'reasoning', text: delta })
+    },
+    call(part: AiToolCallPart): void {
+      parts.push(part)
+    },
+    result(part: AiToolResultPart): void {
+      parts.push(part)
+    }
+  }
+}
+
 export function isRunning(sessionId: string): boolean {
   return runs.has(sessionId)
 }
@@ -116,11 +158,14 @@ export function isRunning(sessionId: string): boolean {
 export function stopRun(sessionId: string): { ok: boolean } {
   const run = runs.get(sessionId)
   if (!run) return { ok: false }
+  // 正在等用户确认的调用按拒绝收尾：否则 abort 之后那个 Promise 还要挂满 60 秒
+  cancelConfirms(sessionId)
   run.controller.abort()
   return { ok: true }
 }
 
 export function stopAll(): void {
+  cancelConfirms()
   for (const run of runs.values()) run.controller.abort()
   runs.clear()
 }
@@ -130,6 +175,8 @@ export function stopAll(): void {
  *
  * 只有带图的消息才用 content 数组，纯文字仍是字符串——
  * 兼容实现里对数组形式的支持参差不齐，能不用就不用。
+ * 带工具调用的 assistant 消息按 OpenAI 的 tool_calls 形态展开，紧随其后的
+ * 是 role=tool 的结果消息（顺序由 turnsOf 保证）。
  */
 function assembleMessages(turns: ChatTurn[], system: string, summary?: string): ApiMessage[] {
   const out: ApiMessage[] = []
@@ -139,6 +186,30 @@ function assembleMessages(turns: ChatTurn[], system: string, summary?: string): 
   if (sysParts.length) out.push({ role: 'system', content: sysParts.join('\n\n') })
 
   for (const turn of turns) {
+    if (turn.role === 'assistant' && turn.toolCalls?.length) {
+      const toolCalls: ApiToolCall[] = turn.toolCalls.map((call) => ({
+        id: call.id,
+        type: 'function',
+        function: { name: call.apiName, arguments: call.args || '{}' }
+      }))
+      out.push({
+        role: 'assistant',
+        // 只调工具、没写正文时 content 必须是 null：空串在部分端点上会被当成
+        // 「一条空的 assistant 消息」，与 tool_calls 一起出现时直接 400
+        content: turn.text.trim() ? turn.text : null,
+        tool_calls: toolCalls
+      })
+      const byCall = new Map((turn.toolResults ?? []).map((r) => [r.callId, r.text]))
+      for (const call of turn.toolCalls) {
+        out.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: byCall.get(call.id) ?? '（这次调用没有返回结果）'
+        })
+      }
+      continue
+    }
+
     if (!turn.images.length) {
       out.push({ role: turn.role, content: turn.text })
       continue
@@ -221,20 +292,25 @@ export async function sendMessage(
   const emitter = createEmitter(sender, sessionId, assistantId)
   emit(sender, { type: 'start', sessionId, messageId: assistantId, model: modelRef })
 
-  let textOut = ''
-  let reasoningOut = ''
+  /** 落档用的片段（推理/正文/工具调用/结果，按发生顺序） */
+  const parts: AiMessagePart[] = []
+  const writer = createPartWriter(parts)
   let droppedCount = 0
   let wasTruncated = false
+  let limitNote = ''
 
   const finalize = (outcome: { stopped?: boolean; error?: string }): void => {
+    // 触到工具上限时补的那句话也要走一遍事件流：只写进 parts 的话，
+    // 当前这一屏永远看不到它（界面是靠事件拼的，不是靠重读会话）
+    if (limitNote) {
+      writer.text(limitNote)
+      emitter.text(limitNote)
+    }
     emitter.flush()
     runs.delete(sessionId)
+    cancelConfirms(sessionId)
 
-    const parts: AiMessagePart[] = []
-    if (reasoningOut) parts.push({ type: 'reasoning', text: reasoningOut })
-    if (textOut) parts.push({ type: 'text', text: textOut })
-
-    // 既没正文也没错误：多半是模型只回了 finish_reason，界面需要一句明确的话
+    // 既没正文也没工具也没错误：多半是模型只回了 finish_reason，界面需要一句明确的话
     const error = outcome.error ?? (parts.length ? undefined : '模型没有返回任何内容')
     const assistant: AiChatMessage = {
       id: assistantId,
@@ -269,46 +345,147 @@ export async function sendMessage(
       const cfg = getAiConfig()
       const system = cfg.systemPrompt
       const summary = session.summary
-      const turns = turnsOf(historyMessages)
-      turnsForSummary = turns
+      const history = turnsOf(historyMessages)
+      turnsForSummary = history
 
-      const fixedTokens =
-        estimateTokens(system) + (summary ? estimateTokens(summary) + 16 : 0)
-      const fitted = fitTurns(turns, {
-        contextWindow: resolved.contextWindow,
-        maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
-        fixedTokens
-      })
-      droppedCount = fitted.dropped
-      wasTruncated = fitted.truncated
-      keptStart = fitted.start
+      // 工具目录每次发消息重建：授权刚被撤销时，这一条消息就不该再看到那个工具
+      const catalog = buildToolCatalog()
+      /** 本轮内产生、还没落盘的工具轮次，只参与后续请求 */
+      const extraTurns: ChatTurn[] = []
+      let rounds = 0
+      let callCount = 0
+      let stopped = false
+      let limitHit = false
 
-      const apiMessages = assembleMessages(fitted.kept, system, summary)
-      const built = buildChatRequest(resolved.provider, resolved.model, resolved.apiKey, apiMessages, {
-        maxTokens: DEFAULT_MAX_OUTPUT_TOKENS
-      })
-      await streamChat(built, controller.signal, {
-        onText: (delta) => {
-          textOut += delta
-          emitter.text(delta)
-        },
-        onReasoning: (delta) => {
-          reasoningOut += delta
-          emitter.reasoning(delta)
-        },
-        onUsage: (input, output) => {
-          emitter.usage(input, output)
+      const fixedTokens = estimateTokens(system) + (summary ? estimateTokens(summary) + 16 : 0)
+
+      for (;;) {
+        const fitted = fitTurns([...history, ...extraTurns], {
+          contextWindow: resolved.contextWindow,
+          maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+          fixedTokens
+        })
+        droppedCount = fitted.dropped
+        wasTruncated = fitted.truncated
+        keptStart = fitted.start
+
+        const apiMessages = assembleMessages(fitted.kept, system, summary)
+        const built = buildChatRequest(resolved.provider, resolved.model, resolved.apiKey, apiMessages, {
+          maxTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+          ...(catalog.apiTools.length ? { tools: catalog.apiTools } : {})
+        })
+
+        const collector = new ToolCallCollector()
+        let roundText = ''
+        await streamChat(built, controller.signal, {
+          onText: (delta) => {
+            roundText += delta
+            writer.text(delta)
+            emitter.text(delta)
+          },
+          onReasoning: (delta) => {
+            writer.reasoning(delta)
+            emitter.reasoning(delta)
+          },
+          onUsage: (input, output) => {
+            emitter.usage(input, output)
+          },
+          onToolCall: (delta) => collector.push(delta)
+        })
+
+        // abort 之后 fetch 的 body 有时只是"正常结束"而不是抛错，
+        // 只看异常会把用户主动停止记成一次完整回答（界面显示不出"已停止"）
+        if (controller.signal.aborted) {
+          stopped = true
+          break
         }
-      })
-      // 关键：abort 之后 fetch 的 body 有时只是"正常结束"而不是抛错，
-      // 只看异常会把用户主动停止记成一次完整回答（界面显示不出"已停止"）
-      finalize(controller.signal.aborted ? { stopped: true } : {})
+
+        const calls = collector.take()
+        if (!calls.length) break
+
+        emitter.flush()
+
+        // 本轮的工具调用与结果一并记进 extraTurns，下一轮请求才拼得出来
+        const turn: ChatTurn = {
+          messageId: assistantId,
+          role: 'assistant',
+          text: roundText,
+          images: [],
+          toolCalls: [],
+          toolResults: []
+        }
+        extraTurns.push(turn)
+
+        for (const call of calls) {
+          const described = describeCall(catalog, call)
+          writer.call(described)
+          emit(sender, { type: 'tool-call', sessionId, messageId: assistantId, call: described })
+
+          const overRound = rounds >= MAX_TOOL_ROUNDS
+          const overCount = callCount >= MAX_TOOL_CALLS
+          if (overRound || overCount || controller.signal.aborted) {
+            const why = controller.signal.aborted
+              ? '本次生成已停止，工具调用被取消'
+              : overRound
+                ? `本轮工具调用已达上限（${MAX_TOOL_ROUNDS} 轮），未执行`
+                : `本轮工具调用已达上限（${MAX_TOOL_CALLS} 次），未执行`
+            limitHit = !controller.signal.aborted
+            const skipped: AiToolResultPart = {
+              type: 'tool_result',
+              callId: described.callId,
+              ok: false,
+              text: '',
+              error: why,
+              durationMs: 0
+            }
+            writer.result(skipped)
+            emit(sender, { type: 'tool-result', sessionId, messageId: assistantId, result: skipped })
+            turn.toolResults?.push({ callId: skipped.callId, text: resultTextForModel(skipped) })
+            continue
+          }
+
+          callCount++
+          const result = await executeToolCall(
+            {
+              catalog,
+              sessionId,
+              messageId: assistantId,
+              notify: (event) => emit(sender, event),
+              signal: controller.signal
+            },
+            call
+          )
+          writer.result(result)
+          turn.toolResults?.push({ callId: result.callId, text: resultTextForModel(result) })
+        }
+
+        rounds++
+        // 把调用也写进 turn（必须在执行前定稿，因为下面按 index 对齐结果）
+        turn.toolCalls = calls.map((call) => ({
+          id: call.id,
+          apiName: call.apiName,
+          args: call.argsText
+        }))
+
+        if (controller.signal.aborted) {
+          stopped = true
+          break
+        }
+        if (limitHit) {
+          limitNote = `（已达到本轮工具调用上限：${MAX_TOOL_ROUNDS} 轮 / ${MAX_TOOL_CALLS} 次，先停在这里）`
+          break
+        }
+      }
+
+      finalize(stopped || controller.signal.aborted ? { stopped: true } : {})
     } catch (err) {
       finalize(controller.signal.aborted || isAbortError(err) ? { stopped: true } : { error: errorText(err) })
     }
 
-    // 摘要放在回答之后：它不该占用用户的等待时间，也不该因为失败影响这次回答
-    void maybeSummarize(sender, sessionId, turnsForSummary, keptStart, resolved.contextWindow)
+    // 摘要放在回答之后：它不该占用用户的等待时间，也不该因为失败影响这次回答。
+    // keptStart 是按「历史 + 本轮工具轮次」算出来的，摘要只针对历史，
+    // 所以先夹到历史长度以内——否则工具轮次把下界推过头，会把本该保留的段也压进去
+    void maybeSummarize(sender, sessionId, turnsForSummary, Math.min(keptStart, turnsForSummary.length), resolved.contextWindow)
   }
 
   // 立刻返回「已受理」：结果全部走事件流。
@@ -355,4 +532,3 @@ async function maybeSummarize(
   if (!saveSummary(sessionId, summary, upTo)) return
   emit(sender, { type: 'summary', sessionId, text: summary })
 }
-

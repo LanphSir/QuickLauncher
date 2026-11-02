@@ -48,7 +48,7 @@ export function estimateTokens(text: string): number {
   return cjk + Math.ceil(other / 4)
 }
 
-/** 一轮对话在预算里的投影：正文 + 图片引用 */
+/** 一轮对话在预算里的投影：正文 + 图片引用 + 工具调用 */
 export interface ChatTurn {
   /** 来源消息 id：摘要要记「覆盖到哪一条」，没有它就无从定位 */
   messageId: string
@@ -57,6 +57,28 @@ export interface ChatTurn {
   text: string
   /** 图片附件（按顺序），用于估算与后续组装 content 数组 */
   images: { fileId: string; mime: string }[]
+  /**
+   * assistant 发起的工具调用。带它的这一轮在请求体里会展开成
+   * 「assistant(tool_calls) + 若干 tool 消息」，所以结果也挂在这里，
+   * 成对进出——单独丢一半会让请求体不合法。
+   */
+  toolCalls?: ChatTurnToolCall[]
+  /** 与 toolCalls 一一对应的执行结果（顺序即请求体里的顺序） */
+  toolResults?: ChatTurnToolResult[]
+}
+
+export interface ChatTurnToolCall {
+  /** 模型给的调用 id：结果靠它配对，不能重排 */
+  id: string
+  /** 下发给模型（也已由模型回传）的函数名 */
+  apiName: string
+  /** 参数原文 JSON */
+  args: string
+}
+
+export interface ChatTurnToolResult {
+  callId: string
+  text: string
 }
 
 export interface FitResult {
@@ -82,7 +104,11 @@ export interface FitOptions {
 
 /** 单条消息占多少 token */
 function turnTokens(turn: ChatTurn): number {
-  return estimateTokens(turn.text) + turn.images.length * IMAGE_TOKENS + MESSAGE_OVERHEAD
+  let extra = 0
+  // 工具调用与结果同样占上下文：不算进来的话，多轮工具链会在服务端超窗
+  for (const call of turn.toolCalls ?? []) extra += estimateTokens(call.args) + 12
+  for (const result of turn.toolResults ?? []) extra += estimateTokens(result.text) + MESSAGE_OVERHEAD
+  return estimateTokens(turn.text) + turn.images.length * IMAGE_TOKENS + extra + MESSAGE_OVERHEAD
 }
 
 /** 从开头取到预算用完为止 */
@@ -173,7 +199,13 @@ export function fitTurns(turns: ChatTurn[], options: FitOptions): FitResult {
     break
   }
 
-  const kept = turns.slice(start).map((t) => ({ ...t }))
+  const kept = turns.slice(start).map((t) => ({
+    ...t,
+    // 工具字段要深拷一层：下面可能为了塞进预算而截断结果文本，
+    // 浅拷会改到入参（摘要还要用原始 turns）
+    ...(t.toolCalls ? { toolCalls: t.toolCalls.map((c) => ({ ...c })) } : {}),
+    ...(t.toolResults ? { toolResults: t.toolResults.map((r) => ({ ...r })) } : {})
+  }))
   let truncated = false
 
   // 最后一条超预算 → 截断正文（图片数不变，所以先扣掉图片占的）
@@ -185,6 +217,17 @@ export function fitTurns(turns: ChatTurn[], options: FitOptions): FitResult {
       const cut = truncateMiddle(last.text, room)
       last.text = cut.text
       truncated = cut.truncated
+    }
+    // 工具结果同样可能顶爆（一次调用返回几万字），按条均分剩余预算截断
+    const results = last.toolResults
+    if (results?.length) {
+      const left = Math.max(0, available - estimateTokens(last.text) - imageCost)
+      const perResult = Math.max(120, Math.floor(left / results.length) - MESSAGE_OVERHEAD)
+      for (const result of results) {
+        if (estimateTokens(result.text) <= perResult) continue
+        result.text = truncateMiddle(result.text, perResult).text
+        truncated = true
+      }
     }
   }
 

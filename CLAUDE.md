@@ -11,9 +11,9 @@ Electron 38 + TypeScript(strict) + Vue 3 + Pinia + electron-vite + pnpm workspac
 pnpm dev              # 开发模式（会先构建内置插件再启动 electron-vite dev）
 pnpm dev:plugin <name> # 单个插件改走 vite dev server（HMR），改插件代码不用重构建/重启
 pnpm typecheck        # 三端类型检查（tsconfig.json + tsconfig.web.json）
-pnpm test             # 单元测试 228 项（纯逻辑：校验器/内联归一化/存储分片与配额/LRU 策略/监听计划/失焦判定/面板布局/快捷键计划与注册表/自定义应用模型/AI 的 SSE 与增量解析/地址与模型 id/会话转换/token 预算与截断/附件抽取与编码回退/摘要触发条件/manifest 新字段校验/tools.json 解析与参数校验/SKILL.md 解析）
+pnpm test             # 单元测试 247 项（纯逻辑：校验器/内联归一化/存储分片与配额/LRU 策略/监听计划/失焦判定/面板布局/快捷键计划与注册表/自定义应用模型/AI 的 SSE 与增量解析/地址与模型 id/会话转换/token 预算与截断/附件抽取与编码回退/摘要触发条件/manifest 新字段校验/tools.json 解析与参数校验/SKILL.md 解析/工具调用分片归并与名字合法化/工具确认与放行）
 pnpm build:plugins    # 仅构建内置插件（plugins/*/dist）
-pnpm smoke            # CDP 功能冒烟 109 项（含 AI：mock 端点跑通配置→流式→停止→附件→多模态→插件工具授权）（需先另起: npx electron . --remote-debugging-port=9222）
+pnpm smoke            # CDP 功能冒烟 124 项（含 AI：mock 端点跑通配置→流式→停止→附件→多模态→插件工具授权→工具调用全链路/确认/危险工具/超时/崩溃）（需先另起: npx electron . --remote-debugging-port=9222）
                       # 注意本机 shell 里若带 ELECTRON_RUN_AS_NODE=1，electron 会当 node 跑，启动前 unset
 pnpm dist             # 打包 Windows 安装包 → release/<version>/
 node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
@@ -32,8 +32,9 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 5. **插件扫描只认固定目录**（`plugin/manager.ts` 的 `getPluginRoots()`）：builtin（dev 项目 `plugins/`、打包 `resources/plugins/builtin/`）+ installed（`userData/plugins/installed/`）。manifest 校验失败即跳过，id 冲突 builtin 优先。
 6. **自定义外部应用与插件同一张注册表**：`userData/shortcuts.json` 的条目在扫描时翻译成 `PluginRecord`（`source='shortcut'`，`type` 固定 `external`），不得为它单开启动/搜索/固定路径；配置只能由 `shortcuts.json` 一份承载。
 7. **`<webview>` 必须有权限门禁**：插件宿主虽开 `webviewTag`，但 `will-attach-webview` 只放行声明了 `webview` 权限的插件，且强制 guest 沙箱（删 preload、禁 nodeIntegration）。不要绕过这道门禁。
-8. **模型调用只有内置插件能发起**：`plugin:ai.chat.*` 等通道在 `define.ts` 标了 `internalOnly`，网关只放行 `source === 'builtin'`。模型调用花的是用户自己的钱，第三方插件即使声明了 `ai` 权限也调不通。等 v0.6.2 的工具协议落地后，插件要参与 AI 也只能"被调用"（`plugin:ai.toolCall` → `appapi.ai.toolResult`），不能自己去发起对话。
+8. **模型调用只有内置插件能发起**：`plugin:ai.chat.*` 等通道在 `define.ts` 标了 `internalOnly`，网关只放行 `source === 'builtin'`。模型调用花的是用户自己的钱，第三方插件即使声明了 `ai` 权限也调不通。第三方插件参与 AI 的唯一姿势是**被调用**：`plugin:ai.tool-call`（主→插件，宿主代发）→ 插件执行 → `plugin:ai.tool.reply`（插件→主，`internalOnly`）。工具调用的编排（选工具、限轮次、风险确认、审计）全在主进程 `main/ai/`，插件侧只负责执行单个 `handler`。
 9. **密钥只在主进程**：AI 的 apiKey 走 `safeStorage` 密文（`main/ai/secrets.ts`），渲染层与插件页只能拿掩码；日志、审计、错误信息里一律脱敏。
+10. **工具调用必须有闸门**：任何模型发起的工具调用都要经过 `main/ai/toolExec.ts` 的同一条流水（参数校验 → `needsConfirm` → `askConfirm` → 执行 → `writeAudit`）。`dangerous` 级工具每次都问，不给「本次会话不再询问」；确认超时按拒绝；任何失败都折成 `tool-result.error` 回给模型而不是抛出去。绕过这条流水直接 dispatch 是禁止的。
 
 ## 3. 代码规范
 

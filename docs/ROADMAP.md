@@ -116,9 +116,19 @@
     ✅ 撤销授权立即停止下发；✅ 探针插件「一半好一半坏」的 tools.json 只丢坏工具、
     插件照常加载且错误有记录；✅ `pnpm test` 228/228（+42）；✅ `pnpm smoke` 109/109（+8）
   - 遗留：本版只做登记与授权，执行链路见 v0.6.3；`ai.mcp` 仅校验存在，读取在 v0.6.4
-- [ ] v0.6.3 **工具调用**：工具注册表（`launcher.search/open`、剪贴板、文档库、插件工具）、工具宿主（懒建/空闲 60s 回收/崩溃重建）、
-  风险分级确认（走 `OverlayHost`）、审计日志、循环与预算上限
-  - 验收：「把剪贴板里的地址用翻译插件翻一下」全链路跑通；`dangerous` 未确认必被拒；插件未就绪/超时/报错三种失败都以 `tool-result.error` 回给模型；`audit.jsonl` 有据可查
+- [x] v0.6.3 **工具调用**（已交付：`ai/{toolCatalog,toolNames,builtinTools,toolExec,toolHost,toolCalls,confirm,audit}.ts`、
+  内置 7 个工具（launcher_search/open、clipboard_read/write、docs_search/read、skill_read）、
+  插件工具执行走「拉起居中页 → 等就绪 → send → 收执」（超时/崩溃重建一次/空闲 60s 回收）、
+  风险三级确认（确认框在 AI 页内渲染，见下）、audit.jsonl、单消息 4 轮 / 8 次上限、
+  `onDelta` 多订阅者 + 退订、计算器插件补 `onToolCall` 执行端）
+  - 验收：✅「把剪贴板里的地址用翻译插件翻一下」全链路跑通（含 write 确认，翻译页 webview 带着地址打开）；
+    ✅ `dangerous` 未获确认不执行（无「不再询问」选项）；✅ 插件超时/插件抛错以 `tool-result.error` 回给模型，
+    模型据此给出最终回答；✅ `audit.jsonl` 有据可查（含 confirm=allowed/denied）；
+    ✅ `pnpm test` 247/247（+19）；✅ `pnpm smoke` 124/124（+15）
+  - 与设计稿的偏差：确认框没有走核心渲染层的 `OverlayHost`——插件页是原生层，核心浮层会被它盖住，
+    改由 AI 页自己渲染（遮罩/Esc/焦点规则对齐）。工具宿主复用 pluginHost 视图而非独立隐藏页，
+    避免同插件双实例踩存储；代价是占用 5 个常驻视图名额
+  - 遗留：「插件未就绪」失败路径未在冒烟里造出来；确认超时固定 60s；内置工具没有逐项开关
 - [ ] v0.6.4 **MCP 接入**：`ai/mcp.json` 解析 + 命令行人工确认（指纹绑定）+ stdio/http client + 进程生命周期（懒启动/崩溃≤3）
   - 验收：接一个社区 MCP server 能列出并调用工具；确认弹窗展示完整 argv 且改参数需重新确认；server 崩溃后对话仍可用
   - 遗留预判：跨平台 stdio 路径差异留到 v0.7 盘点

@@ -121,3 +121,62 @@ describe('裁剪与排序', () => {
     expect(a.createdAt).toBeGreaterThan(0)
   })
 })
+
+describe('工具调用进入历史', () => {
+  const call = (id: string, name: string, args = '{}'): AiChatMessage['parts'][number] => ({
+    type: 'tool_call',
+    callId: id,
+    apiName: name,
+    fullName: name,
+    title: name,
+    args,
+    risk: 'read'
+  })
+  const result = (id: string, text: string, ok = true): AiChatMessage['parts'][number] => ({
+    type: 'tool_result',
+    callId: id,
+    ok,
+    text,
+    ...(ok ? {} : { error: text })
+  })
+
+  it('调用与结果成对进入轮次', () => {
+    const message: AiChatMessage = {
+      id: 'a1',
+      role: 'assistant',
+      createdAt: 1,
+      parts: [call('c1', 'clipboard_read'), result('c1', 'https://example.com'), call('c2', 'launcher_open'), result('c2', '失败', false)]
+    }
+    const turns = turnsOf([message])
+    expect(turns).toHaveLength(1)
+    expect(turns[0].toolCalls).toHaveLength(2)
+    expect(turns[0].toolResults).toEqual([
+      { callId: 'c1', text: 'https://example.com' },
+      { callId: 'c2', text: '执行失败：失败' }
+    ])
+  })
+
+  it('只调工具没写正文的回答不会被丢掉', () => {
+    const message: AiChatMessage = {
+      id: 'a2',
+      role: 'assistant',
+      createdAt: 1,
+      parts: [call('c1', 'clipboard_read'), result('c1', 'hi')]
+    }
+    const turns = turnsOf([message])
+    expect(turns).toHaveLength(1)
+    expect(turns[0].text).toBe('')
+    expect(turns[0].toolCalls?.[0].id).toBe('c1')
+  })
+
+  it('没有结果的调用不会伪造一条结果', () => {
+    const message: AiChatMessage = {
+      id: 'a3',
+      role: 'assistant',
+      createdAt: 1,
+      parts: [call('c1', 'clipboard_read'), call('c2', 'launcher_open')]
+    }
+    const turns = turnsOf([message])
+    expect(turns[0].toolResults).toEqual([])
+  })
+})
