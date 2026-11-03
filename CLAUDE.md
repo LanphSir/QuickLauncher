@@ -59,8 +59,8 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 
 ## 4. 插件开发（高频任务）
 
-**创建/修改任何插件之前，先加载项目内 skill：`.zcode/skills/quicklauncher-plugin-dev/SKILL.md`**，
-里面有脚手架脚本、manifest 校验规则、appapi 完整参考和验证清单。要点速记：
+**创建/修改任何插件之前，先加载项目内 skill：`skills/quicklauncher-plugin-dev/SKILL.md`**，
+里面有脚手架脚本、manifest 校验规则、appapi 完整参考、AI 接入与界面令牌规范、验证清单。要点速记：
 
 - manifest/icon 放 `public/`（web 型），构建产物进 `dist/`；vite 必须 `base: './'`（相对路径加载资源）
 - 插件页约定：监听 Esc → `appapi.exit()`；图标 `icon.svg`/`png`/`ico` 任一
@@ -72,8 +72,13 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 - 要让插件**输入即得**（`2+3 → 5`、汇率换算）→ manifest 声明 `features: ["inline"]`（功能声明，不是权限），`onInlineQuery` 里收到 `{ seq, query }`，用 `appapi.inline.set({ seq, items })` 回 ≤2 条、**120ms 内**返回；动作 `copy`（面板不关）或 `open`（缺省）。参考 `plugins/calculator/`
 - 内联插件视图会被后台拉起但**不挂到面板**（`pluginHost.warmPluginContents`）：不要在这里做重活，慢数据自己缓存；页面未加载完时面板会在 `did-finish-load` 后自动补查一次
 - 改插件后：日常用 `pnpm dev:plugin <name>`（vite dev server + HMR，启动器自动切入口、改代码即时生效，manifest 改动仍需 `pnpm build:plugins` 并重开插件）；没起 dev server 时一律 `pnpm build:plugins`
-- 想让插件将来被 AI 当工具调用 → manifest 声明 `permissions: ["ai"]` + `features: ["ai"]`（v0.6.2 起生效）；
-  现阶段只有内置 AI 插件能调 `plugin:ai.*`，第三方插件声明了也进不来（`internalOnly`）
+- 想让插件被 AI 当工具调用 → manifest 声明 `permissions: ["ai"]` + `ai: { tools, skill }` 两个
+  **插件目录内**的相对路径（v0.6.2 声明、v0.6.3 可被调用）；`features: ["ai"]` 这个名字虽然在
+  `PLUGIN_FEATURES` 里，但代码里没有消费者，**别当成门禁**。第三方插件参与 AI 的唯一姿势是**被调用**：
+  `plugin:ai.tool-call`（主→插件）→ 执行 → `plugin:ai.tool.reply`（`plugin:ai.*` 里唯一不标 internalOnly 的通道）；
+  对话/确认/附件/会话那几组仍是 `internalOnly`，只有内置插件能调
+- 插件的界面不另起一套：入口先 `import '../../../src/shared/theme.css'`（同时给 reset，漏了就是常驻滚动条），
+  颜色/圆角/阴影只用令牌；删除/清除这类操作收进 `···` 菜单 + 右键 + 自绘确认框，不进按钮行
 - 想给插件配一个**建议启动键** → manifest 写 `hotkey`（accelerator，如 `Alt+Shift+V`）：只作设置页提示，**不会自动注册**；实际生效值在 `config.pluginHotkeys`
 - external 型插件 = 目录里一个 `plugin.json` + 图标，零代码
 - 加一个 API 的落点：`src/shared/pluginApi.ts`（契约：通道类型 + 权限）→ `src/main/plugin/api/<域>.ts`（`defineApi` + 入参校验）→ `src/preload/plugin.ts`（桥方法）。插件的 `window.appapi` 类型统一从 `src/shared/appapi.global.d.ts` 引用，**不要在各插件里手写一份 appapi 接口**
@@ -147,4 +152,4 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 | [docs/DEVLOG.md](docs/DEVLOG.md) | 功能开发记录（每迭代一条） |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 迭代路线与验收标准 |
 | [docs/plugin-dev-guide.md](docs/plugin-dev-guide.md) | 插件开发指南（人读版） |
-| `.zcode/skills/quicklauncher-plugin-dev/` | 插件开发 skill（AI 用版，含脚手架脚本） |
+| `skills/quicklauncher-plugin-dev/` | 插件开发 skill（AI 用版，含脚手架脚本与 appapi 参考） |

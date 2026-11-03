@@ -7,8 +7,8 @@ plugins/*/dist/
 .DS_Store
 Thumbs.db
 *.local
-# ZCode 会话数据（skills 需要追踪，plans 是会话元数据）
-.zcode/plans/
+# ZCode 会话/计划元数据（skill 已提升到根目录 skills/，这里只剩余本地会话数据）
+.zcode/
 
 # 本地工作记忆与 IDE 会话数据，不上传
 .workbuddy/

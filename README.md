@@ -74,8 +74,8 @@ pnpm dev        # 构建内置插件并启动开发模式
 - [功能开发记录](docs/DEVLOG.md) — 每个迭代做了什么、为什么、验证到什么程度
 - [迭代路线](docs/ROADMAP.md) — 版本规划与验收标准
 - [AI 开发规范](CLAUDE.md) — AI 协作守则：架构铁律、代码规范、已知坑
-- 插件开发 Skill（AI 用）：`.zcode/skills/quicklauncher-plugin-dev/`，含脚手架脚本：
-  `node .zcode/skills/quicklauncher-plugin-dev/scripts/scaffold.mjs <目录名> --name "显示名"`
+- 插件开发 Skill（AI 用）：`skills/quicklauncher-plugin-dev/`，含脚手架脚本：
+  `node skills/quicklauncher-plugin-dev/scripts/scaffold.mjs <目录名> --name "显示名" [--ai]`
 
 ## 目录结构
 
@@ -86,7 +86,7 @@ src/renderer/    主面板 UI（Vue3 + Pinia + Naive UI）
 plugins/         内置插件（workspace 子包，独立构建）
 scripts/         图标生成 / 打包插件收集 / 冒烟测试
 docs/            架构、开发记录、路线图、插件开发指南
-.zcode/skills/   插件开发 skill（AI 助手用）
+skills/          插件开发 skill（AI 助手用，含脚手架脚本）
 ```
 
 ## 后续路线

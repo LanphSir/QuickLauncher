@@ -1,6 +1,6 @@
 # QuickLauncher 插件 API 参考
 
-> 本文档描述 web 型插件在沙箱渲染进程中可用的全部能力（`window.appapi`）。
+> 本文档描述 web 型插件在沙箱渲染进程中可用的全部能力（`window.appapi`），对应 v0.6.5。
 > 通道、入参/返回值与权限的唯一来源是 `src/shared/pluginApi.ts`（`PluginApiTypes` /
 > `PLUGIN_PERMS` / `PluginApiSurface`）；权限校验与入参校验发生在主进程网关
 > （`src/main/plugin/gateway.ts`），调用方身份由 webContents.id 锚定，伪造 payload 无效。
@@ -108,6 +108,42 @@ interface PluginApi {
     }): Promise<number>                        // 返回实际采纳条数
   }
 
+  /**
+   * AI 能力（需 ai 权限）。除 onToolCall / tools 外，**其余通道都是 internalOnly**：
+   * 只有随应用发布的内置插件（source === 'builtin'）能调，第三方插件声明了 ai 权限也调不通。
+   */
+  ai: {
+    /** 流式增量。可注册多个订阅者（互不顶掉），返回退订函数 */
+    onDelta(callback: (event: AiStreamEvent) => void): () => void
+    send(request: AiSendRequest): Promise<AiSendResult>   // 只回"已受理"，内容走 onDelta
+    stop(sessionId: string): Promise<SimpleResult>
+    models(): Promise<AiModelOption[]>
+
+    /** 已授权给 AI 的插件工具（未授权时为空数组，不是全部声明） */
+    tools(): Promise<AiToolEntry[]>
+    /**
+     * 接收一次工具调用（v0.6.3）：需 ai 权限 + manifest 声明 ai.tools。
+     * 返回字符串或 { ok, result?, error? }；抛错等于失败，主进程折成错误文本回给模型。
+     * 超过工具声明的 timeoutMs 后主进程不再等这个回执。
+     */
+    onToolCall(callback: (call: AiToolCallRequest) => unknown | Promise<unknown>): void
+    /** 回答一次风险确认（internalOnly，AI 插件页专用） */
+    confirmTool(requestId: string, allow: boolean, remember?: boolean): Promise<SimpleResult>
+
+    /** 附件（internalOnly）：pick 走原生对话框，attach 收拖拽字节 */
+    pick(): Promise<AiAttachResult[]>
+    attach(request: AiAttachBytesRequest): Promise<AiAttachResult>
+
+    /** 会话（internalOnly） */
+    sessions: {
+      list(): Promise<AiSessionMeta[]>
+      get(id: string): Promise<AiSessionDetail | null>
+      create(model?: string): Promise<AiSessionDetail>
+      rename(id: string, title: string): Promise<SimpleResult>
+      remove(id: string): Promise<SimpleResult>
+    }
+  }
+
   window: {
     hide(): Promise<boolean>                    // 隐藏整个面板（等同失焦）
     detach(): Promise<{ ok, message? }>         // 分离为独立窗口（状态保留、任务栏可见；此后 exit=关窗）
@@ -129,10 +165,13 @@ interface PluginApi {
 | `search` | `appapi.search.*`（把插件内条目注册给主面板搜索，v0.4.2 起） |
 | `net` | `appapi.net.request`（v0.4.6 起）；**还必须在 manifest `hosts` 声明可访问的域，否则一律拒绝** |
 | `webview` | 插件页 `<webview>` 嵌入第三方网页（主进程 will-attach-webview 校验，guest 强制沙箱） |
+| `ai` | 允许被 AI 调用（v0.6.2 起）：还要 manifest 写 `ai.tools` 路径、用户在 设置 → AI → AI 工具 里授权 |
 | （无需权限） | `info` / `onQuery` / `onShow` / `onHide` / `onDestroy` / `window.hide` / `window.detach` / `exit` |
 
 `features` 是另一条轴（功能形态，不是权限）：加 `"features": ["inline"]` 后才能调
 `appapi.inline.set`，否则网关报"缺少功能声明"。
+`PLUGIN_FEATURES` 里还有个 `"ai"`，但**当前没有任何门禁读它**——别把它当成开关，
+门槛是 `permissions: ["ai"]` + `ai.tools` + 用户授权。
 
 权限在 `plugin.json` 的 `permissions` 数组声明，例如 `"permissions": ["storage", "clipboard"]`。
 `net` 还要配一个同级字段（支持精确域、`*.子域`、可选端口）：
@@ -154,7 +193,8 @@ interface PluginApi {
 - 每个插件一个独立 `WebContentsView`（独立渲染进程），首次打开时创建并加载 `entry`。
 - **退出插件（exit）不销毁页面**：视图进入缓存，再次打开恢复原状态（输入框内容、滚动位置都在）。
 - 面板被再次唤起（快捷键/二次启动）时自动回到主页；插件视图仍在缓存。
-- 面板窗口 resize 时插件视图自动跟随（v0.4.1 起视图四周让出 8px、顶部 46px 外框，不要自绘窗口控件）。
+- 面板窗口 resize 时插件视图自动跟随（v0.4.1 起视图四周让出 8px、顶部 46px 外框，不要自绘窗口控件；
+  尺寸唯一来源是 `src/shared/pluginFrame.ts`）。
 - 插件渲染进程崩溃：该实例被销毁并从缓存移除，主面板 toast 提示，其余插件不受影响。
 - 视图按 LRU 保留最近 5 个（v0.4.8 起），被淘汰的插件会收到 `onDestroy`；页面的内存状态随之丢失，
   需要跨会话保留的东西一律写 `appapi.storage`。
@@ -188,6 +228,61 @@ storage 落盘在 `%APPDATA%/quick-launcher/data/<pluginId>/store.json`，
 
 搜索条目落盘在 `%APPDATA%/quick-launcher/search/<pluginId>.json`，主进程写、主进程读，
 插件只通过 `appapi.search.*` 提交数组，拿不到文件。
+
+## 界面基线（v0.6.5 起）
+
+插件页和主面板是同一块面板里的两块，视觉只认一份令牌：`src/shared/theme.css`。
+
+```ts
+// src/main.ts 第一行
+import '../../../src/shared/theme.css'
+```
+
+这行同时提供 reset：漏掉它，`body` 默认 8px margin + 容器 `height: 100vh` 会让文档多出 16px，
+表现为**滚动条常驻、怎么拉伸都在**。容器高度用 `100%`。
+
+| 类别 | 令牌 |
+|---|---|
+| 文本四档 | `--text-1`（正文）/ `--text-2`（次要）/ `--text-3`（弱化）/ `--text-4`（占位） |
+| 边框 | `--line` / `--line-strong` / `--line-soft` |
+| 背景 | `--bg` / `--bg-soft` / `--bg-hover` / `--bg-active` |
+| 主色 | `--accent` / `--accent-strong` / `--accent-hover` / `--accent-soft` / `--accent-line` |
+| 语义色 | `--danger*` / `--warn*` / `--ok*` |
+| 圆角 | `--r-xs`(6) / `--r-sm`(8) / `--r-md`(10) / `--r-lg`(14) / `--r-xl`(18) |
+| 阴影 | `--shadow-1`（贴近）/ `--shadow-2`（浮层）/ `--shadow-3`（模态） |
+
+组件里不写字面量色值；要新的语义色先加到 `theme.css`。全局 `:focus-visible` 已画焦点环，
+输入框自己画焦点态时用 `box-shadow: none` 覆盖，别叠两层。
+
+破坏性操作（删除 / 清除数据 / 卸载）不要放进按钮行：收进 `···` 菜单 + 右键菜单，
+并走自绘确认框（默认焦点在「取消」）。插件页现成实现见 `plugins/ai/src/components/`
+的 `PopMenu.vue` / `ConfirmDialog.vue`（宿主那份在 `src/renderer/src/components/`，
+跨构建不能复用，抄结构即可）。不要用 `window.confirm`，插件页也不要引 naive-ui。
+
+## AI 工具回执（`ai.onToolCall`，v0.6.3 起）
+
+链路：模型发 `tool_calls` → 主进程校验参数与风险 → 必要时弹确认 → 插件页执行 →
+回执折成 `tool-result` 回给模型。一轮最多 4 个工具轮次 / 8 次调用；结果超 4000 字截断。
+
+```ts
+appapi.ai.onToolCall(async (call) => {
+  // call: { callId, name, args }  name 是插件内短名，args 已过 schema 校验
+  if (call.name !== 'calculate') return { ok: false, error: `没有这个工具：${call.name}` }
+  return `计算结果：${evaluate(String(call.args.expression ?? ''))}`
+})
+```
+
+| 事实 | 说明 |
+|---|---|
+| 回执是 `plugin:ai.tool.reply` | 全项目 `plugin:ai.*` 里**唯一**不标 internalOnly 的通道——第三方插件正是被调用的那方 |
+| 名字是短名 | 全局名 `plugin:<插件 id>:<name>` 只给模型看，执行时主进程按 callId 反查插件，不接受模型自己拼 |
+| 超时 | 工具声明的 `timeoutMs`（1000–60000，缺省 8000）；到期主进程不再等 |
+| 确认 | `write`/`dangerous` 由主进程弹卡片，**插件不要再弹一次**；`dangerous` 无「本次会话不再询问」 |
+| 授权 | 设置 → AI → AI 工具 按插件开开关，撤销立即生效（每次下发现算，不缓存） |
+| 预热 | 插件页未加载时宿主会懒建一次；页面加载完之前调用收不到 |
+
+`ai/tools.json`、`ai/SKILL.md`、`ai/mcp.json` 的字段与限制见 `docs/plugin-dev-guide.md`
+的「让 AI 能用你的插件」一节；MCP 命令的确认与指纹绑定见同文「接一个现成的 MCP server」。
 
 ## 搜索贡献（让插件内的条目被主面板搜到）
 
@@ -286,6 +381,9 @@ function onKeydown(e: KeyboardEvent): void {
 }
 ```
 
+> 上面这段少了可见性处理，只为展示 API 用法。真实插件必须换成
+> `onShow` 起、`onHide` 停——否则切走后还在每 800ms 读剪贴板。
+
 ## manifest 完整字段
 
 ```jsonc
@@ -299,9 +397,18 @@ function onKeydown(e: KeyboardEvent): void {
   "command": "notepad.exe",            // external 型必填；http(s) 则走默认浏览器
   "args": ["--new-window"],            // external 型可选
   "keywords": ["example", "示例"],      // 建议提供，面板搜索
-  "permissions": ["storage"]           // 建议显式声明（即使为空数组）
+  "permissions": ["storage"],          // 建议显式声明（即使为空数组）
+  "features": ["inline"],              // 可选：功能形态（inline 有门禁，ai 目前没有）
+  "hosts": ["api.example.com"],        // net 权限必填
+  "hotkey": "Alt+Shift+V",             // 可选：建议启动键，不自动注册
+  "apiVersion": 2,                     // 可选：认识 v0.6 的 window / ai 字段
+  "window": { "width": 1040, "height": 740 },                    // 可选：建议尺寸
+  "ai": { "tools": "ai/tools.json", "skill": "ai/SKILL.md", "mcp": "ai/mcp.json" }  // 可选
 }
 ```
 
-校验规则（`src/main/plugin/manager.ts`）：任一必填项缺失或非法 → 打印
-`[plugin] 跳过 <dir>: 原因` 并忽略该插件；id 与已有插件冲突 → 后扫到的跳过。
+校验规则（`src/main/plugin/manager.ts` + `manifestAi.ts`）：
+- `id` / `type` / `name` / `entry`（web）/ `command`（external）任一缺失或非法 → 打印
+  `[plugin] 跳过 <dir>: 原因` 并忽略该插件；id 与已有插件冲突 → 后扫到的跳过
+- `hosts` / `features` / `hotkey` / `window` / `ai` 是"坏一项只丢一项"，插件照常加载
+- `apiVersion` 缺省按 1；高于 2 时按 2 处理

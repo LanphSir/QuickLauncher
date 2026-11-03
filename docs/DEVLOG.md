@@ -11,6 +11,66 @@
 
 ---
 
+## skills — 插件开发 skill 提到根目录，并补齐 v0.6 的三块内容（2026-11-03）
+
+**目标**：把项目开始时丢在 `.zcode/skills/` 里的插件开发 skill 提升到根目录 `skills/`，
+并把内容对齐到当前版本——它停在 v0.4 的时代，AI 接入与界面令牌这两块完全没写。
+
+### 1. 位置：`.zcode/skills/` → `skills/`
+
+`.zcode/` 是某个 IDE 的私有目录，skill 放在里面等于只有那一个工具能看见；项目自己的
+开发规范不该寄人篱下。用 `git mv` 迁移（保留文件历史），`.zcode/` 现在只剩会话/计划元数据，
+`.gitignore` 从 `.zcode/plans/` 改成整目录。
+
+### 2. 内容：补三块，校正三处
+
+新增：
+
+- **第 4 节 界面**（v0.6.5）：入口 `import '../../../src/shared/theme.css'`（这行同时给 reset，
+  漏了就是"怎么拉伸都有滚动条"）、令牌清单、破坏性操作进 `···` + 右键 + 自绘确认框、
+  插件页不引 naive-ui
+- **第 5 节 AI 接入**（v0.6.2–v0.6.4）：`permissions: ["ai"]` + `ai.{tools,skill,mcp}` 三个
+  目录内相对路径、`tools.json` 字段表与 `risk` 三档、`onToolCall` 写法与四条约定、
+  `SKILL.md` 只解析 front-matter、MCP 命令默认不执行且绑定指纹
+- **验证清单第 6、7 条**：声明了 AI 工具要真问一句触发调用；动插件系统本体才需要 smoke
+
+校正（原文这几点是错的，照抄会白折腾）：
+
+| 原来说法 | 实际 |
+|---|---|
+| 要 AI 能力就声明 `permissions: ["ai"]` + `features: ["ai"]` | `features` 里的 `"ai"` 在 `PLUGIN_FEATURES` 有名字，但**没有任何代码消费它**。门槛是权限 + `ai.tools` + 用户授权 |
+| 第三方插件声明了也进不来（`internalOnly`） | `plugin:ai.*` 里 `plugin:ai.tool.reply` **不是** internalOnly，第三方插件正是靠它回执。进不来的是对话/确认/附件/会话那几组 |
+| external 型也能声明 ai | 主进程 `normalizeAiSection` 直接拒掉并告警：没有页面能回执 |
+
+### 3. 脚手架跟上
+
+- `--ai` 一次生成 `public/ai/{tools.json,SKILL.md}` 并打开 `ai` 权限，工具名自动从目录名
+  转成合法短名（`demo-tool` → `demo_tool`）；`--ai` + `--external` 直接报错退出
+- manifest 补 `apiVersion: 2`（否则 v0.6 的 `window`/`ai` 字段落在 1 档）
+- 生成的 `main.ts` import 令牌、`App.vue` 用令牌写样式并补上 Esc → `appapi.exit()`
+
+### 关键文件
+
+- `skills/quicklauncher-plugin-dev/SKILL.md`（重写，7 节工作流 + 7 条铁律 + 17 条坑）
+- `skills/quicklauncher-plugin-dev/references/api.md`（补 `ai.*` 全量签名与 internalOnly 标注、
+  界面令牌表、工具回执约束表）
+- `skills/quicklauncher-plugin-dev/scripts/scaffold.mjs`（`--ai`、apiVersion、令牌化骨架）
+- `CLAUDE.md` §4/§7、`README.md`、`.gitignore`（路径与新事实同步）
+
+### 验证
+
+- 在临时目录跑了三次脚手架：web + `--ai`（10 个文件齐全，`tools.json`/`plugin.json` 内容正确）、
+  external（只有 manifest + icon）、`--ai` + `--external`（退出码 1 并给出原因）
+- 本次不涉及 TS 源码，未跑 typecheck / test / smoke
+
+### 遗留事项
+
+- `PLUGIN_FEATURES` 里的 `"ai"` 要么接上消费点，要么删掉——现在它只是一个会误导人的名字
+- skill 与 `docs/plugin-dev-guide.md` 有内容重叠（前者给 AI、后者给人读）。这次以"skill 讲
+  怎么下手、guide 讲全量字段"分工，字段表已改为指向 guide，避免第三份真相
+
+---
+
 ## v0.6.5 — 界面统一与操作收口（2026-11-03）
 
 **目标**：把"一个功能一个样子"的界面收成一套。三件事：横向对齐颜色/圆角/边框/间距；
