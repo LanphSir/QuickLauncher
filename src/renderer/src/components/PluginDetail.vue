@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { NButton, NPopconfirm, useMessage } from 'naive-ui'
+import { NButton, useMessage } from 'naive-ui'
 import AppIcon from './AppIcon.vue'
+import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
+import ConfirmDialog from './ConfirmDialog.vue'
+import { closeOverlay, openOverlay } from '../composables/useOverlay'
 import { fallbackIconFor, gradientFor } from '../utils/appFallback'
 
 const PERM_LABELS: Record<string, string> = {
@@ -30,6 +33,52 @@ async function clearData(): Promise<void> {
   if (r.ok) message.success('插件数据已清除')
   else message.error('清除失败')
 }
+
+/**
+ * 「清除数据」从按钮行挪到右上角的 ···。
+ * 它原先和「打开」并排，两者相距不到 20px，而一个是日常动作、一个是不可撤销的破坏性操作。
+ */
+function openMoreMenu(event: MouseEvent): void {
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const items: ContextMenuItem[] = [
+    {
+      key: 'clear',
+      label: '清除插件数据…',
+      icon: 'trash',
+      danger: true,
+      action: () => confirmClear()
+    }
+  ]
+  let id = 0
+  id = openOverlay({
+    component: ContextMenu,
+    backdrop: 'transparent',
+    autoFocus: false,
+    label: 'detail-menu',
+    props: { x: Math.max(8, rect.right - 176), y: rect.bottom + 5, items, onClose: () => closeOverlay(id) }
+  })
+}
+
+function confirmClear(): void {
+  let id = 0
+  id = openOverlay({
+    component: ConfirmDialog,
+    label: 'confirm-clear-data',
+    initialFocus: 'first',
+    props: {
+      title: '清除这个插件的数据？',
+      message: `「${props.plugin.name}」保存在本地的历史记录与配置会全部删除。`,
+      hint: '插件本身不会被卸载，下次打开会像刚安装一样。',
+      confirmLabel: '清除',
+      danger: true,
+      onClose: () => closeOverlay(id),
+      onConfirm: () => {
+        closeOverlay(id)
+        void clearData()
+      }
+    }
+  })
+}
 </script>
 
 <template>
@@ -51,6 +100,15 @@ async function clearData(): Promise<void> {
         </div>
         <p class="desc">{{ plugin.description || '暂无描述' }}</p>
       </div>
+      <button
+        v-if="plugin.type === 'web'"
+        class="close more"
+        title="更多操作"
+        aria-label="更多操作"
+        @click="openMoreMenu"
+      >
+        <span class="dots"><i /><i /><i /></span>
+      </button>
       <button class="close" title="关闭" @click="emit('close')">
         <AppIcon name="x" :size="16" />
       </button>
@@ -102,15 +160,6 @@ async function clearData(): Promise<void> {
         <template #icon><AppIcon name="pencil" :size="13" /></template>
         {{ plugin.source === 'shortcut' ? '编辑应用' : '编辑启动命令' }}
       </NButton>
-      <NPopconfirm v-if="plugin.type === 'web'" @positive-click="clearData">
-        <template #trigger>
-          <NButton size="small" quaternary type="error">
-            <template #icon><AppIcon name="trash" :size="13" /></template>
-            清除插件数据
-          </NButton>
-        </template>
-        将删除该插件保存在本地的全部数据（历史记录、配置等），确定？
-      </NPopconfirm>
       <span class="spacer" />
       <NButton size="small" quaternary @click="emit('close')">关闭</NButton>
     </footer>
@@ -122,8 +171,8 @@ async function clearData(): Promise<void> {
   width: 470px;
   max-width: calc(100vw - 48px);
   background: #fff;
-  border-radius: 16px;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.24);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-3);
   overflow: hidden;
   animation: pop 0.16s ease;
 }
@@ -188,8 +237,8 @@ async function clearData(): Promise<void> {
   font-size: 11px;
   padding: 1.5px 8px;
   border-radius: 999px;
-  background: #f2f3f5;
-  color: #646a73;
+  background: var(--bg-hover);
+  color: var(--text-2);
 }
 
 .chip.ver {
@@ -198,7 +247,7 @@ async function clearData(): Promise<void> {
 
 .chip.web {
   background: #eef0fe;
-  color: #4f46e5;
+  color: var(--accent-strong);
 }
 
 .chip.external {
@@ -209,7 +258,7 @@ async function clearData(): Promise<void> {
 .desc {
   margin-top: 6px;
   font-size: 12.5px;
-  color: #646a73;
+  color: var(--text-2);
   line-height: 1.5;
 }
 
@@ -220,12 +269,28 @@ async function clearData(): Promise<void> {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  color: #a1a6ad;
+  color: var(--text-3);
 }
 
 .close:hover {
-  background: #f2f3f5;
-  color: #1f2329;
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.close.more {
+  color: var(--text-3);
+}
+
+.dots {
+  display: flex;
+  gap: 1.5px;
+}
+
+.dots i {
+  width: 2.5px;
+  height: 2.5px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .body {
@@ -245,13 +310,13 @@ async function clearData(): Promise<void> {
 .label {
   flex: none;
   width: 56px;
-  color: #8f959e;
+  color: var(--text-3);
 }
 
 .mono {
   font-family: ui-monospace, Consolas, monospace;
   font-size: 12px;
-  color: #1f2329;
+  color: var(--text-1);
   word-break: break-all;
 }
 
@@ -272,8 +337,8 @@ async function clearData(): Promise<void> {
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 6px;
-  background: #f5f6f7;
-  color: #646a73;
+  background: var(--bg-hover);
+  color: var(--text-2);
   font-family: ui-monospace, Consolas, monospace;
 }
 
@@ -290,7 +355,7 @@ async function clearData(): Promise<void> {
 
 .none {
   font-size: 12px;
-  color: #b4b8bf;
+  color: var(--text-4);
 }
 
 .foot {

@@ -27,6 +27,18 @@ const emit = defineEmits<{
 const focused = ref(false)
 const parts = computed(() => (props.modelValue ? props.modelValue.split('+') : []))
 
+/**
+ * 界面上显示的名字。accelerator 里存的是 `CommandOrControl`，
+ * 直接画出来像一句代码；用户认的是键帽上的字。
+ */
+const KEY_LABEL: Record<string, string> = {
+  CommandOrControl: 'Ctrl',
+  Super: 'Win',
+  Alt: 'Alt',
+  Shift: 'Shift'
+}
+const shownParts = computed(() => parts.value.map((part) => KEY_LABEL[part] ?? part))
+
 /** 单独按下的修饰键不算组合键，等主键 */
 const KEY_MODIFIERS = new Set(['Alt', 'Control', 'Shift', 'Meta', 'Dead', 'Unidentified'])
 
@@ -74,7 +86,7 @@ function onKeydown(e: KeyboardEvent): void {
     @blur="focused = false"
   >
     <template v-if="modelValue">
-      <kbd v-for="part in parts" :key="part">{{ part }}</kbd>
+      <kbd v-for="part in shownParts" :key="part">{{ part }}</kbd>
     </template>
     <span v-else class="placeholder">{{ placeholder }}</span>
   </div>
@@ -90,20 +102,20 @@ function onKeydown(e: KeyboardEvent): void {
   max-width: 100%;
   min-height: 32px;
   padding: 4px 10px;
-  border: 1px solid #dfe1e4;
-  border-radius: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
   outline: none;
   cursor: pointer;
   transition: border-color 0.12s, box-shadow 0.12s;
 }
 
 .hotkey-input:hover {
-  border-color: #c9ccd1;
+  border-color: var(--line-strong);
 }
 
 .hotkey-input.focused {
-  border-color: #6366f1;
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+  border-color: var(--accent);
+  box-shadow: var(--ring);
 }
 
 .hotkey-input.disabled {
@@ -112,22 +124,24 @@ function onKeydown(e: KeyboardEvent): void {
 }
 
 .hotkey-input.disabled:focus {
-  border-color: #dfe1e4;
+  border-color: var(--line);
   box-shadow: none;
 }
 
 .placeholder {
   font-size: 12px;
-  color: #a1a6ad;
+  color: var(--text-3);
 }
 
 kbd {
   font-family: inherit;
-  font-size: 12px;
-  padding: 2px 8px;
+  font-size: 11.5px;
+  padding: 1px 7px;
   border-radius: 5px;
-  background: #f2f3f5;
-  border: 1px solid #e0e2e5;
-  box-shadow: 0 1px 0 #e0e2e5;
+  color: var(--text-1);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  /* 一条 1px 的实心投影 = 键帽的下沿，比纯描边更像"可以按" */
+  box-shadow: 0 1px 0 var(--line-strong);
 }
 </style>

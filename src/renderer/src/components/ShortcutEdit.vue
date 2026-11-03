@@ -223,8 +223,8 @@ async function save(): Promise<void> {
   /* 表单比面板高时只让中间那块滚：头部和"保存"始终在原地，不会遮住字段 */
   overflow: hidden;
   background: #fff;
-  border-radius: 16px;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.24);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-3);
   padding: 20px;
   animation: pop 0.16s ease;
 }
@@ -258,19 +258,19 @@ async function save(): Promise<void> {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  color: #a1a6ad;
+  color: var(--text-3);
 }
 
 .close:hover {
-  background: #f2f3f5;
-  color: #1f2329;
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 
 .desc {
   flex: none;
   margin-top: 8px;
   font-size: 12.5px;
-  color: #8f959e;
+  color: var(--text-3);
   line-height: 1.6;
 }
 
@@ -288,16 +288,16 @@ async function save(): Promise<void> {
 .form label {
   margin-top: 6px;
   font-size: 12px;
-  color: #646a73;
+  color: var(--text-2);
 }
 
 .req {
-  color: #d5304f;
+  color: var(--danger);
   margin-left: 2px;
 }
 
 .opt {
-  color: #a1a6ad;
+  color: var(--text-3);
   font-size: 11px;
 }
 
@@ -330,11 +330,11 @@ async function save(): Promise<void> {
   width: 46px;
   height: 46px;
   border-radius: 12px;
-  border: 1px solid #eceeef;
+  border: 1px solid var(--line);
   display: grid;
   place-items: center;
   overflow: hidden;
-  background: #fafbfc;
+  background: var(--bg-soft);
 }
 
 .icon-cell img {
@@ -397,11 +397,11 @@ async function save(): Promise<void> {
   border-radius: 8px;
   outline: none;
   font-size: 12.5px;
-  color: #1f2329;
+  color: var(--text-1);
 }
 
 .field:focus {
-  border-color: #6366f1;
+  border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
 }
 
@@ -412,7 +412,7 @@ async function save(): Promise<void> {
 .hint {
   font-size: 11.5px;
   line-height: 1.5;
-  color: #a1a6ad;
+  color: var(--text-3);
 }
 
 .hint.warn {
@@ -430,18 +430,18 @@ async function save(): Promise<void> {
   border-radius: 8px;
   border: 1px solid #dfe1e4;
   font-size: 12px;
-  color: #646a73;
+  color: var(--text-2);
 }
 
 .mode.active {
-  border-color: #6366f1;
-  color: #4f46e5;
+  border-color: var(--accent);
+  color: var(--accent-strong);
   background: #eef0ff;
 }
 
 .pick {
   font-size: 12px;
-  color: #6366f1;
+  color: var(--accent);
   padding: 5px 8px;
   border-radius: 8px;
 }

@@ -76,36 +76,41 @@ const aiTitle = computed(() => {
   flex-direction: column;
   align-items: center;
   gap: 7px;
-  padding: 12px 4px 10px;
-  border-radius: 12px;
+  padding: 11px 4px 9px;
+  border-radius: var(--r-md);
   cursor: pointer;
+  transition: background var(--dur) var(--ease);
 }
 
-.tile:hover,
+.tile:hover {
+  background: var(--bg-hover);
+}
+
 .tile.selected {
-  background: #f2f3f5;
+  background: var(--accent-soft);
 }
 
 .pin-btn {
   position: absolute;
-  top: 6px;
-  right: 8px;
+  top: 5px;
+  right: 6px;
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
+  width: 19px;
+  height: 19px;
   border-radius: 6px;
-  color: #a1a6ad;
+  color: var(--text-3);
   background: transparent;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
 .pin-btn:hover {
-  background: rgba(0, 0, 0, 0.06);
-  color: #1f2329;
+  background: var(--bg-active);
+  color: var(--text-1);
 }
 
 .pin-btn.active {
-  color: #6366f1;
+  color: var(--accent);
 }
 
 .tile-icon {
@@ -116,6 +121,12 @@ const aiTitle = computed(() => {
   height: 48px;
   border-radius: 12px;
   overflow: visible;
+  /* 悬浮时图标轻轻上浮一格：比整块变色的反馈更轻，也不会让网格显得在抖 */
+  transition: transform var(--dur) var(--ease);
+}
+
+.tile:hover .tile-icon {
+  transform: translateY(-1px);
 }
 
 .tile-icon > img {
@@ -132,7 +143,7 @@ const aiTitle = computed(() => {
   height: 44px;
   border-radius: 12px;
   color: #fff;
-  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 3px 8px rgba(15, 23, 42, 0.16);
 }
 
 .ext-badge {
@@ -144,10 +155,10 @@ const aiTitle = computed(() => {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #fff;
-  color: #b25e09;
-  border: 1px solid #f0e2cf;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  background: var(--bg);
+  color: var(--warn);
+  border: 1px solid var(--warn-soft);
+  box-shadow: var(--shadow-1);
 }
 
 /*
@@ -164,11 +175,11 @@ const aiTitle = computed(() => {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--bg);
   color: #7c3aed;
   border: 1px solid #e4dcfb;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  transition: top 0.12s ease, bottom 0.12s ease;
+  box-shadow: var(--shadow-1);
+  transition: top 0.12s var(--ease), bottom 0.12s var(--ease);
 }
 
 .ai-badge.made-way {
@@ -181,11 +192,16 @@ const aiTitle = computed(() => {
   font-size: 12px;
   line-height: 1.35;
   text-align: center;
-  color: #1f2329;
+  color: var(--text-1);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
   word-break: break-all;
+}
+
+.tile.selected .tile-label {
+  color: var(--accent-strong);
+  font-weight: 500;
 }
 </style>

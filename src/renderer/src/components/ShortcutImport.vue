@@ -171,8 +171,8 @@ onMounted(load)
   display: flex;
   flex-direction: column;
   background: #fff;
-  border-radius: 16px;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.24);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-3);
   padding: 20px;
   animation: pop 0.16s ease;
 }
@@ -205,18 +205,18 @@ onMounted(load)
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  color: #a1a6ad;
+  color: var(--text-3);
 }
 
 .close:hover {
-  background: #f2f3f5;
-  color: #1f2329;
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 
 .desc {
   margin-top: 8px;
   font-size: 12.5px;
-  color: #8f959e;
+  color: var(--text-3);
 }
 
 .toolbar {
@@ -238,12 +238,12 @@ onMounted(load)
 }
 
 .search-row:focus-within {
-  border-color: #6366f1;
+  border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
 }
 
 .search-icon {
-  color: #a1a6ad;
+  color: var(--text-3);
 }
 
 .search {
@@ -258,7 +258,7 @@ onMounted(load)
 .link {
   flex: none;
   font-size: 12px;
-  color: #6366f1;
+  color: var(--accent);
   padding: 4px 6px;
   border-radius: 6px;
 }
@@ -277,7 +277,7 @@ onMounted(load)
   max-height: 46vh;
   overflow-y: auto;
   margin-top: 10px;
-  border: 1px solid #eceeef;
+  border: 1px solid var(--line);
   border-radius: 10px;
   padding: 6px 10px;
 }
@@ -286,12 +286,12 @@ onMounted(load)
   padding: 22px 0;
   text-align: center;
   font-size: 12.5px;
-  color: #a1a6ad;
+  color: var(--text-3);
 }
 
 .group + .group {
   margin-top: 8px;
-  border-top: 1px solid #f5f6f7;
+  border-top: 1px solid var(--line-soft);
   padding-top: 6px;
 }
 
@@ -305,7 +305,7 @@ onMounted(load)
 .group-name {
   flex: 1;
   font-size: 11.5px;
-  color: #8f959e;
+  color: var(--text-3);
 }
 
 .item {
@@ -322,12 +322,12 @@ onMounted(load)
 }
 
 .item input {
-  accent-color: #6366f1;
+  accent-color: var(--accent);
 }
 
 .name {
   font-size: 12.5px;
-  color: #1f2329;
+  color: var(--text-1);
   flex: none;
   max-width: 240px;
   white-space: nowrap;
@@ -341,7 +341,7 @@ onMounted(load)
   padding: 0.5px 6px;
   border-radius: 999px;
   background: #eef0ff;
-  color: #4f46e5;
+  color: var(--accent-strong);
 }
 
 .path {
@@ -370,6 +370,6 @@ onMounted(load)
 
 .count {
   font-size: 11.5px;
-  color: #a1a6ad;
+  color: var(--text-3);
 }
 </style>

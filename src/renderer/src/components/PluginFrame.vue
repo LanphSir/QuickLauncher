@@ -52,7 +52,7 @@ const frameStyle = {
   display: flex;
   flex-direction: column;
   background: #f1f3f6;
-  border-radius: 16px;
+  border-radius: var(--r-xl);
   overflow: hidden;
 }
 
@@ -78,14 +78,15 @@ const frameStyle = {
   gap: 3px;
   height: 30px;
   padding: 0 10px 0 6px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   font-size: 12.5px;
-  color: #4e5969;
+  color: var(--text-2);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
 .back:hover {
   background: #e4e7ec;
-  color: #1f2329;
+  color: var(--text-1);
 }
 
 .title {
@@ -95,7 +96,7 @@ const frameStyle = {
   min-width: 0;
   font-size: 13px;
   font-weight: 600;
-  color: #1f2329;
+  color: var(--text-1);
 }
 
 .icon {

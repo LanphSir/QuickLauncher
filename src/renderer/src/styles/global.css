@@ -1,53 +1,18 @@
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
+/*
+ * 核心渲染层的宿主特化。通用重置、设计令牌、滚动条在 src/shared/theme.css
+ * （由 main.ts 先行引入），这里只放"只有面板才需要"的规则。
+ */
 
 html,
 body,
 #app {
-  height: 100%;
   background: transparent;
 }
 
 body {
-  font-family:
-    'PingFang SC',
-    'Microsoft YaHei',
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    sans-serif;
   font-size: 14px;
-  color: #1f2329;
-  overflow: hidden;
+  /* 启动器是工具面板：默认不选中文字，避免拖拽选择变成一片蓝。
+     需要可选的地方（对话正文、代码块）各自声明 user-select: text */
   user-select: none;
   cursor: default;
-}
-
-input,
-button {
-  font-family: inherit;
-}
-
-button {
-  border: none;
-  background: none;
-  cursor: pointer;
-  color: inherit;
-}
-
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.14);
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
 }

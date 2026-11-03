@@ -148,13 +148,15 @@ async function askAi(p: PluginSummary): Promise<void> {
 
 function ctxItemsFor(p: PluginSummary): ContextMenuItem[] {
   const items: ContextMenuItem[] = [
-    { key: 'open', label: '打开', icon: 'play', action: () => void open(p) },
+    { key: 'open', label: '打开', icon: 'play', hint: 'Enter', action: () => void open(p) },
     {
       key: 'pin',
       label: p.pinned ? '取消固定' : '固定到已固定',
       icon: p.pinned ? 'pin-off' : 'pin',
       action: () => void togglePin(p)
-    }
+    },
+    { key: 'sep-1', separator: true },
+    { key: 'detail', label: '应用详情…', icon: 'info', action: () => openDetail(p) }
   ]
   if (p.type === 'web') {
     items.push({
@@ -164,7 +166,6 @@ function ctxItemsFor(p: PluginSummary): ContextMenuItem[] {
       action: () => void detach(p)
     })
   }
-  items.push({ key: 'detail', label: '应用详情…', icon: 'info', action: () => openDetail(p) })
   if (p.type === 'external') {
     items.push({
       key: 'edit',
@@ -175,7 +176,10 @@ function ctxItemsFor(p: PluginSummary): ContextMenuItem[] {
   }
   // 条目本身的信息作为上下文丢给 AI：「这个怎么改快捷键」比干问有用得多
   if (hasAi.value && p.id !== AI_PLUGIN_ID) {
-    items.push({ key: 'ask-ai', label: '用 AI 询问', icon: 'spark', action: () => void askAi(p) })
+    items.push(
+      { key: 'sep-2', separator: true },
+      { key: 'ask-ai', label: '用 AI 询问', icon: 'spark', action: () => void askAi(p) }
+    )
   }
   items.push({
     key: 'search-web',
@@ -422,6 +426,8 @@ async function openEdit(plugin: PluginSummary, closeOld?: number): Promise<void>
       @open="open($event)"
       @pin="togglePin($event)"
       @detail="openDetail($event)"
+      @edit="(p) => void openEdit(p)"
+      @detach="(p) => void detach(p)"
     />
 
       <SettingsView v-else @back="store.view = 'home'; focusSearch()" />
@@ -531,10 +537,10 @@ async function openEdit(plugin: PluginSummary, closeOld?: number): Promise<void>
   width: 100%;
   display: flex;
   flex-direction: column;
-  background: #fff;
-  border-radius: 16px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.2);
+  background: var(--bg);
+  border-radius: var(--r-xl);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-3);
   overflow: hidden;
 }
 
@@ -557,7 +563,7 @@ async function openEdit(plugin: PluginSummary, closeOld?: number): Promise<void>
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 20px 20px 14px;
+  padding: 18px 18px 12px;
   /* 无边框窗口拖拽区：搜索行空白处可拖动窗口 */
   -webkit-app-region: drag;
 }
@@ -569,7 +575,7 @@ async function openEdit(plugin: PluginSummary, closeOld?: number): Promise<void>
 }
 
 .search-icon {
-  color: #8f959e;
+  color: var(--text-3);
   flex: none;
 }
 
@@ -578,44 +584,52 @@ async function openEdit(plugin: PluginSummary, closeOld?: number): Promise<void>
   min-width: 0;
   border: none;
   outline: none;
-  font-size: 20px;
-  color: #1f2329;
+  font-size: 19px;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
   background: transparent;
 }
 
+/* 搜索框几乎永远是焦点：再画一圈 ring 会一直亮着，反而像装饰 */
+.search:focus-visible {
+  box-shadow: none;
+}
+
 .search::placeholder {
-  color: #b4b8bf;
+  color: var(--text-4);
 }
 
 .icon-btn {
   flex: none;
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
-  color: #646a73;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
 .icon-btn:hover {
-  background: #f2f3f5;
-  color: #1f2329;
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 
 .icon-btn.active {
-  background: #eef0fe;
-  color: #6366f1;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .avatar {
   flex: none;
   display: grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
   color: #fff;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: linear-gradient(135deg, var(--accent), #8b5cf6);
+  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.28);
 }
 
 .body {
@@ -625,9 +639,11 @@ async function openEdit(plugin: PluginSummary, closeOld?: number): Promise<void>
 }
 
 .section-title {
-  font-size: 13px;
+  font-size: 11.5px;
   font-weight: 600;
-  margin: 10px 4px 10px;
+  letter-spacing: 0.05em;
+  color: var(--text-3);
+  margin: 10px 4px 8px;
 }
 
 .section-title.between {
@@ -640,16 +656,18 @@ async function openEdit(plugin: PluginSummary, closeOld?: number): Promise<void>
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 400;
-  color: #8f959e;
-  padding: 3px 8px;
+  letter-spacing: 0;
+  color: var(--text-3);
+  padding: 3px 7px;
   border-radius: 7px;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
 .manage-link:hover {
-  background: #f2f3f5;
-  color: #4f46e5;
+  background: var(--bg-hover);
+  color: var(--accent-strong);
 }
 
 .grid {
@@ -675,11 +693,15 @@ async function openEdit(plugin: PluginSummary, closeOld?: number): Promise<void>
   padding: 6px 8px;
   border-radius: 9px;
   text-align: left;
+  transition: background var(--dur) var(--ease);
 }
 
-.hit-entry:hover,
+.hit-entry:hover {
+  background: var(--bg-hover);
+}
+
 .hit-entry.selected {
-  background: #f2f3f5;
+  background: var(--accent-soft);
 }
 
 .hit-icon {
@@ -689,8 +711,8 @@ async function openEdit(plugin: PluginSummary, closeOld?: number): Promise<void>
   width: 26px;
   height: 26px;
   border-radius: 7px;
-  background: #f5f6f7;
-  color: #8f959e;
+  background: var(--bg-soft);
+  color: var(--text-3);
   overflow: hidden;
 }
 
@@ -711,7 +733,7 @@ async function openEdit(plugin: PluginSummary, closeOld?: number): Promise<void>
 .hit-title {
   font-size: 13px;
   line-height: 1.35;
-  color: #1f2329;
+  color: var(--text-1);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -720,7 +742,7 @@ async function openEdit(plugin: PluginSummary, closeOld?: number): Promise<void>
 .hit-sub {
   font-size: 11px;
   line-height: 1.3;
-  color: #8f959e;
+  color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -728,7 +750,7 @@ async function openEdit(plugin: PluginSummary, closeOld?: number): Promise<void>
 
 .hit-go {
   flex: none;
-  color: #c2c6cc;
+  color: var(--text-4);
 }
 
 /* 内联结果：一眼可用的「答案」，字号/字重比普通条目更强，右侧标出回车会做什么 */
@@ -753,31 +775,33 @@ async function openEdit(plugin: PluginSummary, closeOld?: number): Promise<void>
   flex: none;
   padding: 1px 6px;
   border-radius: 5px;
-  background: #f2f3f5;
-  color: #a1a6ad;
-  font-size: 11px;
+  background: var(--bg-active);
+  color: var(--text-3);
+  font-size: 10.5px;
   line-height: 16px;
 }
 
 .hit-entry.inline.selected .hit-hint {
-  background: #e4e6eb;
-  color: #61666d;
+  background: rgba(99, 102, 241, 0.16);
+  color: var(--accent-strong);
 }
 
 .empty {
-  color: #8f959e;
-  font-size: 13px;
+  color: var(--text-3);
+  font-size: 12.5px;
   text-align: center;
   padding: 40px 0;
+  line-height: 1.7;
 }
 
 .foot {
   flex: none;
   text-align: center;
-  font-size: 11px;
-  color: #b4b8bf;
-  padding: 7px 0 9px;
-  border-top: 1px solid #f5f6f7;
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  color: var(--text-4);
+  padding: 8px 0 10px;
+  border-top: 1px solid var(--line-soft);
   user-select: none;
 }
 </style>

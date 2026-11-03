@@ -13,6 +13,9 @@ import type {
   AiToolCallPart,
   AiToolResultPart
 } from '../../../src/shared/ai'
+import PopMenu from './components/PopMenu.vue'
+import ConfirmDialog from './components/ConfirmDialog.vue'
+import { MENU_W, type MenuItem } from './menu'
 
 const api = window.appapi
 
@@ -272,15 +275,87 @@ async function newSession(): Promise<void> {
   void nextTick(() => composer.value?.focus())
 }
 
-async function removeSession(session: AiSessionMeta): Promise<void> {
-  if (!window.confirm(`删除「${session.title}」？消息会一起删掉，无法恢复。`)) return
-  const r = await api.ai.sessions.remove(session.id)
+/* ---------------- 会话条目操作：··· 菜单 / 右键 / 行内重命名 / 自绘确认 ---------------- */
+
+/** 菜单锚点与目标。x/y 已经是"菜单左上角"的位置，由触发方式决定 */
+const menu = ref<{ x: number; y: number; session: AiSessionMeta } | null>(null)
+const renamingId = ref('')
+const renameDraft = ref('')
+const pendingDelete = ref<AiSessionMeta | null>(null)
+
+const sessionMenuItems: MenuItem[] = [
+  { key: 'rename', label: '重命名', icon: 'rename' },
+  { key: 'delete', label: '删除会话', icon: 'delete', danger: true }
+]
+
+/**
+ * 打开菜单。点「···」时把菜单右边缘对齐按钮，右键时跟随鼠标——
+ * 两种入口给同一个菜单，但锚点要各自自然，否则右键出来的菜单会飘在光标左上。
+ */
+function openMenu(session: AiSessionMeta, event: MouseEvent, fromButton = false): void {
+  event.stopPropagation()
+  if (fromButton) {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+    // 优先右对齐按钮；按钮贴着窗口左边缘时右对齐会把菜单顶出视口，改为左对齐
+    const rightAligned = rect.right - MENU_W
+    menu.value = { x: rightAligned < 8 ? rect.left - 4 : rightAligned, y: rect.bottom + 5, session }
+  } else {
+    menu.value = { x: event.clientX, y: event.clientY, session }
+  }
+}
+
+function onMenuPick(key: string): void {
+  const target = menu.value?.session
+  menu.value = null
+  if (!target) return
+  if (key === 'rename') startRename(target)
+  else if (key === 'delete') pendingDelete.value = target
+}
+
+/** 行内重命名：不弹二级输入框，就地改成输入态，改完回车落地 */
+function startRename(session: AiSessionMeta): void {
+  renamingId.value = session.id
+  renameDraft.value = session.title
+  void nextTick(() => {
+    const input = document.querySelector<HTMLInputElement>('.item .rename-input')
+    input?.focus()
+    input?.select()
+  })
+}
+
+function cancelRename(): void {
+  renamingId.value = ''
+}
+
+async function commitRename(): Promise<void> {
+  const id = renamingId.value
+  if (!id) return
+  // 先退出编辑态：blur 会再触发一次本函数，靠这一行让第二次直接返回
+  renamingId.value = ''
+  const title = renameDraft.value.trim()
+  const session = sessions.value.find((s) => s.id === id)
+  if (!session || !title || title === session.title) return
+  const r = await api.ai.sessions.rename(id, title)
+  if (!r.ok) {
+    error.value = r.message ?? '重命名失败'
+    return
+  }
+  // 本地改掉就够：标题只有一个来源，重拉列表反而会让侧栏闪一下
+  session.title = title
+  if (current.value?.id === id) current.value.title = title
+}
+
+async function doDelete(): Promise<void> {
+  const target = pendingDelete.value
+  pendingDelete.value = null
+  if (!target) return
+  const r = await api.ai.sessions.remove(target.id)
   if (!r.ok) {
     error.value = r.message ?? '删除失败'
     return
   }
   await refreshSessions()
-  if (current.value?.id === session.id) {
+  if (current.value?.id === target.id) {
     if (sessions.value.length) await openSession(sessions.value[0].id)
     else await newSession()
   }
@@ -503,28 +578,54 @@ onMounted(async () => {
 <template>
   <div class="app">
     <aside class="side">
-      <button class="new" title="新建会话" @click="newSession">
-        <span class="plus">+</span>
-        新会话
-      </button>
+      <div class="side-head">
+        <span class="side-title">会话</span>
+        <button class="new" title="新建会话" aria-label="新建会话" @click="newSession">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+        </button>
+      </div>
 
       <div class="list">
-        <button
+        <div
           v-for="s in sessions"
           :key="s.id"
           class="item"
-          :class="{ active: s.id === current?.id }"
+          :class="{ active: s.id === current?.id, editing: renamingId === s.id }"
+          role="button"
+          tabindex="0"
+          :title="s.title"
           @click="openSession(s.id)"
+          @keydown.enter.prevent="openSession(s.id)"
+          @contextmenu.prevent="openMenu(s, $event)"
         >
-          <span class="title">{{ s.title }}</span>
-          <span class="sub">{{ s.messageCount }} 条</span>
-          <span class="del" title="删除会话" @click.stop="removeSession(s)">×</span>
-        </button>
-        <p v-if="!sessions.length" class="list-empty">还没有会话</p>
+          <input
+            v-if="renamingId === s.id"
+            v-model="renameDraft"
+            class="rename-input"
+            spellcheck="false"
+            @click.stop
+            @keydown.enter.prevent="commitRename"
+            @keydown.esc.prevent="cancelRename"
+            @blur="commitRename"
+          />
+          <template v-else>
+            <span class="title">{{ s.title }}</span>
+            <span class="sub">{{ s.messageCount }} 条消息</span>
+          </template>
+          <button
+            class="more"
+            title="更多操作"
+            aria-label="更多操作"
+            @click.stop="openMenu(s, $event, true)"
+          >
+            <span class="dots"><i /><i /><i /></span>
+          </button>
+        </div>
+        <p v-if="!sessions.length" class="list-empty">还没有会话，点右上角 ＋ 开始</p>
       </div>
 
       <div class="side-foot">
-        <div v-if="usage" class="usage">本轮 {{ usage.input }} → {{ usage.output }} tokens</div>
+        <div v-if="usage" class="usage">{{ usage.input }} → {{ usage.output }} tokens</div>
         <div class="brand">QuickLauncher AI</div>
       </div>
     </aside>
@@ -540,16 +641,15 @@ onMounted(async () => {
         </select>
         <span class="spacer" />
         <button v-if="busy" class="stop" @click="stop">停止</button>
-        <button class="ghost" :disabled="!hasMessages || busy" @click="newSession">清空</button>
+        <button class="ghost" :disabled="!hasMessages || busy" @click="newSession">新会话</button>
       </header>
 
       <div ref="scroller" class="messages">
         <div v-if="!hasMessages" class="welcome">
           <div class="welcome-title">问点什么</div>
           <p v-if="configured">
-            支持多轮对话与会话切换；回答流式输出，随时可以停止。文件可以拖进来，或点「添加文件」。
-            模型还能调用启动器的内置能力（搜索、打开插件、剪贴板、文档库）和你授权过的插件工具，
-            有副作用的操作会先弹确认。按 Esc 退出插件。
+            支持多轮对话与会话切换，回答流式输出、随时可停。文件可以拖进来，或点「添加文件」。
+            模型还能调用启动器的内置能力和已授权的插件工具，有副作用的操作会先弹确认。
           </p>
           <p v-else>
             还没配置模型。打开 <b>设置 → AI</b> 添加一个服务（DeepSeek / 通义 / Kimi / OpenAI / 本机 Ollama），
@@ -642,26 +742,28 @@ onMounted(async () => {
             <button class="chip-del" title="移除" @click="removeAttachment(i)">×</button>
           </div>
         </div>
-        <textarea
-          ref="composer"
-          v-model="draft"
-          rows="3"
-          spellcheck="false"
-          placeholder="问点什么…（Enter 发送，Shift+Enter 换行；文件可直接拖进来）"
-          @keydown.enter.exact.prevent="send"
-        />
-        <div class="composer-actions">
-          <button class="ghost attach-btn" :disabled="picking || busy" @click="pickFiles">
-            {{ picking ? '读取中…' : '添加文件' }}
-          </button>
-          <span class="tip">{{
-            configured
-              ? `Enter 发送 · Esc 退出${toolCount ? ` · ${toolCount} 个插件工具可用` : ''}`
-              : '先去 设置 → AI 配置模型'
-          }}</span>
-          <button class="send" :disabled="(!draft.trim() && !attachments.length) || busy" @click="send">
-            {{ busy ? '生成中' : '发送' }}
-          </button>
+        <div class="composer-box">
+          <textarea
+            ref="composer"
+            v-model="draft"
+            rows="2"
+            spellcheck="false"
+            placeholder="问点什么…（Enter 发送，Shift+Enter 换行；文件可直接拖进来）"
+            @keydown.enter.exact.prevent="send"
+          />
+          <div class="composer-actions">
+            <button class="ghost attach-btn" :disabled="picking || busy" @click="pickFiles">
+              {{ picking ? '读取中…' : '添加文件' }}
+            </button>
+            <span class="tip">{{
+              configured
+                ? `Enter 发送 · Esc 退出${toolCount ? ` · ${toolCount} 个插件工具可用` : ''}`
+                : '先去 设置 → AI 配置模型'
+            }}</span>
+            <button class="send" :disabled="(!draft.trim() && !attachments.length) || busy" @click="send">
+              {{ busy ? '生成中' : '发送' }}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -699,75 +801,148 @@ onMounted(async () => {
         </div>
       </div>
     </div>
+
+    <PopMenu
+      v-if="menu"
+      :x="menu.x"
+      :y="menu.y"
+      :items="sessionMenuItems"
+      @pick="onMenuPick"
+      @close="menu = null"
+    />
+
+    <ConfirmDialog
+      v-if="pendingDelete"
+      title="删除这个会话？"
+      :message="`「${pendingDelete.title}」的全部消息会一起删除。`"
+      hint="删除后无法恢复。"
+      confirm-label="删除"
+      danger
+      @confirm="doDelete"
+      @cancel="pendingDelete = null"
+    />
   </div>
 </template>
 
 <style scoped>
+/*
+ * 布局：两栏定高。
+ * 这里只能用 100%（不能用 100vh）：外层已经有 reset 保证 html/body/#app 满高，
+ * 再加 100vh 会和 body 的盒模型叠加出一圈溢出，右侧/下侧就常驻滚动条。
+ */
 .app {
   display: flex;
-  height: 100vh;
-  background: #fff;
-  color: #1f2329;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text-1);
   font-size: 13px;
+  /* 面板整体不选中；正文与结果区单独开 user-select: text */
+  user-select: none;
 }
 
+/* ---------------- 左侧会话栏 ---------------- */
 .side {
   flex: none;
-  width: 196px;
+  width: 204px;
   display: flex;
   flex-direction: column;
-  background: #f7f8fa;
-  border-right: 1px solid #eef0f2;
-  padding: 10px 8px;
+  background: var(--bg-soft);
+  border-right: 1px solid var(--line);
+  padding: 10px 8px 8px;
+}
+
+.side-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px 8px 6px;
+}
+
+.side-title {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  text-transform: uppercase;
 }
 
 .new {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  height: 32px;
-  border-radius: 8px;
-  background: #5b6ef5;
-  color: #fff;
-  font-size: 13px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  color: var(--text-2);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-1);
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    background var(--dur) var(--ease);
 }
 
 .new:hover {
-  background: #4b5ee6;
+  color: var(--accent-strong);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
 }
 
-.plus {
-  font-size: 15px;
-  line-height: 1;
+.new svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
 }
 
 .list {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  margin-top: 8px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
+  /* 滚动条出现时不挤压内容：会话标题被压到换行比滚动条本身更难看 */
+  scrollbar-gutter: stable;
 }
 
 .item {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 7px 22px 7px 9px;
-  border-radius: 8px;
+  gap: 1px;
+  padding: 7px 30px 7px 10px;
+  border-radius: 9px;
   text-align: left;
+  cursor: pointer;
+  transition: background var(--dur) var(--ease);
 }
 
 .item:hover {
-  background: #eef0f4;
+  background: var(--bg-hover);
 }
 
 .item.active {
-  background: #e7ebfd;
+  background: var(--accent-soft);
+}
+
+/* 选中态的左侧指示条：只靠浅底在灰侧栏上不够清楚 */
+.item.active::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  width: 2px;
+  height: 15px;
+  margin-top: -7.5px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.item:focus-visible {
+  box-shadow: var(--ring);
 }
 
 .title {
@@ -775,64 +950,111 @@ onMounted(async () => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12.5px;
+  color: var(--text-1);
+}
+
+.item.active .title {
+  font-weight: 500;
+  color: var(--accent-strong);
 }
 
 .sub {
-  font-size: 11px;
-  color: #a1a6ad;
+  font-size: 10.5px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
 }
 
-.del {
+/* ···：默认隐形，hover/选中/键盘聚焦时才出现——一眼看去只有标题，不抢注意力 */
+.more {
   position: absolute;
   top: 6px;
-  right: 6px;
-  width: 16px;
-  height: 16px;
-  display: none;
-  place-items: center;
-  border-radius: 4px;
-  color: #a1a6ad;
-  font-size: 13px;
-}
-
-.item:hover .del {
+  right: 5px;
   display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 
-.del:hover {
-  background: #dfe2e7;
-  color: #d03050;
+.item:hover .more,
+.item.active .more,
+.item:focus-within .more,
+.more:focus-visible {
+  opacity: 1;
+}
+
+.more:hover {
+  background: rgba(15, 23, 42, 0.09);
+  color: var(--text-1);
+}
+
+.dots {
+  display: flex;
+  gap: 1.5px;
+}
+
+.dots i {
+  width: 2.5px;
+  height: 2.5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.rename-input {
+  width: 100%;
+  height: 22px;
+  padding: 0 5px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 12.5px;
+  color: var(--text-1);
+  outline: none;
+  user-select: text;
+}
+
+.item.editing {
+  padding-right: 10px;
 }
 
 .list-empty {
-  padding: 8px;
-  font-size: 12px;
-  color: #a1a6ad;
+  padding: 10px 8px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-4);
 }
 
 .side-foot {
   flex: none;
+  margin-top: 6px;
   padding: 8px 6px 2px;
-  border-top: 1px solid #eef0f2;
+  border-top: 1px solid var(--line);
 }
 
 .usage {
-  font-size: 11px;
-  color: #8f959e;
+  font-size: 10.5px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
 }
 
 .brand {
-  margin-top: 2px;
-  font-size: 11px;
-  color: #c2c6cc;
+  margin-top: 3px;
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-4);
 }
 
+/* ---------------- 右侧主区 ---------------- */
 .main {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   position: relative;
+  background: var(--bg);
 }
 
 .top {
@@ -840,19 +1062,44 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 14px;
-  border-bottom: 1px solid #eef0f2;
+  height: 46px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
 }
 
 .model {
   height: 28px;
   max-width: 320px;
-  padding: 0 8px;
-  border: 1px solid #e5e6eb;
+  padding: 0 26px 0 9px;
+  border: 1px solid transparent;
   border-radius: 8px;
-  background: #fff;
+  background-color: transparent;
+  /* 原生下拉箭头太大太黑，用一张淡色 chevron 顶替 */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238f959e' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
   font-size: 12.5px;
-  color: #1f2329;
+  color: var(--text-2);
+  appearance: none;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.model:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.model:focus {
+  outline: none;
+  border-color: var(--accent-line);
+  background-color: var(--bg);
+  box-shadow: var(--ring);
+}
+
+.model:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .spacer {
@@ -865,44 +1112,59 @@ onMounted(async () => {
   padding: 0 10px;
   border-radius: 8px;
   font-size: 12.5px;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
 .stop {
-  background: #fdecee;
-  color: #d03050;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.stop:hover {
+  background: #fbdde3;
 }
 
 .ghost {
-  color: #5c6470;
+  color: var(--text-2);
+}
+
+.ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 
 .ghost:disabled,
 .stop:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
 }
 
+/* ---------------- 消息流 ---------------- */
 .messages {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px 18px 8px;
+  overflow-x: hidden;
+  padding: 18px 20px 10px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
 .welcome {
   margin: auto;
-  max-width: 420px;
+  max-width: 400px;
   text-align: center;
-  color: #8f959e;
+  color: var(--text-3);
   line-height: 1.8;
+  font-size: 12.5px;
 }
 
 .welcome-title {
-  font-size: 16px;
-  color: #1f2329;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
 }
 
 .msg {
@@ -917,23 +1179,24 @@ onMounted(async () => {
 
 .avatar {
   flex: none;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
   display: grid;
   place-items: center;
-  font-size: 11px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  font-size: 10.5px;
+  font-weight: 500;
   color: #fff;
   background: #b9bfc9;
 }
 
 .msg.assistant .avatar {
-  background: #5b6ef5;
+  background: linear-gradient(135deg, var(--accent), #8b5cf6);
 }
 
 .body {
   min-width: 0;
-  max-width: 78%;
+  max-width: 82%;
 }
 
 .msg.user .body {
@@ -942,53 +1205,84 @@ onMounted(async () => {
   align-items: flex-end;
 }
 
+/*
+ * 助手正文不画气泡：模型答案经常是长文 + 工具卡片 + 代码，
+ * 套一层灰底只会让整屏变成一个大色块。用户消息反过来，短、需要一眼分辨。
+ */
 .pre {
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.72;
-  padding: 9px 12px;
-  border-radius: 10px;
-  background: #f5f6f8;
+  line-height: 1.75;
+  font-size: 13px;
+  color: var(--text-1);
+  user-select: text;
+}
+
+.pre + .pre {
+  margin-top: 8px;
 }
 
 .msg.user .pre {
-  background: #e7ebfd;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border-bottom-right-radius: 4px;
+  background: var(--accent-soft);
+  color: #2f3550;
 }
 
 .reasoning {
   margin-bottom: 6px;
   font-size: 12px;
-  color: #8f959e;
+  color: var(--text-3);
 }
 
 .reasoning summary {
   cursor: pointer;
   user-select: none;
+  width: fit-content;
 }
 
 .reasoning .pre {
   margin-top: 4px;
-  background: #fafbfc;
-  border: 1px dashed #e5e6eb;
-  color: #6b7280;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px dashed var(--line);
+  background: var(--bg-soft);
+  color: var(--text-2);
+  font-size: 12px;
 }
 
 .typing {
-  color: #a1a6ad;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-3);
   font-size: 12.5px;
 }
 
-/*
- * 工具卡片：一次调用一行，读起来像「它做了什么」而不是一堆 JSON。
- * 进行中、成功、失败三种状态靠左边那个符号区分——颜色只是辅助，
- * 色弱用户也要能分辨。
- */
+.typing::before {
+  content: '';
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent-line);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------------- 工具卡片 ---------------- */
 .tool-card {
-  margin: 6px 0;
+  margin: 7px 0;
   padding: 8px 10px;
   border-radius: 10px;
-  border: 1px solid #e5e7eb;
-  background: #fbfcfd;
+  border: 1px solid var(--line);
+  background: var(--bg-soft);
   font-size: 12.5px;
 }
 
@@ -997,8 +1291,8 @@ onMounted(async () => {
 }
 
 .tool-card.bad {
-  border-color: #f3c7cf;
-  background: #fdf6f7;
+  border-color: var(--danger-line);
+  background: #fdf7f8;
 }
 
 .tool-head {
@@ -1006,16 +1300,18 @@ onMounted(async () => {
   align-items: center;
   gap: 6px;
   font-weight: 500;
+  color: var(--text-1);
 }
 
 .tool-state {
   width: 14px;
   text-align: center;
-  color: #8f959e;
+  color: var(--text-3);
+  font-size: 11px;
 }
 
 .tool-card.bad .tool-state {
-  color: #d03050;
+  color: var(--danger);
 }
 
 .tool-title {
@@ -1036,298 +1332,253 @@ onMounted(async () => {
 
 .risk-read {
   background: #eef2f5;
-  color: #6b7280;
+  color: var(--text-2);
 }
 
 .risk-write {
-  background: #fff4e5;
-  color: #a4620a;
+  background: var(--warn-soft);
+  color: var(--warn);
 }
 
 .risk-dangerous {
-  background: #fdecee;
-  color: #c0293f;
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .tool-from {
   flex: none;
-  font-size: 11px;
-  color: #a1a6ad;
+  font-size: 10.5px;
   font-weight: 400;
+  color: var(--text-3);
 }
 
 .tool-out {
   margin-top: 5px;
-  color: #4e5561;
+  color: var(--text-2);
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 160px;
+  max-height: 168px;
   overflow-y: auto;
+  user-select: text;
 }
 
 .tool-err {
   margin-top: 5px;
-  color: #c0293f;
+  color: var(--danger);
   white-space: pre-wrap;
   word-break: break-word;
+  user-select: text;
 }
 
 .tool-args {
   margin-top: 4px;
   font-size: 11.5px;
-  color: #8f959e;
+  color: var(--text-3);
 }
 
 .tool-args summary {
   cursor: pointer;
   user-select: none;
+  width: fit-content;
 }
 
 .tool-args .pre {
   margin-top: 4px;
+  padding: 7px 9px;
   max-height: 140px;
   overflow: auto;
-  background: #f5f6f8;
-  font-size: 11.5px;
-}
-
-/* 确认框 */
-.confirm-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  display: grid;
-  place-items: center;
-  background: rgba(15, 18, 25, 0.32);
-}
-
-.confirm-box {
-  width: min(520px, calc(100vw - 48px));
-  max-height: calc(100vh - 48px);
-  overflow: auto;
-  padding: 16px;
-  border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 12px 40px rgba(15, 18, 25, 0.18);
-}
-
-.confirm-title {
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.confirm-sub {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-  font-size: 11.5px;
-  color: #8f959e;
-  flex-wrap: wrap;
-}
-
-.confirm-full {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  color: #b0b5bc;
-}
-
-.confirm-args {
-  margin-top: 10px;
-  padding: 8px 10px;
-  max-height: 200px;
-  overflow: auto;
-  border-radius: 8px;
-  background: #f5f6f8;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.confirm-warn {
-  margin-top: 8px;
-  font-size: 11.5px;
-  color: #c0293f;
-}
-
-.confirm-remember {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 10px;
-  font-size: 12px;
-  color: #6b7280;
-  cursor: pointer;
-}
-
-.confirm-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 14px;
-}
-
-.confirm-tip {
-  font-size: 11px;
-  color: #a1a6ad;
-}
-
-.spacer {
-  flex: 1;
-}
-
-.confirm-actions .send {
-  padding: 0 14px;
-  height: 28px;
   border-radius: 7px;
-  background: #5b6ef5;
-  color: #fff;
-  font-size: 12.5px;
+  background: rgba(15, 23, 42, 0.04);
+  font-size: 11.5px;
+  color: var(--text-2);
 }
 
-.confirm-actions .send:hover {
-  background: #4b5ee6;
-}
-
-.confirm-actions .ghost {
-  height: 28px;
-  padding: 0 12px;
-  border-radius: 7px;
-  border: 1px solid #e5e7eb;
-  font-size: 12.5px;
-  color: #4e5561;
-}
-
-.confirm-actions .ghost:hover {
-  background: #f5f6f8;
-}
-
+/* ---------------- 消息尾部 ---------------- */
 .flag {
   margin-top: 4px;
   font-size: 11.5px;
-  color: #8f959e;
+  color: var(--text-3);
 }
 
 .flag.err {
-  color: #d03050;
+  color: var(--danger);
 }
 
 .acts {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: 5px;
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease);
+}
+
+.msg:hover .acts {
+  opacity: 1;
 }
 
 .acts button {
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 5px;
   font-size: 11.5px;
-  color: #8f959e;
+  color: var(--text-3);
 }
 
 .acts button:hover {
-  color: #5b6ef5;
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 
 .model-tag {
-  font-size: 11px;
-  color: #c2c6cc;
+  font-size: 10.5px;
+  color: var(--text-4);
 }
 
+/* ---------------- 底部输入区 ---------------- */
 .banner {
   flex: none;
-  margin: 0 14px 8px;
-  padding: 8px 10px;
+  margin: 0 14px 6px;
+  padding: 7px 10px;
   border-radius: 8px;
-  background: #fdecee;
-  color: #d03050;
+  background: var(--danger-soft);
+  color: var(--danger);
   font-size: 12px;
   line-height: 1.6;
 }
 
 .composer {
   flex: none;
-  padding: 10px 14px 12px;
-  border-top: 1px solid #eef0f2;
+  padding: 8px 14px 12px;
+}
+
+/* 输入框 + 工具条合成一张卡片：焦点在哪都用 focus-within 提整张卡 */
+.composer-box {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg-soft);
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.composer-box:focus-within {
+  border-color: var(--accent-line);
+  background: var(--bg);
+  box-shadow: var(--ring);
 }
 
 .composer textarea {
+  display: block;
   width: 100%;
-  resize: none;
-  padding: 9px 11px;
-  border: 1px solid #e5e6eb;
-  border-radius: 10px;
+  padding: 10px 12px 2px;
+  border: none;
+  background: transparent;
   font-size: 13px;
-  line-height: 1.6;
-  color: #1f2329;
+  line-height: 1.65;
+  color: var(--text-1);
+  resize: none;
   outline: none;
+  user-select: text;
 }
 
-.composer textarea:focus {
-  border-color: #6b9cf7;
-  box-shadow: 0 0 0 3px rgba(91, 110, 245, 0.12);
+.composer textarea::placeholder {
+  color: var(--text-4);
+}
+
+/* 输入框的焦点态由 .composer-box:focus-within 统一表达 */
+.composer textarea:focus-visible {
+  box-shadow: none;
 }
 
 .composer-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 8px;
+  padding: 4px 8px 8px 10px;
 }
 
 .tip {
   flex: 1;
-  font-size: 11.5px;
-  color: #a1a6ad;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-4);
 }
 
 .send {
-  height: 30px;
-  padding: 0 16px;
+  flex: none;
+  height: 28px;
+  padding: 0 14px;
   border-radius: 8px;
-  background: #5b6ef5;
+  background: var(--accent);
   color: #fff;
-  font-size: 13px;
+  font-size: 12.5px;
+  font-weight: 500;
+  transition: background var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+
+.send:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.send:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 .send:disabled {
-  background: #c8cef8;
+  background: #c9cdf6;
   cursor: default;
 }
 
 .toast {
   position: absolute;
   left: 50%;
-  bottom: 96px;
+  bottom: 104px;
   transform: translateX(-50%);
-  padding: 6px 12px;
-  border-radius: 8px;
-  background: rgba(31, 35, 41, 0.86);
+  padding: 7px 13px;
+  border-radius: 9px;
+  background: rgba(31, 35, 41, 0.9);
   color: #fff;
   font-size: 12px;
+  box-shadow: var(--shadow-2);
+  animation: toast-in 0.16s var(--ease);
+  pointer-events: none;
 }
 
-/* ---- 拖拽遮罩 ---- */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+/* ---------------- 拖拽遮罩 ---------------- */
 .drop-mask {
   position: absolute;
   inset: 0;
   z-index: 30;
   display: grid;
   place-items: center;
-  background: rgba(91, 110, 245, 0.08);
-  backdrop-filter: blur(1px);
+  background: rgba(99, 102, 241, 0.06);
 }
 
 .drop-box {
   padding: 14px 22px;
-  border: 2px dashed #5b6ef5;
+  border: 1.5px dashed var(--accent);
   border-radius: 12px;
-  background: #fff;
-  color: #5b6ef5;
-  font-size: 13px;
+  background: var(--bg);
+  color: var(--accent-strong);
+  font-size: 12.5px;
+  box-shadow: var(--shadow-2);
 }
 
-/* ---- 消息里的附件 ---- */
+/* ---------------- 消息里的附件 ---------------- */
 .files {
   display: flex;
   flex-direction: column;
@@ -1340,28 +1591,29 @@ onMounted(async () => {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  max-width: 320px;
   padding: 7px 9px;
-  border: 1px solid #eef0f2;
+  border: 1px solid var(--line);
   border-radius: 10px;
-  background: #fafbfc;
+  background: var(--bg-soft);
 }
 
 .msg.user .file {
-  background: #eef1fe;
-  border-color: #dfe4fb;
+  background: var(--accent-soft);
+  border-color: rgba(99, 102, 241, 0.16);
 }
 
 .file.bad {
-  border-color: #f5c2c7;
-  background: #fdf3f4;
+  border-color: var(--danger-line);
+  background: #fdf7f8;
 }
 
 .thumb {
+  flex: none;
   width: 40px;
   height: 40px;
   object-fit: cover;
   border-radius: 6px;
-  flex: none;
 }
 
 .file-tag {
@@ -1371,8 +1623,8 @@ onMounted(async () => {
   width: 40px;
   height: 40px;
   border-radius: 6px;
-  background: #e7e9ee;
-  color: #7b8189;
+  background: rgba(15, 23, 42, 0.07);
+  color: var(--text-2);
   font-size: 10px;
   letter-spacing: 0.5px;
 }
@@ -1387,56 +1639,61 @@ onMounted(async () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text-1);
 }
 
 .file-sub {
   margin-top: 1px;
-  font-size: 11px;
-  color: #8f959e;
+  font-size: 10.5px;
+  color: var(--text-3);
 }
 
 .file.bad .file-sub {
-  color: #d03050;
+  color: var(--danger);
 }
 
 .file-more {
   flex-basis: 100%;
   font-size: 11.5px;
-  color: #8f959e;
+  color: var(--text-3);
 }
 
 .file-more summary {
   cursor: pointer;
   user-select: none;
+  width: fit-content;
 }
 
 .file-text {
   margin-top: 4px;
   max-height: 240px;
   overflow: auto;
+  padding: 8px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--bg);
   font-size: 11.5px;
   line-height: 1.6;
-  background: #fff;
-  border: 1px solid #eef0f2;
+  user-select: text;
 }
 
-/* ---- 待发附件条 ---- */
+/* ---------------- 待发附件条 ---------------- */
 .ask-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   max-width: 100%;
-  margin-bottom: 8px;
+  margin-bottom: 7px;
   padding: 3px 6px 3px 8px;
-  border: 1px solid #dfe4fb;
+  border: 1px solid rgba(99, 102, 241, 0.18);
   border-radius: 8px;
-  background: #f2f4fe;
+  background: var(--accent-soft);
   font-size: 12px;
-  color: #5c6470;
+  color: var(--text-2);
 }
 
 .ask-label {
-  color: #8f959e;
+  color: var(--text-3);
 }
 
 .ask-name {
@@ -1444,7 +1701,7 @@ onMounted(async () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #4a5bd0;
+  color: var(--accent-strong);
   font-weight: 600;
 }
 
@@ -1452,7 +1709,7 @@ onMounted(async () => {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 8px;
+  margin-bottom: 7px;
 }
 
 .chip {
@@ -1461,22 +1718,22 @@ onMounted(async () => {
   gap: 6px;
   max-width: 220px;
   padding: 3px 6px 3px 3px;
-  border: 1px solid #e5e6eb;
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: #fafbfc;
+  background: var(--bg-soft);
 }
 
 .chip.bad {
-  border-color: #f5c2c7;
-  background: #fdf3f4;
+  border-color: var(--danger-line);
+  background: #fdf7f8;
 }
 
 .chip-thumb {
+  flex: none;
   width: 26px;
   height: 26px;
   object-fit: cover;
   border-radius: 5px;
-  flex: none;
 }
 
 .chip-tag {
@@ -1486,8 +1743,8 @@ onMounted(async () => {
   width: 26px;
   height: 26px;
   border-radius: 5px;
-  background: #e7e9ee;
-  color: #7b8189;
+  background: rgba(15, 23, 42, 0.07);
+  color: var(--text-2);
   font-size: 9px;
 }
 
@@ -1497,40 +1754,196 @@ onMounted(async () => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
-  color: #5c6470;
+  color: var(--text-2);
 }
 
-.chip-del {
+.chip-del,
+.confirm-close {
   flex: none;
-  width: 16px;
-  height: 16px;
   display: grid;
   place-items: center;
+  width: 16px;
+  height: 16px;
   border-radius: 4px;
-  color: #a1a6ad;
+  color: var(--text-3);
   font-size: 13px;
+  line-height: 1;
 }
 
 .chip-del:hover {
-  background: #eef0f2;
-  color: #d03050;
+  background: rgba(15, 23, 42, 0.08);
+  color: var(--danger);
 }
 
 .attach-btn {
-  padding: 0 10px;
-  height: 28px;
-  border-radius: 8px;
-  font-size: 12.5px;
-  color: #5c6470;
-  background: #f4f5f7;
+  flex: none;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--text-2);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
 .attach-btn:hover:not(:disabled) {
-  background: #eceef1;
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 
 .attach-btn:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
 }
 
+/*
+ * ---------------- 工具风险确认 ----------------
+ * 类名（confirm-box / confirm-title / confirm-sub / confirm-warn /
+ * confirm-remember / confirm-actions）是冒烟脚本的定位依据，别改。
+ */
+.confirm-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(15, 18, 25, 0.34);
+  animation: mask-in 0.12s var(--ease);
+}
+
+@keyframes mask-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.confirm-box {
+  width: min(480px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+  padding: 18px;
+  border-radius: var(--r-lg);
+  background: var(--bg);
+  box-shadow: var(--shadow-3);
+  animation: dlg-in 0.16s var(--ease);
+}
+
+@keyframes dlg-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.confirm-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--text-1);
+  line-height: 1.45;
+}
+
+.confirm-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  font-size: 11.5px;
+  color: var(--text-3);
+  flex-wrap: wrap;
+}
+
+.confirm-from {
+  color: var(--text-2);
+}
+
+.confirm-full {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--text-4);
+}
+
+.confirm-args {
+  margin-top: 10px;
+  padding: 9px 10px;
+  max-height: 200px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--bg-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+.confirm-warn {
+  margin-top: 9px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  background: var(--danger-soft);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--danger);
+}
+
+.confirm-remember {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.confirm-remember input {
+  accent-color: var(--accent);
+}
+
+.confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.confirm-tip {
+  font-size: 11px;
+  color: var(--text-4);
+}
+
+.confirm-actions .send {
+  height: 30px;
+  padding: 0 16px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12.5px;
+}
+
+.confirm-actions .send:hover {
+  background: var(--accent-hover);
+}
+
+.confirm-actions .ghost {
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.confirm-actions .ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
 </style>

@@ -1,0 +1,143 @@
+/*
+ * 共享视觉基线：设计令牌 + 重置 + 基础控件。
+ *
+ * 这里的东西必须两端一致——核心渲染层（src/renderer）与插件页（plugins/ai）
+ * 是两套独立构建，但用户看到的是同一个面板里的两块，圆角、颜色、滚动条
+ * 差一点点就会显得"不是一家做的"。所以令牌只放一份，两边都 import 这个文件。
+ *
+ * 引入顺序：theme.css 在前，各自的 global.css / 组件样式在后。
+ */
+
+:root {
+  /* 主色：indigo。深一档用于悬浮/按下，浅底用于选中态 */
+  --accent: #6366f1;
+  --accent-strong: #4f46e5;
+  --accent-hover: #565ae8;
+  --accent-soft: #eef0ff;
+  --accent-line: rgba(99, 102, 241, 0.28);
+
+  --danger: #d5304f;
+  --danger-strong: #bf2440;
+  --danger-soft: #fdecef;
+  --danger-line: rgba(213, 48, 79, 0.28);
+
+  --warn: #a4620a;
+  --warn-soft: #fef3e2;
+  --ok: #0a7d43;
+  --ok-soft: #e8f7ef;
+
+  /* 文本三档 + 一档占位符。跨度拉开，避免满屏一个灰 */
+  --text-1: #1f2329;
+  --text-2: #52596b;
+  --text-3: #8f959e;
+  --text-4: #b4b8bf;
+
+  /* 边框：主边框用低透明度墨色（比固定灰更耐背景变化），分隔线更淡 */
+  --line: rgba(15, 23, 42, 0.09);
+  --line-strong: rgba(15, 23, 42, 0.16);
+  --line-soft: #f2f3f5;
+
+  --bg: #ffffff;
+  --bg-soft: #f7f8fa;
+  --bg-hover: rgba(15, 23, 42, 0.045);
+  --bg-active: rgba(15, 23, 42, 0.075);
+
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 18px;
+
+  --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-2: 0 6px 20px rgba(15, 23, 42, 0.1), 0 1px 3px rgba(15, 23, 42, 0.06);
+  --shadow-3: 0 18px 48px rgba(15, 23, 42, 0.18), 0 3px 10px rgba(15, 23, 42, 0.08);
+
+  /* 键盘焦点环：只在 :focus-visible 出现，鼠标点不画 */
+  --ring: 0 0 0 3px rgba(99, 102, 241, 0.16);
+
+  --ease: cubic-bezier(0.2, 0, 0.2, 1);
+  --dur: 0.14s;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  font-family:
+    'PingFang SC',
+    'Microsoft YaHei',
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  color: var(--text-1);
+  /* 面板是圆角浮窗，任何方向都不该被文档滚动条撑出留白 */
+  overflow: hidden;
+}
+
+input,
+button,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+button {
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* 统一键盘焦点：鼠标点击不出环，Tab 才出。没有这条，纯键盘用户会迷路 */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+::selection {
+  background: rgba(99, 102, 241, 0.22);
+}
+
+/*
+ * 滚动条：细、无轨道、静止时几乎看不见，悬浮或滚动时才浮出。
+ * 之前是固定 14% 的深灰，长列表里像两条铁轨。
+ */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.14);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 23, 42, 0.28);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

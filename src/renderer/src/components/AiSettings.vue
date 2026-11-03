@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NButton, NPopconfirm, NSelect, NSwitch, useMessage } from 'naive-ui'
+import { NButton, NSelect, NSwitch, useMessage } from 'naive-ui'
 import AppIcon from './AppIcon.vue'
 import AiProviderEdit from './AiProviderEdit.vue'
 import AiMcpConfirm from './AiMcpConfirm.vue'
+import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
+import ConfirmDialog from './ConfirmDialog.vue'
 import { closeOverlay, openOverlay } from '../composables/useOverlay'
 
 const message = useMessage()
@@ -162,6 +164,65 @@ async function testProvider(provider: AiProviderView): Promise<void> {
   }
 }
 
+/**
+ * 模型服务的操作收进 ···：「删除」紧挨着「编辑」时，一次误点就要重填密钥。
+ * 「测试」原本是独立按钮，一并收进来——它和另两个动作同属"对这条服务做点什么"。
+ */
+function openProviderMenu(provider: AiProviderView, event: MouseEvent): void {
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const items: ContextMenuItem[] = [
+    {
+      key: 'test',
+      label: testing.value === provider.id ? '测试中…' : '测试连接',
+      icon: 'zap',
+      action: () => void testProvider(provider)
+    },
+    { key: 'edit', label: '编辑服务…', icon: 'pencil', action: () => editProvider(provider) },
+    { key: 'sep', separator: true },
+    {
+      key: 'remove',
+      label: '删除服务…',
+      icon: 'trash',
+      danger: true,
+      action: () => confirmRemoveProvider(provider)
+    }
+  ]
+  let id = 0
+  id = openOverlay({
+    component: ContextMenu,
+    backdrop: 'transparent',
+    autoFocus: false,
+    label: 'provider-menu',
+    props: {
+      x: Math.max(8, rect.right - 176),
+      y: rect.bottom + 5,
+      items,
+      onClose: () => closeOverlay(id)
+    }
+  })
+}
+
+function confirmRemoveProvider(provider: AiProviderView): void {
+  let id = 0
+  id = openOverlay({
+    component: ConfirmDialog,
+    label: 'confirm-remove-provider',
+    initialFocus: 'first',
+    props: {
+      title: '删除这个模型服务？',
+      message: `「${provider.name}」的地址、密钥与模型列表都会从这台机器上移除。`,
+      hint: '已经聊过的会话不会受影响，但它们记录的模型将无法继续使用。',
+      confirmLabel: '删除',
+      danger: true,
+      onClose: () => closeOverlay(id),
+      onConfirm: () => {
+        closeOverlay(id)
+        void removeProvider(provider)
+      }
+    }
+  })
+}
+
 async function setDefault(model: string): Promise<void> {
   const r = await window.panel.aiSetDefaultModel(model)
   if (r.ok && r.settings) settings.value = r.settings
@@ -216,14 +277,9 @@ async function setDefault(model: string): Promise<void> {
         </div>
       </div>
       <div class="p-actions">
-        <NButton size="tiny" quaternary :loading="testing === p.id" @click="testProvider(p)">测试</NButton>
-        <NButton size="tiny" quaternary @click="editProvider(p)">编辑</NButton>
-        <NPopconfirm @positive-click="removeProvider(p)">
-          <template #trigger>
-            <NButton size="tiny" quaternary type="error">删除</NButton>
-          </template>
-          删除「{{ p.name }}」？密钥会一并清掉。
-        </NPopconfirm>
+        <button class="row-more" title="更多操作" aria-label="更多操作" @click="openProviderMenu(p, $event)">
+          <span class="dots"><i /><i /><i /></span>
+        </button>
       </div>
     </div>
 
@@ -358,22 +414,30 @@ async function setDefault(model: string): Promise<void> {
 .card-head h3 {
   flex: 1;
   margin: 0;
-  font-size: 13.5px;
+  font-size: 12.5px;
   font-weight: 600;
-  color: #1f2329;
+  color: var(--text-1);
 }
 
 .count {
-  font-size: 12px;
-  color: #a1a6ad;
+  font-size: 11.5px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
 }
 
 .provider {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 9px 0;
-  border-top: 1px solid #f4f5f6;
+  padding: 9px 6px;
+  margin: 0 -6px;
+  border-radius: var(--r-sm);
+  border-top: 1px solid var(--line-soft);
+  transition: background var(--dur) var(--ease);
+}
+
+.provider:hover {
+  background: var(--bg-hover);
 }
 
 .provider:first-of-type {
@@ -390,13 +454,13 @@ async function setDefault(model: string): Promise<void> {
   align-items: center;
   gap: 6px;
   font-size: 13px;
-  color: #1f2329;
+  color: var(--text-1);
 }
 
 .p-sub {
   margin-top: 2px;
   font-size: 11.5px;
-  color: #8f959e;
+  color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -405,49 +469,84 @@ async function setDefault(model: string): Promise<void> {
 .p-meta {
   margin-top: 2px;
   font-size: 11.5px;
-  color: #a1a6ad;
+  color: var(--text-3);
 }
 
 .p-tag {
   padding: 0 5px;
   border-radius: 4px;
-  background: #eef6f0;
-  color: #2f7d4f;
+  background: var(--ok-soft);
+  color: var(--ok);
   font-size: 11px;
   line-height: 16px;
 }
 
 .p-tag.warn {
-  background: #fff4e6;
-  color: #b25d09;
+  background: var(--warn-soft);
+  color: var(--warn);
 }
 
 .p-actions {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
+}
+
+/* 与其它列表的 ··· 同一套手感：常驻淡显，悬浮变实 */
+.row-more {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--text-3);
+  opacity: 0.35;
+  transition: opacity var(--dur) var(--ease), background var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+
+.provider:hover .row-more,
+.row-more:focus-visible {
+  opacity: 1;
+}
+
+.row-more:hover {
+  background: var(--bg-active);
+  color: var(--text-1);
+}
+
+.dots {
+  display: flex;
+  gap: 1.5px;
+}
+
+.dots i {
+  width: 2.5px;
+  height: 2.5px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .empty {
   margin: 0;
   padding: 10px 0;
   font-size: 12.5px;
-  color: #8f959e;
+  color: var(--text-3);
   line-height: 1.7;
 }
 
 .hint {
   margin-top: 8px;
   font-size: 12px;
-  color: #8f959e;
+  color: var(--text-3);
   line-height: 1.6;
 }
 
 .hint code {
   padding: 0 3px;
   border-radius: 4px;
-  background: #f4f5f6;
+  background: var(--bg-hover);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 11.5px;
 }
@@ -462,7 +561,7 @@ async function setDefault(model: string): Promise<void> {
   align-items: flex-start;
   gap: 12px;
   padding: 10px 0;
-  border-top: 1px solid #f4f5f6;
+  border-top: 1px solid var(--line-soft);
 }
 
 .tool-plugin:first-of-type {
@@ -476,8 +575,8 @@ async function setDefault(model: string): Promise<void> {
   margin: 2px 4px 2px 0;
   padding: 0 6px;
   border-radius: 5px;
-  background: #f4f5f6;
-  color: #1f2329;
+  background: var(--bg-hover);
+  color: var(--text-1);
   font-size: 11.5px;
   line-height: 18px;
   white-space: nowrap;
@@ -489,21 +588,21 @@ async function setDefault(model: string): Promise<void> {
 }
 
 .risk-read {
-  color: #2f7d4f;
+  color: var(--ok);
 }
 
 .risk-write {
-  color: #b25d09;
+  color: var(--warn);
 }
 
 .risk-dangerous {
-  color: #c0392b;
+  color: var(--danger);
 }
 
 .p-skill {
   margin-top: 3px;
   font-size: 11.5px;
-  color: #8f959e;
+  color: var(--text-3);
   line-height: 1.6;
 }
 
@@ -518,7 +617,7 @@ async function setDefault(model: string): Promise<void> {
 .p-error {
   margin-top: 3px;
   font-size: 11.5px;
-  color: #b25d09;
+  color: var(--warn);
   line-height: 1.6;
 }
 
@@ -528,7 +627,7 @@ async function setDefault(model: string): Promise<void> {
   align-items: flex-start;
   gap: 12px;
   padding: 10px 0;
-  border-top: 1px solid #f4f5f6;
+  border-top: 1px solid var(--line-soft);
 }
 
 .mcp:first-of-type {
@@ -536,32 +635,32 @@ async function setDefault(model: string): Promise<void> {
 }
 
 .mcp-server {
-  color: #8f959e;
+  color: var(--text-3);
   font-size: 12px;
 }
 
 .mcp-tag-pending {
-  background: #fff4e6;
-  color: #b25d09;
+  background: var(--warn-soft);
+  color: var(--warn);
 }
 
 .mcp-tag-approved {
-  background: #eef6f0;
-  color: #2f7d4f;
+  background: var(--ok-soft);
+  color: var(--ok);
 }
 
 .mcp-tag-rejected {
-  background: #f4f5f6;
-  color: #8f959e;
+  background: var(--bg-hover);
+  color: var(--text-3);
 }
 
 .mcp-tag-stale {
   background: #fdecea;
-  color: #c0392b;
+  color: var(--danger);
 }
 
 .mcp-tag-disabled {
-  background: #f4f5f6;
-  color: #c0392b;
+  background: var(--bg-hover);
+  color: var(--danger);
 }
 </style>

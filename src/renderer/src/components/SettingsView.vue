@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { NButton, NSwitch, NPopconfirm, useMessage } from 'naive-ui'
+import { NButton, NSwitch, useMessage } from 'naive-ui'
 import AppIcon from './AppIcon.vue'
 import HotkeyInput from './HotkeyInput.vue'
 import ShortcutEdit from './ShortcutEdit.vue'
 import ShortcutImport from './ShortcutImport.vue'
 import AiSettings from './AiSettings.vue'
+import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
+import ConfirmDialog from './ConfirmDialog.vue'
 import { closeOverlay, openOverlay } from '../composables/useOverlay'
 import type { IconName } from './icons'
 import { useLauncherStore } from '../stores/launcher'
@@ -35,6 +37,11 @@ watch(tab, () => bodyEl.value?.scrollTo(0, 0))
 
 /** 自定义外部应用（source='shortcut'）：它们和插件同表，只是这里单独一块管 */
 const shortcutPlugins = computed(() => store.plugins.filter((p) => p.source === 'shortcut'))
+
+/** accelerator 是给 Electron 看的，界面上要显示键帽上的字 */
+function prettyHotkey(value: string): string {
+  return value.replace(/CommandOrControl/g, 'Ctrl').replace(/Super/g, 'Win')
+}
 
 function addShortcut(): void {
   let id = 0
@@ -198,6 +205,107 @@ async function uninstallPlugin(p: PluginSummary): Promise<void> {
 async function revealDir(p: PluginSummary): Promise<void> {
   await window.panel.revealPluginDir(p.id)
 }
+
+/* ---------------- 行内 ··· 菜单 ----------------
+ * 卡片右侧不再直接摆删除：一行里"编辑"和"删除"只差 12px，误点就是不可逆操作。
+ * 开关留在原地（它是状态，不是动作），其余收进菜单。
+ */
+
+function openRowMenu(items: ContextMenuItem[], pos: { x: number; y: number }): void {
+  let id = 0
+  id = openOverlay({
+    component: ContextMenu,
+    backdrop: 'transparent',
+    autoFocus: false,
+    label: 'settings-row-menu',
+    props: { x: pos.x, y: pos.y, items, onClose: () => closeOverlay(id) }
+  })
+}
+
+function openRowMenuFromButton(items: ContextMenuItem[], event: MouseEvent): void {
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  openRowMenu(items, { x: rect.right - 176, y: rect.bottom + 5 })
+}
+
+function confirmRemoveShortcut(p: PluginSummary): void {
+  let id = 0
+  id = openOverlay({
+    component: ConfirmDialog,
+    label: 'confirm-remove-shortcut',
+    initialFocus: 'first',
+    props: {
+      title: '从启动器移除这个应用？',
+      message: `「${p.name}」会从启动器列表里消失。`,
+      hint: '只是不再显示在这里：硬盘上的程序、快捷方式、文件都不会被改动。',
+      confirmLabel: '移除',
+      danger: true,
+      onClose: () => closeOverlay(id),
+      onConfirm: () => {
+        closeOverlay(id)
+        void removeShortcut(p)
+      }
+    }
+  })
+}
+
+function confirmUninstall(p: PluginSummary): void {
+  let id = 0
+  id = openOverlay({
+    component: ConfirmDialog,
+    label: 'confirm-uninstall-plugin',
+    initialFocus: 'first',
+    props: {
+      title: '卸载这个插件？',
+      message: `「${p.name}」的插件文件会被删除。`,
+      hint: '插件自己存的数据（设置、历史）会保留，重新安装同 id 的插件还能接上。',
+      confirmLabel: '卸载',
+      danger: true,
+      onClose: () => closeOverlay(id),
+      onConfirm: () => {
+        closeOverlay(id)
+        void uninstallPlugin(p)
+      }
+    }
+  })
+}
+
+function shortcutMenuItems(p: PluginSummary): ContextMenuItem[] {
+  return [
+    { key: 'edit', label: '编辑应用…', icon: 'pencil', action: () => void editShortcut(p) },
+    { key: 'sep', separator: true },
+    {
+      key: 'remove',
+      label: '从启动器移除…',
+      icon: 'trash',
+      danger: true,
+      action: () => confirmRemoveShortcut(p)
+    }
+  ]
+}
+
+/** 内置插件既没有目录也没有卸载入口时返回空数组，模板据此不渲染 ··· */
+function pluginMenuItems(p: PluginSummary): ContextMenuItem[] {
+  const items: ContextMenuItem[] = []
+  if (p.source !== 'shortcut') {
+    items.push({
+      key: 'reveal',
+      label: '打开插件目录',
+      icon: 'folder',
+      action: () => void revealDir(p)
+    })
+  }
+  if (p.source === 'installed') {
+    if (items.length) items.push({ key: 'sep', separator: true })
+    items.push({
+      key: 'uninstall',
+      label: '卸载…',
+      icon: 'trash',
+      danger: true,
+      action: () => confirmUninstall(p)
+    })
+  }
+  return items
+}
 </script>
 
 <template>
@@ -256,7 +364,7 @@ async function revealDir(p: PluginSummary): Promise<void> {
               想恢复点「恢复默认」，或在框里按一个新组合键。
             </p>
             <p class="hint">
-              点击输入框后直接按下组合键（默认 {{ config.defaultHotkey ?? 'Ctrl+Shift+Space' }}）。
+              点击输入框后直接按下组合键（默认 {{ prettyHotkey(config.defaultHotkey ?? 'CommandOrControl+Shift+Space') }}）。
               退格或「清除」可解绑，允许完全不用全局快捷键；若与其他程序冲突会提示。
             </p>
           </section>
@@ -357,7 +465,14 @@ async function revealDir(p: PluginSummary): Promise<void> {
                 <NButton size="tiny" quaternary @click="importShortcuts">从系统导入</NButton>
               </div>
             </div>
-            <div v-for="p in shortcutPlugins" :key="p.id" class="shortcut-row">
+            <div
+              v-for="p in shortcutPlugins"
+              :key="p.id"
+              class="shortcut-row"
+              @contextmenu.prevent="
+                openRowMenu(shortcutMenuItems(p), { x: $event.clientX, y: $event.clientY })
+              "
+            >
               <div class="p-icon">
                 <img v-if="p.icon" :src="p.icon" alt="" draggable="false" />
                 <span v-else class="p-fallback"><AppIcon name="grid" :size="14" /></span>
@@ -367,20 +482,19 @@ async function revealDir(p: PluginSummary): Promise<void> {
                 <div class="p-id">{{ p.command || p.id }}</div>
               </div>
               <div class="p-actions">
-                <button class="p-act" title="编辑" @click="editShortcut(p)">
-                  <AppIcon name="pencil" :size="14" />
-                </button>
-                <NPopconfirm @positive-click="removeShortcut(p)">
-                  <template #trigger>
-                    <button class="p-act danger" title="删除"><AppIcon name="trash" :size="14" /></button>
-                  </template>
-                  删除「{{ p.name }}」？只是从启动器移除，不会动硬盘上的程序。
-                </NPopconfirm>
                 <NSwitch
                   size="small"
                   :value="!p.disabled"
                   @update:value="(v: boolean) => setPluginEnabled(p, v)"
                 />
+                <button
+                  class="row-more"
+                  title="更多操作"
+                  aria-label="更多操作"
+                  @click="openRowMenuFromButton(shortcutMenuItems(p), $event)"
+                >
+                  <span class="dots"><i /><i /><i /></span>
+                </button>
               </div>
             </div>
             <p v-if="!shortcutPlugins.length" class="hint">
@@ -394,7 +508,15 @@ async function revealDir(p: PluginSummary): Promise<void> {
 
           <section class="card">
             <h3>插件管理</h3>
-            <div v-for="p in store.plugins" :key="p.id" class="plugin-row">
+            <div
+              v-for="p in store.plugins"
+              :key="p.id"
+              class="plugin-row"
+              @contextmenu.prevent="
+                pluginMenuItems(p).length &&
+                  openRowMenu(pluginMenuItems(p), { x: $event.clientX, y: $event.clientY })
+              "
+            >
               <div class="p-icon">
                 <img v-if="p.icon" :src="p.icon" alt="" draggable="false" />
                 <span v-else class="p-fallback"><AppIcon name="grid" :size="14" /></span>
@@ -409,20 +531,20 @@ async function revealDir(p: PluginSummary): Promise<void> {
                 <div class="p-id">{{ p.id }}</div>
               </div>
               <div class="p-actions">
-                <button v-if="p.source !== 'shortcut'" class="p-act" title="打开插件目录" @click="revealDir(p)">
-                  <AppIcon name="folder" :size="14" />
-                </button>
-                <NPopconfirm v-if="p.source === 'installed'" @positive-click="uninstallPlugin(p)">
-                  <template #trigger>
-                    <button class="p-act danger" title="卸载"><AppIcon name="trash" :size="14" /></button>
-                  </template>
-                  卸载「{{ p.name }}」？（插件文件删除，数据保留）
-                </NPopconfirm>
                 <NSwitch
                   size="small"
                   :value="!p.disabled"
                   @update:value="(v: boolean) => setPluginEnabled(p, v)"
                 />
+                <button
+                  v-if="pluginMenuItems(p).length"
+                  class="row-more"
+                  title="更多操作"
+                  aria-label="更多操作"
+                  @click="openRowMenuFromButton(pluginMenuItems(p), $event)"
+                >
+                  <span class="dots"><i /><i /><i /></span>
+                </button>
               </div>
             </div>
             <p class="hint">
@@ -452,10 +574,8 @@ async function revealDir(p: PluginSummary): Promise<void> {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #fff;
-  border-radius: 16px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.2);
+  background: var(--bg);
+  border-radius: var(--r-xl);
   overflow: hidden;
 }
 
@@ -463,27 +583,30 @@ async function revealDir(p: PluginSummary): Promise<void> {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 16px 20px 10px;
+  padding: 14px 18px 8px;
 }
 
 .settings-header h2 {
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 .back {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 13px;
-  color: #646a73;
-  padding: 5px 10px 5px 6px;
-  border-radius: 8px;
+  gap: 2px;
+  height: 28px;
+  padding: 0 10px 0 6px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  color: var(--text-2);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
 .back:hover {
-  background: #f2f3f5;
-  color: #1f2329;
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 
 .spacer {
@@ -505,7 +628,7 @@ async function revealDir(p: PluginSummary): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  border-right: 1px solid #f2f3f5;
+  border-right: 1px solid var(--line-soft);
 }
 
 .nav-item {
@@ -514,20 +637,21 @@ async function revealDir(p: PluginSummary): Promise<void> {
   gap: 8px;
   height: 32px;
   padding: 0 8px;
-  border-radius: 8px;
-  font-size: 13px;
-  color: #646a73;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  color: var(--text-2);
   text-align: left;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
 .nav-item:hover {
-  background: #f5f6f7;
-  color: #1f2329;
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 
 .nav-item.active {
-  background: #eef0ff;
-  color: #4f46e5;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
   font-weight: 500;
 }
 
@@ -545,13 +669,14 @@ async function revealDir(p: PluginSummary): Promise<void> {
   line-height: 16px;
   padding: 0 5px;
   border-radius: 999px;
-  background: #f2f3f5;
-  color: #8f959e;
+  background: var(--bg-active);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
 }
 
 .nav-item.active .nav-badge {
-  background: #dfe3ff;
-  color: #4f46e5;
+  background: rgba(99, 102, 241, 0.18);
+  color: var(--accent-strong);
 }
 
 .settings-body {
@@ -575,14 +700,16 @@ async function revealDir(p: PluginSummary): Promise<void> {
 }
 
 .card {
-  border: 1px solid #eceeef;
-  border-radius: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
   padding: 14px 16px;
+  background: var(--bg);
 }
 
 .card h3 {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
+  color: var(--text-1);
   margin-bottom: 12px;
 }
 
@@ -613,25 +740,26 @@ async function revealDir(p: PluginSummary): Promise<void> {
   margin-top: 10px;
   padding: 3px;
   border-radius: 9px;
-  background: #f5f6f7;
+  background: var(--bg-soft);
 }
 
 .seg-item {
   padding: 5px 12px;
   border-radius: 7px;
-  font-size: 12.5px;
-  color: #646a73;
+  font-size: 12px;
+  color: var(--text-2);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
 .seg-item:hover {
-  color: #1f2329;
+  color: var(--text-1);
 }
 
 .seg-item.active {
-  background: #fff;
-  color: #1f2329;
+  background: var(--bg);
+  color: var(--text-1);
   font-weight: 500;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-1);
 }
 
 .card-head {
@@ -656,8 +784,15 @@ async function revealDir(p: PluginSummary): Promise<void> {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px 0;
-  border-bottom: 1px solid #f5f6f7;
+  padding: 6px 6px;
+  margin: 0 -6px;
+  border-radius: var(--r-sm);
+  border-bottom: 1px solid var(--line-soft);
+  transition: background var(--dur) var(--ease);
+}
+
+.shortcut-row:hover {
+  background: var(--bg-hover);
 }
 
 .shortcut-row:last-of-type {
@@ -668,7 +803,7 @@ async function revealDir(p: PluginSummary): Promise<void> {
   font-family: ui-monospace, Consolas, monospace;
   padding: 1px 4px;
   border-radius: 4px;
-  background: #f2f3f5;
+  background: var(--bg-active);
 }
 
 .hotkey-row {
@@ -731,9 +866,9 @@ async function revealDir(p: PluginSummary): Promise<void> {
 
 .hint {
   margin-top: 8px;
-  font-size: 12px;
-  color: #8f959e;
-  line-height: 1.6;
+  font-size: 11.5px;
+  color: var(--text-3);
+  line-height: 1.65;
 }
 
 .hint.warn {
@@ -744,8 +879,15 @@ async function revealDir(p: PluginSummary): Promise<void> {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 0;
-  border-bottom: 1px solid #f5f6f7;
+  padding: 7px 6px;
+  margin: 0 -6px;
+  border-radius: var(--r-sm);
+  border-bottom: 1px solid var(--line-soft);
+  transition: background var(--dur) var(--ease);
+}
+
+.plugin-row:hover {
+  background: var(--bg-hover);
 }
 
 .plugin-row:last-of-type {
@@ -821,7 +963,43 @@ async function revealDir(p: PluginSummary): Promise<void> {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+}
+
+/* 行内更多操作：与 AI 会话列表的 ··· 保持一致的手感 */
+.row-more {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--text-3);
+  opacity: 0.45;
+  transition: opacity var(--dur) var(--ease), background var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+
+.shortcut-row:hover .row-more,
+.plugin-row:hover .row-more,
+.row-more:focus-visible {
+  opacity: 1;
+}
+
+.row-more:hover {
+  background: var(--bg-active);
+  color: var(--text-1);
+}
+
+.dots {
+  display: flex;
+  gap: 1.5px;
+}
+
+.dots i {
+  width: 2.5px;
+  height: 2.5px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .p-act {
@@ -830,16 +1008,16 @@ async function revealDir(p: PluginSummary): Promise<void> {
   width: 26px;
   height: 26px;
   border-radius: 7px;
-  color: #646a73;
+  color: var(--text-2);
 }
 
 .p-act:hover {
-  background: #f2f3f5;
-  color: #1f2329;
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 
 .p-act.danger:hover {
-  color: #d5304f;
-  background: #fdecef;
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 </style>

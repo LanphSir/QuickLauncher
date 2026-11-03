@@ -95,8 +95,8 @@ async function save(): Promise<void> {
   width: 440px;
   max-width: calc(100vw - 48px);
   background: #fff;
-  border-radius: 16px;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.24);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-3);
   padding: 20px;
   animation: pop 0.16s ease;
 }
@@ -129,18 +129,18 @@ async function save(): Promise<void> {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  color: #a1a6ad;
+  color: var(--text-3);
 }
 
 .close:hover {
-  background: #f2f3f5;
-  color: #1f2329;
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 
 .desc {
   margin-top: 8px;
   font-size: 12.5px;
-  color: #8f959e;
+  color: var(--text-3);
   line-height: 1.6;
 }
 
@@ -153,7 +153,7 @@ async function save(): Promise<void> {
 
 .form label {
   font-size: 12px;
-  color: #646a73;
+  color: var(--text-2);
 }
 
 .field-row {
@@ -173,14 +173,14 @@ async function save(): Promise<void> {
 .hint {
   font-size: 11.5px;
   line-height: 1.5;
-  color: #a1a6ad;
+  color: var(--text-3);
 }
 
 .hint code {
   font-family: ui-monospace, Consolas, monospace;
   padding: 1px 4px;
   border-radius: 4px;
-  background: #f2f3f5;
+  background: var(--bg-hover);
 }
 
 .field {
@@ -190,11 +190,11 @@ async function save(): Promise<void> {
   border-radius: 8px;
   outline: none;
   font-size: 12.5px;
-  color: #1f2329;
+  color: var(--text-1);
 }
 
 .field:focus {
-  border-color: #6366f1;
+  border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
 }
 

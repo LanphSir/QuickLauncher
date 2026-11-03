@@ -11,6 +11,92 @@
 
 ---
 
+## v0.6.5 — 界面统一与操作收口（2026-11-03）
+
+**目标**：把"一个功能一个样子"的界面收成一套。三件事：横向对齐颜色/圆角/边框/间距；
+把散布在行尾的破坏性按钮收进 `···` 菜单；修掉 AI 助手页常驻的横竖滚动条。
+
+### 1. 设计令牌只有一份（`src/shared/theme.css`）
+
+核心渲染层与插件页是两套独立构建，但用户看到的是同一块面板里的两块。以前各自写死
+`#1f2329` / `#8f959e` / `#e5e6eb`，同一个"灰"在不同组件里能出现四种深浅。
+
+现在 `theme.css` 定义文本四档、边框两档、圆角五档、阴影三档、焦点环、缓动，两边的入口
+都先 import 它，再加载各自的组件样式。插件页通过 `../../../src/shared/theme.css` 引用——
+跨目录 import 在这套 vite 配置里是可行的，类型/协议文件早就有先例。
+
+**细节**：滚动条从固定 14% 深灰改成"透明轨道 + 内缩 thumb"（`border: 3px solid transparent`
++ `background-clip: padding-box`），静止时几乎看不见，悬浮变深。
+
+### 2. AI 页滚动条的真正原因不是布局，是没做重置
+
+插件页的 `index.html` 从未引入任何 reset：`body` 默认 8px margin 还在，而 `.app` 又写了
+`height: 100vh`。文档高度 = 100vh + 16px，垂直滚动条于是常驻；滚动条占宽后再叠加
+`textarea` 的 content-box 宽度，横向也溢出。
+
+修法不是 `overflow: hidden` 盖上，而是把 reset 补上（`html/body/#app` 满高、`box-sizing`
+统一、margin 归零），`.app` 改用 `100%`。**这类"怎么拉伸都有滚动条"的问题，先怀疑盒模型，
+再怀疑布局。**
+
+### 3. 破坏性操作一律进 `···`，并配自绘确认框
+
+用户的原话是"不直接用删除"。真正的问题不是图标不好看，而是**删除和打开只差 20px**：
+鼠标一抖就是不可逆操作。改动覆盖五处：
+
+| 位置 | 原来 | 现在 |
+|---|---|---|
+| AI 会话列表 | hover 出现 `×` + `window.confirm` | `···` → 重命名 / 删除；右键同菜单；自绘确认框 |
+| 全部应用 | 一排 4 个图标按钮（含垃圾桶） | 主操作只留 `···`，右键同菜单 |
+| 设置 → 外部应用 | 编辑 + 删除气泡确认 | `···` → 编辑 / 从启动器移除 |
+| 设置 → 插件管理 | 打开目录 + 卸载气泡确认 | `···` → 打开目录 / 卸载 |
+| 设置 → 模型服务 | 「测试 编辑 删除」三个文字按钮 | `···` → 测试 / 编辑 / 删除 |
+| 应用详情 | 「清除插件数据」与「打开」并排 | 移到右上 `···` |
+
+`window.confirm` 一律换掉：它在这个圆角浮窗里像另一个程序弹出来的，还会阻塞渲染进程。
+自绘的确认框固定在"取消在左、默认焦点在取消"——回车就能通过的删除确认等于没有确认。
+
+**`···` 的可见性分两档**：会话列表项多、行矮，默认隐形（hover/选中才出现）；列表型页面
+行高足够，常驻 35% 透明、hover 变实——完全隐藏会让"这里有操作"没人发现。
+
+### 4. 顺手修的三处不一致
+
+- **naive-ui 主色是绿色**，和面板的 indigo 摆在一起像两套设计。在 `NConfigProvider` 用
+  `themeOverrides` 覆盖 `primaryColor` 系与圆角字号，`NButton`/`NSwitch`/`NSelect` 一次性对齐。
+- **快捷键显示成 `CommandOrControl`**：accelerator 是给 Electron 看的，界面上映射成 `Ctrl`/`Win`。
+- **全局 `:focus-visible` 与组件焦点态叠加**：搜索框、对话输入框本来就有自己的焦点表达，
+  各自 `box-shadow: none` 掉全局环，避免"框里还有一圈框"。
+
+### 关键文件
+
+```
+src/shared/theme.css                     设计令牌 + 重置 + 滚动条（两端共用）
+src/renderer/src/components/ContextMenu.vue   重写：分隔线、hint、测量后翻转定位
+src/renderer/src/components/ConfirmDialog.vue 新增：宿主侧确认框
+plugins/ai/src/components/PopMenu.vue         新增：插件页浮层菜单（宿主浮层盖不到插件页）
+plugins/ai/src/components/ConfirmDialog.vue   新增：插件页确认框
+plugins/ai/src/App.vue                        会话列表、气泡、composer、工具卡片
+src/renderer/src/components/{AppManage,SettingsView,AiSettings,PluginDetail,AppTile}.vue
+```
+
+### 验证
+
+- `pnpm typecheck` 0 错；`pnpm test` 268/268（纯逻辑层未受影响）
+- `electron-vite build` + `build:plugins` 通过
+- `pnpm smoke` 135/135（选择器与交互契约未变）
+- 逐屏截图核对：主界面、全部应用（含 `···` 菜单）、设置四个分组、应用详情、
+  AI 空态 / 会话菜单 / 删除确认框
+- 交互实测：新建会话 → 行内重命名（`重命名测试`）→ `···` 删除 → 确认框 → 列表从 11 项变 10 项
+
+### 遗留
+
+- **组件不能跨构建复用**：`PopMenu` / `ConfirmDialog` 在宿主与插件页各有一份实现。
+  两边样式令牌已统一，但逻辑（定位、Esc、焦点）是重复的。等插件页需要第三个浮层时，
+  再抽一个不含 Vue 依赖的 `positionPopover(el, x, y)` 工具函数共享定位逻辑。
+- 只有 AI 插件做了页面级视觉重做；计算器/记事本/翻译等仍是各自原有样式，
+  与宿主差距不大但未逐屏核对。
+
+---
+
 ## v0.6.4 — MCP 接入（2026-11-02）
 
 **目标**：让插件能把外部 MCP server 的能力接进对话，同时不把「执行任意命令」这件事

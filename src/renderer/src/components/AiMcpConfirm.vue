@@ -103,8 +103,8 @@ async function decide(allow: boolean): Promise<void> {
   flex-direction: column;
   overflow: hidden;
   background: #fff;
-  border-radius: 16px;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.24);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-3);
   padding: 20px;
   animation: pop 0.16s ease;
 }
@@ -130,7 +130,7 @@ async function decide(allow: boolean): Promise<void> {
   flex: 1;
   font-size: 15.5px;
   font-weight: 600;
-  color: #1f2329;
+  color: var(--text-1);
 }
 
 .close {
@@ -139,19 +139,19 @@ async function decide(allow: boolean): Promise<void> {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  color: #a1a6ad;
+  color: var(--text-3);
 }
 
 .close:hover {
-  background: #f2f3f5;
-  color: #1f2329;
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 
 .desc {
   flex: none;
   margin-top: 8px;
   font-size: 12.5px;
-  color: #8f959e;
+  color: var(--text-3);
   line-height: 1.65;
 }
 
@@ -159,16 +159,16 @@ async function decide(allow: boolean): Promise<void> {
   flex: none;
   margin-top: 12px;
   padding: 10px 12px;
-  border: 1px solid #eceeef;
+  border: 1px solid var(--line);
   border-radius: 10px;
-  background: #fafbfc;
+  background: var(--bg-soft);
 }
 
 .cmd-line {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12.5px;
   line-height: 1.6;
-  color: #1f2329;
+  color: var(--text-1);
   word-break: break-all;
   /* 命令可能很长，但绝不截断：看不全就等于没确认 */
   max-height: 160px;
@@ -181,11 +181,11 @@ async function decide(allow: boolean): Promise<void> {
   gap: 2px 10px;
   margin: 8px 0 0;
   font-size: 11.5px;
-  color: #8f959e;
+  color: var(--text-3);
 }
 
 .cmd-meta dt {
-  color: #a1a6ad;
+  color: var(--text-3);
 }
 
 .cmd-meta dd {

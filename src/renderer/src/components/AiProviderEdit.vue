@@ -242,8 +242,8 @@ async function test(): Promise<void> {
   flex-direction: column;
   overflow: hidden;
   background: #fff;
-  border-radius: 16px;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.24);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-3);
   padding: 20px;
   animation: pop 0.16s ease;
 }
@@ -277,19 +277,19 @@ async function test(): Promise<void> {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  color: #a1a6ad;
+  color: var(--text-3);
 }
 
 .close:hover {
-  background: #f2f3f5;
-  color: #1f2329;
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 
 .desc {
   flex: none;
   margin-top: 8px;
   font-size: 12.5px;
-  color: #8f959e;
+  color: var(--text-3);
   line-height: 1.6;
 }
 
@@ -307,22 +307,22 @@ async function test(): Promise<void> {
 label {
   margin-top: 6px;
   font-size: 12px;
-  color: #5c6470;
+  color: var(--text-2);
 }
 
 .req {
   margin-left: 2px;
-  color: #d03050;
+  color: var(--danger);
 }
 
 .field {
   width: 100%;
   height: 32px;
   padding: 0 10px;
-  border: 1px solid #e5e6eb;
+  border: 1px solid var(--line);
   border-radius: 8px;
   font-size: 13px;
-  color: #1f2329;
+  color: var(--text-1);
   background: #fff;
   outline: none;
 }
@@ -334,7 +334,7 @@ label {
 
 .field:disabled {
   background: #f7f8f9;
-  color: #a1a6ad;
+  color: var(--text-3);
 }
 
 .mono {
@@ -362,13 +362,13 @@ label {
 
 .switch-label {
   font-size: 12px;
-  color: #8f959e;
+  color: var(--text-3);
 }
 
 .hint {
   margin: 0;
   font-size: 11.5px;
-  color: #a1a6ad;
+  color: var(--text-3);
   line-height: 1.6;
 }
 
@@ -379,14 +379,14 @@ label {
 .hint code {
   padding: 0 3px;
   border-radius: 4px;
-  background: #f4f5f6;
+  background: var(--bg-hover);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
 .err {
   margin: 4px 0 0;
   font-size: 12px;
-  color: #d03050;
+  color: var(--danger);
   line-height: 1.6;
 }
 
@@ -397,7 +397,7 @@ label {
   gap: 8px;
   margin-top: 14px;
   padding-top: 12px;
-  border-top: 1px solid #f4f5f6;
+  border-top: 1px solid var(--line-soft);
 }
 
 .spacer {
