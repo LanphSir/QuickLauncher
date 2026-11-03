@@ -1,11 +1,23 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
+import PopMenu from '../../../src/shared/ui/PopMenu.vue'
+import ConfirmDialog from '../../../src/shared/ui/ConfirmDialog.vue'
+import { MENU_W, type MenuItem } from '../../../src/shared/ui/menu'
 
 /** 翻译源：url 模板中的 {q} 会被替换为 URL 编码后的查询词 */
 interface Source {
   id: string
   name: string
   url: string
+}
+
+/** 一次待确认的破坏性操作 */
+interface PendingConfirm {
+  title: string
+  message: string
+  hint?: string
+  confirmLabel: string
+  run: () => void
 }
 
 const PRESETS: Source[] = [
@@ -29,6 +41,8 @@ const showAdd = ref(false)
 const newName = ref('')
 const newUrl = ref('')
 const addError = ref('')
+const menu = ref<{ x: number; y: number; source: Source } | null>(null)
+const confirm = ref<PendingConfirm | null>(null)
 
 /** contextBridge 传参会做结构化克隆，Vue 响应式 Proxy 无法通过——先转纯数据 */
 function plain<T>(value: T): T {
@@ -68,6 +82,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 
 function onKeydown(e: KeyboardEvent): void {
   if (e.key !== 'Escape') return
+  // 浮层自己处理 Esc（捕获阶段），别顺手把插件退了
+  if (menu.value || confirm.value) return
   if (showAdd.value) {
     showAdd.value = false
     return
@@ -140,9 +156,7 @@ async function addSource(): Promise<void> {
     return
   }
   // 不含 {q} 时后台自动补全为查询参数（站点不支持自动填词时至少能打开主页）
-  const finalUrl = url.includes('{q}')
-    ? url
-    : url + (url.includes('?') ? '&' : '?') + 'q={q}'
+  const finalUrl = url.includes('{q}') ? url : url + (url.includes('?') ? '&' : '?') + 'q={q}'
   const source: Source = { id: `c${Date.now()}`, name, url: finalUrl }
   try {
     custom.value = [...custom.value, source]
@@ -171,34 +185,95 @@ async function removeSource(s: Source): Promise<void> {
   await window.appapi.storage.set('custom-sources', plain(custom.value))
   await persistOrder()
 }
+
+// ---------- 引擎菜单（右键 / hover 的 ··· 共用） ----------
+
+function openTabMenu(s: Source, event: MouseEvent): void {
+  if (event.type === 'contextmenu') {
+    menu.value = { x: event.clientX, y: event.clientY, source: s }
+    return
+  }
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  // 标签在左侧栏，菜单贴右边展开（往内容区方向），不然会翻到窗口外面
+  menu.value = { x: rect.right + 2, y: rect.bottom + 3, source: s }
+}
+
+function tabMenuItems(s: Source): MenuItem[] {
+  const idx = sources.value.findIndex((x) => x.id === s.id)
+  return [
+    { key: 'up', label: '上移', icon: 'up', disabled: idx <= 0 },
+    { key: 'down', label: '下移', icon: 'down', disabled: idx < 0 || idx >= sources.value.length - 1 },
+    {
+      key: 'delete',
+      label: '删除该翻译源',
+      icon: 'delete',
+      danger: true,
+      disabled: !isCustom(s)
+    }
+  ]
+}
+
+function onMenuPick(key: string): void {
+  const target = menu.value?.source
+  menu.value = null
+  if (!target) return
+  if (key === 'up') {
+    void moveSource(target, -1)
+    return
+  }
+  if (key === 'down') {
+    void moveSource(target, 1)
+    return
+  }
+  if (key === 'delete') {
+    confirm.value = {
+      title: `删除「${target.name}」？`,
+      message: '这个自定义翻译源会从列表里移除。',
+      hint: '内置引擎不能删除；需要的话可以重新添加同一个网址。',
+      confirmLabel: '删除',
+      run: () => void removeSource(target)
+    }
+  }
+}
+
+function runConfirm(): void {
+  const state = confirm.value
+  confirm.value = null
+  state?.run()
+}
 </script>
 
 <template>
-  <div class="page">
-    <header>
-      <button class="ghost" @click="exit"><span class="arrow">‹</span> 返回</button>
-      <h1>快速翻译</h1>
-      <button class="ghost" @click="openInBrowser">浏览器打开</button>
-      <button class="ghost add" @click="showAdd = true">＋ 添加翻译源</button>
+  <div class="pl-page flush">
+    <header class="pl-head bar">
+      <button class="pl-btn" @click="exit"><span class="arrow">‹</span> 返回</button>
+      <h1 class="pl-title">快速翻译</h1>
+      <button class="pl-btn" @click="openInBrowser">浏览器打开</button>
+      <button class="pl-btn primary" @click="showAdd = true">＋ 添加翻译源</button>
     </header>
 
     <div class="main">
       <nav class="tabs">
-        <button
-          v-for="(s, i) in sources"
-          :key="s.id"
-          class="tab"
-          :class="{ active: s.id === activeId }"
-          :title="s.url"
-          @click="activate(s)"
-        >
-          <span class="tab-name">{{ s.name }}</span>
-          <span class="tab-ops">
-            <span v-if="i > 0" class="tab-op" title="上移" @click.stop="moveSource(s, -1)">↑</span>
-            <span v-if="i < sources.length - 1" class="tab-op" title="下移" @click.stop="moveSource(s, 1)">↓</span>
-            <span v-if="isCustom(s)" class="tab-op del" title="删除该翻译源" @click.stop="removeSource(s)">✕</span>
-          </span>
-        </button>
+        <div v-for="(s, i) in sources" :key="s.id" class="tab-wrap">
+          <button
+            class="tab"
+            :class="{ active: s.id === activeId }"
+            :title="s.url"
+            @click="activate(s)"
+            @contextmenu.prevent="openTabMenu(s, $event)"
+          >
+            <span class="tab-name">{{ s.name }}</span>
+          </button>
+          <!-- 操作入口独立成按钮（不能嵌在 .tab 里面：button 套 button 是非法结构） -->
+          <button
+            class="tab-op"
+            :aria-label="`${s.name} 的操作`"
+            :tabindex="i === 0 ? 0 : -1"
+            @click.stop="openTabMenu(s, $event)"
+          >
+            ···
+          </button>
+        </div>
       </nav>
 
       <div class="views">
@@ -211,131 +286,181 @@ async function removeSource(s: Source): Promise<void> {
             :src="urls[s.id] ?? homeUrl(s)"
           />
         </template>
-        <div v-if="!created.length" class="placeholder">
+        <div v-if="!created.length" class="pl-empty placeholder">
           <p>左侧选择翻译引擎开始使用</p>
           <p class="sub">在面板输入英文并回车打开本应用，会直接用当前引擎翻译</p>
         </div>
       </div>
     </div>
 
-    <div v-if="showAdd" class="add-backdrop">
-      <div class="add-card">
-        <header class="add-head">
+    <div v-if="showAdd" class="pl-mask">
+      <div class="pl-dialog">
+        <div class="pl-dialog-head">
           <h2>添加翻译源</h2>
-          <button class="x" title="关闭" @click="showAdd = false">✕</button>
-        </header>
-        <label>名称</label>
-        <input v-model="newName" class="field" type="text" placeholder="如有道翻译" spellcheck="false" />
-        <label>网址（可含 q 占位符，打开时替换为要翻译的词）</label>
+          <button class="pl-icon-btn" title="关闭" @click="showAdd = false">✕</button>
+        </div>
+        <label class="pl-label">名称</label>
+        <input v-model="newName" class="pl-input" type="text" placeholder="如有道翻译" spellcheck="false" />
+        <label class="pl-label">网址（可含 {q} 占位符，打开时替换为要翻译的词）</label>
         <input
           v-model="newUrl"
-          class="field mono"
+          class="pl-input mono"
           type="text"
           placeholder="https://fanyi.youdao.com/"
           spellcheck="false"
         />
-        <p class="hint">
-          直接粘贴翻译网站地址即可；若网址不含 <code>q</code> 占位符，会自动追加
+        <p class="pl-hint">
+          直接粘贴翻译网站地址即可；若网址不含 <code>{q}</code> 占位符，会自动追加
           <code>?q=…</code> 传参（不支持传参的站点也能添加，仅打开主页后手动输入）。
-          需要精确控制可自行写入占位符，如 <code>https://fanyi.youdao.com/#auto/zh/q</code> 样式。
+          需要精确控制可自行写入占位符。
         </p>
         <p v-if="addError" class="err">{{ addError }}</p>
-        <div class="row">
-          <button class="go" @click="addSource">添加</button>
-          <button class="ghost" @click="showAdd = false">取消</button>
+        <div class="pl-actions">
+          <button class="pl-btn" @click="showAdd = false">取消</button>
+          <button class="pl-btn primary" @click="addSource">添加</button>
         </div>
       </div>
     </div>
+
+    <PopMenu
+      v-if="menu"
+      :x="menu.x"
+      :y="menu.y"
+      :items="tabMenuItems(menu.source)"
+      @pick="onMenuPick"
+      @close="menu = null"
+    />
+    <ConfirmDialog
+      v-if="confirm"
+      :title="confirm.title"
+      :message="confirm.message"
+      :hint="confirm.hint"
+      :confirm-label="confirm.confirmLabel"
+      danger
+      @confirm="runConfirm"
+      @cancel="confirm = null"
+    />
   </div>
 </template>
 
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-html, body, #app { height: 100%; }
-body {
-  font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-  color: #1f2329; background: #fff; user-select: none;
+/* 骨架与控件来自 plugin-ui.css；这里只保留「左侧引擎栏 + 右侧 webview」的布局 */
+.bar {
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line-soft);
 }
-.page { height: 100%; display: flex; flex-direction: column; }
-header {
-  flex: none; display: flex; align-items: center; gap: 8px;
-  padding: 10px 14px; border-bottom: 1px solid #f2f3f5;
+
+.main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
 }
-h1 { flex: 1; text-align: center; font-size: 14px; font-weight: 600; }
-.ghost {
-  font-size: 12.5px; color: #646a73; padding: 5px 9px;
-  border-radius: 8px; border: none; background: none; cursor: pointer;
-}
-.ghost:hover { background: #f2f3f5; color: #1f2329; }
-.ghost.add { color: #0b96d6; }
-.arrow { font-size: 14px; }
-.main { flex: 1; display: flex; min-height: 0; }
+
 .tabs {
-  flex: none; width: 126px; padding: 8px 6px;
-  border-right: 1px solid #f2f3f5;
-  display: flex; flex-direction: column; gap: 3px; overflow-y: auto;
+  flex: none;
+  width: 126px;
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow-y: auto;
+  border-right: 1px solid var(--line-soft);
 }
+
+.tab-wrap {
+  position: relative;
+  display: flex;
+}
+
 .tab {
-  position: relative; display: flex; align-items: center;
-  min-height: 32px; padding: 0 8px 0 10px; border: none; border-radius: 8px;
-  background: none; cursor: pointer; font-size: 12.5px; color: #646a73; text-align: left;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 26px 0 10px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  color: var(--text-2);
+  text-align: left;
+  transition:
+    background var(--dur) var(--ease),
+    color var(--dur) var(--ease);
 }
-.tab:hover { background: #f5f6f7; }
-.tab.active { background: #e8f4fd; color: #0b7ec2; font-weight: 500; }
-.tab-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tab-ops { flex: none; display: none; align-items: center; gap: 2px; }
-.tab:hover .tab-ops { display: inline-flex; }
+
+.tab:hover {
+  background: var(--bg-hover);
+}
+
+.tab.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 500;
+}
+
+.tab-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 引擎的操作入口：默认隐形，hover/选中才出现，避免一排小图标把侧栏撑乱 */
 .tab-op {
-  display: grid; place-items: center; width: 16px; height: 16px;
-  border-radius: 4px; font-size: 10px; color: #a1a6ad; cursor: pointer;
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-xs);
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: var(--text-3);
+  opacity: 0;
+  cursor: pointer;
+  transition:
+    opacity var(--dur) var(--ease),
+    background var(--dur) var(--ease);
 }
-.tab-op:hover { background: rgba(0, 0, 0, 0.08); color: #1f2329; }
-.tab-op.del:hover { color: #d5304f; }
-.views { flex: 1; position: relative; min-width: 0; }
-webview.engine {
-  position: absolute; inset: 0; width: 100%; height: 100%;
-  background: #fff;
+
+.tab-wrap:hover .tab-op,
+.tab.active + .tab-op,
+.tab-op:focus-visible {
+  opacity: 1;
 }
+
+.tab-op:hover {
+  background: var(--bg-active);
+  color: var(--text-1);
+}
+
+.views {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+}
+
+/* 空态铺满右侧内容区（.pl-empty 本身是 flex 居中的） */
 .placeholder {
-  position: absolute; inset: 0; display: flex; flex-direction: column;
-  align-items: center; justify-content: center; gap: 6px; color: #8f959e; font-size: 14px;
+  position: absolute;
+  inset: 0;
 }
-.placeholder .sub { font-size: 12px; color: #b4b8bf; }
-/* 弹窗遮罩：覆盖全窗口，点击遮罩不关闭（避免选中文本时误触），仅 Esc/取消/✕ 关闭 */
-.add-backdrop {
-  position: fixed; inset: 0; z-index: 50;
-  background: rgba(15, 18, 25, 0.45);
-  display: grid; place-items: center;
+
+webview.engine {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
 }
-.add-card {
-  width: 420px; background: #fff; border-radius: 14px; padding: 18px;
-  box-shadow: 0 14px 50px rgba(0, 0, 0, 0.28); display: flex; flex-direction: column; gap: 6px;
+
+.err {
+  font-size: 12px;
+  color: var(--danger);
 }
-.add-head { display: flex; align-items: center; margin-bottom: 4px; }
-.add-head h2 { flex: 1; font-size: 15px; }
-.x {
-  display: grid; place-items: center; width: 24px; height: 24px;
-  border: none; border-radius: 6px; background: none; cursor: pointer;
-  color: #a1a6ad; font-size: 12px;
-}
-.x:hover { background: #f2f3f5; color: #1f2329; }
-.add-card label { font-size: 12px; color: #646a73; }
-.field {
-  height: 34px; padding: 0 10px; font-size: 13px; color: #1f2329;
-  border: 1px solid #dfe1e4; border-radius: 8px; outline: none;
-}
-.field:focus { border-color: #0ea5e9; }
-.field.mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
-.hint { font-size: 11.5px; color: #8f959e; line-height: 1.6; }
-.hint code {
-  font-family: ui-monospace, Consolas, monospace; font-size: 10.5px;
-  background: #f5f6f7; padding: 0.5px 4px; border-radius: 4px;
-}
-.err { font-size: 12px; color: #d5304f; }
-.row { display: flex; gap: 8px; margin-top: 10px; }
-.go {
-  flex: none; padding: 7px 18px; border: none; border-radius: 8px;
-  background: #0ea5e9; color: #fff; font-size: 13px; cursor: pointer;
-}
-.go:hover { background: #0b96d6; }
 </style>

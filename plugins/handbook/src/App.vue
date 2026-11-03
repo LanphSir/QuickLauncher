@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import PopMenu from '../../../src/shared/ui/PopMenu.vue'
+import ConfirmDialog from '../../../src/shared/ui/ConfirmDialog.vue'
+import { MENU_W, type MenuItem } from '../../../src/shared/ui/menu'
 import { MANUALS } from './data/manuals.generated'
 import { escapeHtml, parseMarkdown, plainText, type Block } from './markdown'
 import type { Manual, PluginDocMeta } from './types'
@@ -38,6 +41,12 @@ const blocks = ref<Block[]>([])
 const blockCache = new Map<string, Block[]>()
 let searchIndex: SearchEntry[] = []
 let toastTimer: ReturnType<typeof setTimeout> | undefined
+
+/** 自定义文档行的 `···` / 右键菜单；确认框负责删除这类不可逆操作 */
+const menu = ref<{ x: number; y: number; doc: PluginDocMeta } | null>(null)
+const confirm = ref<{ title: string; message: string; hint?: string; confirmLabel: string; run: () => void } | null>(
+  null
+)
 
 /** 每本手册的匹配词覆盖（按 manual.id 存，空 = 沿用 manual.json 的默认值） */
 const keywordOverrides = ref<Record<string, string[]>>({})
@@ -323,6 +332,56 @@ function openDocsFolder(): void {
   void window.appapi.docs.reveal()
 }
 
+// ---------- 自定义文档的菜单（`···` 与右键共用） ----------
+
+/** 文档行是密行列表：`···` 按行尾对齐，右键跟随光标 */
+function openDocMenu(doc: PluginDocMeta, event: MouseEvent): void {
+  if (event.type === 'contextmenu') {
+    menu.value = { x: event.clientX, y: event.clientY, doc }
+    return
+  }
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const rightAligned = rect.right - MENU_W
+  menu.value = { x: rightAligned < 8 ? rect.left : rightAligned, y: rect.bottom + 4, doc }
+}
+
+function docMenuItems(): MenuItem[] {
+  return [
+    { key: 'open', label: '阅读这篇', icon: 'chat' },
+    { key: 'reveal', label: '在文档目录中查看', icon: 'folder' },
+    { key: 'delete', label: '删除文档', icon: 'delete', danger: true }
+  ]
+}
+
+function onDocMenuPick(key: string): void {
+  const doc = menu.value?.doc ?? null
+  menu.value = null
+  if (!doc) return
+  if (key === 'open') {
+    void openChapter(CUSTOM_ID, doc.id)
+    return
+  }
+  if (key === 'reveal') {
+    openDocsFolder()
+    return
+  }
+  if (key === 'delete') {
+    confirm.value = {
+      title: `删除「${doc.title}」？`,
+      message: '这份文档会从插件目录里移除，删除后不可恢复。',
+      hint: '内置手册不受影响；想找回需要重新导入原文件。',
+      confirmLabel: '删除',
+      run: () => void removeDoc(doc)
+    }
+  }
+}
+
+function runConfirm(): void {
+  const state = confirm.value
+  confirm.value = null
+  state?.run()
+}
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
@@ -358,6 +417,8 @@ function back(): void {
 function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') {
     e.preventDefault()
+    // 浮层开着时 Esc 只该关浮层（它们在捕获阶段已拦下，这里再兜一层）
+    if (menu.value || confirm.value) return
     back()
     return
   }
@@ -433,18 +494,18 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="page">
-    <header class="bar">
-      <button class="ghost" @click="back"><span class="arrow">‹</span> 返回</button>
+  <div class="pl-page hb">
+    <header class="pl-head bar">
+      <button class="pl-btn" @click="back"><span class="arrow">‹</span> 返回</button>
       <input
         ref="searchEl"
         v-model="search"
-        class="search"
+        class="pl-search"
         type="text"
         placeholder="搜索已启用手册的内容（按 / 聚焦）"
         spellcheck="false"
       />
-      <button class="ghost" @click="view = view === 'manage' ? 'browse' : 'manage'">
+      <button class="pl-btn" @click="view = view === 'manage' ? 'browse' : 'manage'">
         {{ view === 'manage' ? '完成' : '手册管理' }}
       </button>
     </header>
@@ -482,10 +543,17 @@ onUnmounted(() => {
           <p v-if="customDocs.length === 0" class="hint">
             还没有导入文档。支持 .md / .markdown / .txt，可多选；也可以把文件直接放进文档目录后重新进入本页。
           </p>
-          <div v-for="doc in customDocs" :key="doc.id" class="doc-row">
+          <div
+            v-for="doc in customDocs"
+            :key="doc.id"
+            class="doc-row"
+            @contextmenu.prevent="openDocMenu(doc, $event)"
+          >
             <span class="doc-name" :title="doc.title">{{ doc.title }}</span>
             <span class="doc-size">{{ formatSize(doc.size) }}</span>
-            <button class="x" title="删除" @click="removeDoc(doc)">✕</button>
+            <button class="pl-icon-btn" title="更多操作" @click.stop="openDocMenu(doc, $event)">
+              <span class="pl-dots">···</span>
+            </button>
           </div>
         </template>
 
@@ -634,81 +702,40 @@ onUnmounted(() => {
     <transition name="fade">
       <div v-if="toast" class="toast">{{ toast }}</div>
     </transition>
+
+    <PopMenu
+      v-if="menu"
+      :x="menu.x"
+      :y="menu.y"
+      :items="docMenuItems()"
+      @pick="onDocMenuPick"
+      @close="menu = null"
+    />
+    <ConfirmDialog
+      v-if="confirm"
+      :title="confirm.title"
+      :message="confirm.message"
+      :hint="confirm.hint"
+      :confirm-label="confirm.confirmLabel"
+      danger
+      @confirm="runConfirm"
+      @cancel="confirm = null"
+    />
   </div>
 </template>
 
 <style>
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-html,
-body,
-#app {
-  height: 100%;
-}
-
-body {
-  font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-  color: #1f2329;
-  background: #fff;
-  user-select: none;
-  font-size: 13px;
-}
-
-.page {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
+/*
+ * 骨架、页头、按钮来自 plugin-ui.css 的 .pl-*；这里只写手册页特有的两栏布局与正文排版。
+ * 颜色一律取 theme.css 的令牌——正文排版最容易散出一堆"差不多"的灰。
+ */
+.hb {
   padding: 10px 16px 12px;
 }
 
 .bar {
-  display: flex;
-  align-items: center;
   gap: 10px;
   padding-bottom: 8px;
-}
-
-.ghost {
-  font-size: 13px;
-  color: #646a73;
-  padding: 5px 10px;
-  border-radius: 8px;
-  border: none;
-  background: none;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.ghost:hover {
-  background: #f2f3f5;
-  color: #1f2329;
-}
-
-.arrow {
-  font-size: 15px;
-}
-
-.search {
-  flex: 1;
-  height: 32px;
-  padding: 0 12px;
-  border: 1px solid #e5e6eb;
-  border-radius: 9px;
-  font-size: 13px;
-  outline: none;
-  background: #fafbfc;
-  color: #1f2329;
-  -webkit-app-region: no-drag;
-}
-
-.search:focus {
-  border-color: #c7cbf5;
-  background: #fff;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
 }
 
 .body {
@@ -725,13 +752,15 @@ body {
   flex-direction: column;
   gap: 2px;
   overflow-y: auto;
+  /* 侧栏里长占位符/长单词会撑出横向滚动条，宁可裁掉也不整页横滚 */
+  overflow-x: hidden;
   padding-right: 4px;
-  border-right: 1px solid #f0f1f3;
+  border-right: 1px solid var(--line-soft);
 }
 
 .side-title {
   font-size: 11px;
-  color: #a1a6ad;
+  color: var(--text-3);
   padding: 6px 8px 4px;
   letter-spacing: 0.4px;
 }
@@ -742,17 +771,18 @@ body {
 
 .side-back {
   text-align: left;
-  border: none;
-  background: none;
-  color: #646a73;
+  color: var(--text-2);
   font-size: 12px;
   padding: 4px 8px;
-  cursor: pointer;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
+  transition:
+    background var(--dur) var(--ease),
+    color var(--dur) var(--ease);
 }
 
 .side-back:hover {
-  background: #f2f3f5;
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 
 .m-item,
@@ -761,25 +791,23 @@ body {
   align-items: center;
   gap: 8px;
   width: 100%;
-  text-align: left;
-  border: none;
-  background: none;
   padding: 7px 9px;
-  border-radius: 8px;
-  cursor: pointer;
+  border-radius: var(--r-sm);
   font-size: 13px;
-  color: #1f2329;
+  color: var(--text-1);
+  text-align: left;
   line-height: 1.4;
+  transition: background var(--dur) var(--ease);
 }
 
 .m-item:hover,
 .ch-row:hover {
-  background: #f5f6f7;
+  background: var(--bg-hover);
 }
 
 .ch-row.active {
-  background: #eef0ff;
-  color: #4f46e5;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
   font-weight: 600;
 }
 
@@ -793,7 +821,7 @@ body {
 .m-item-sub,
 .m-count {
   font-size: 11px;
-  color: #a1a6ad;
+  color: var(--text-3);
 }
 
 .m-row {
@@ -801,23 +829,23 @@ body {
   align-items: center;
   gap: 8px;
   padding: 6px 9px;
-  border-radius: 8px;
-  cursor: pointer;
+  border-radius: var(--r-sm);
   font-size: 13px;
+  cursor: pointer;
 }
 
 .m-row:hover {
-  background: #f5f6f7;
+  background: var(--bg-hover);
 }
 
 .m-row input {
-  accent-color: #6366f1;
+  accent-color: var(--accent);
 }
 
 /* 管理页每本手册一块：启用开关 + 匹配词输入 */
 .m-block {
   padding-bottom: 6px;
-  border-bottom: 1px dashed #f2f3f5;
+  border-bottom: 1px dashed var(--line-soft);
   margin-bottom: 4px;
 }
 
@@ -827,24 +855,29 @@ body {
 
 .kw {
   display: block;
-  width: calc(100% - 18px);
+  /* 用 margin 让出位置，宽度交给块级自动填充；写 calc(100% - 18px) 再加左边距会溢出 */
+  width: auto;
   margin: 0 9px 2px 27px;
   padding: 4px 8px;
   font-size: 12px;
-  color: #4e5969;
-  background: #f7f8fa;
+  color: var(--text-2);
+  background: var(--bg-soft);
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
   outline: none;
+  transition:
+    background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
 }
 
 .kw:focus {
-  border-color: #c7d2fe;
-  background: #fff;
+  border-color: var(--accent-line);
+  background: var(--bg);
+  box-shadow: none;
 }
 
 .kw::placeholder {
-  color: #b4b8bf;
+  color: var(--text-4);
 }
 
 .m-name {
@@ -856,6 +889,7 @@ body {
 
 .m-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 2px 6px 6px;
 }
@@ -863,57 +897,60 @@ body {
 .mini {
   font-size: 12px;
   padding: 4px 9px;
-  border-radius: 7px;
-  border: 1px solid #e5e6eb;
-  background: #fff;
-  color: #4e5969;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text-2);
   cursor: pointer;
+  transition:
+    background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease);
 }
 
 .mini:hover {
-  border-color: #c7cbf5;
-  color: #4f46e5;
-  background: #f7f8ff;
+  border-color: var(--accent-line);
+  color: var(--accent-strong);
+  background: var(--accent-soft);
 }
 
+/* 自定义文档行：行高比会话项高，`···` 常驻 35% 可见，hover 变实 */
 .doc-row {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 9px;
+  padding: 4px 4px 4px 9px;
   font-size: 12px;
-  border-radius: 7px;
+  border-radius: var(--r-xs);
 }
 
 .doc-row:hover {
-  background: #f5f6f7;
+  background: var(--bg-hover);
 }
 
 .doc-name {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .doc-size {
-  color: #a1a6ad;
+  flex: none;
+  color: var(--text-3);
   font-size: 11px;
 }
 
-.x {
-  border: none;
-  background: none;
-  color: #c9cdd4;
-  cursor: pointer;
-  font-size: 11px;
-  padding: 2px 4px;
-  border-radius: 5px;
+.doc-row .pl-icon-btn {
+  width: 22px;
+  height: 22px;
+  opacity: 0.35;
 }
 
-.x:hover {
-  color: #d5304f;
-  background: #fef0f0;
+.doc-row:hover .pl-icon-btn,
+.doc-row .pl-icon-btn:focus-visible {
+  opacity: 1;
 }
 
 .hit {
@@ -921,42 +958,41 @@ body {
   flex-direction: column;
   gap: 2px;
   width: 100%;
-  text-align: left;
-  border: none;
-  background: none;
   padding: 7px 9px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
   cursor: pointer;
-  border-bottom: 1px solid #f5f6f7;
+  transition: background var(--dur) var(--ease);
 }
 
 .hit:hover {
-  background: #f7f8ff;
+  background: var(--bg-hover);
 }
 
 .hit-title {
   font-size: 13px;
-  color: #1f2329;
   font-weight: 500;
+  color: var(--text-1);
 }
 
 .hit-from {
   font-size: 11px;
-  color: #8f959e;
+  color: var(--text-3);
 }
 
 .hit-snippet {
-  font-size: 11.5px;
-  color: #646a73;
-  line-height: 1.5;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-2);
 }
 
 .hit-snippet mark {
-  background: #fff3bf;
+  background: var(--mark);
   color: inherit;
   padding: 0 1px;
   border-radius: 2px;
@@ -964,10 +1000,12 @@ body {
 
 .hint {
   font-size: 11.5px;
-  color: #a1a6ad;
   line-height: 1.6;
+  color: var(--text-3);
   padding: 6px 9px;
 }
+
+/* ---------- 正文 ---------- */
 
 .doc {
   flex: 1;
@@ -983,7 +1021,7 @@ body {
 
 .crumb {
   font-size: 11px;
-  color: #a1a6ad;
+  color: var(--text-3);
   margin-bottom: 8px;
 }
 
@@ -997,7 +1035,7 @@ body {
   font-size: 16.5px;
   margin: 20px 0 8px;
   padding-bottom: 6px;
-  border-bottom: 1px solid #f0f1f3;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .article h3 {
@@ -1008,20 +1046,20 @@ body {
 .article .h4 {
   font-size: 13.5px;
   margin: 12px 0 4px;
-  color: #4e5969;
+  color: var(--text-2);
 }
 
 .article p {
   line-height: 1.75;
-  color: #2b2f36;
+  color: var(--text-1);
   margin: 7px 0;
   word-break: break-word;
 }
 
 .article a {
-  color: #4f46e5;
+  color: var(--accent-strong);
   text-decoration: none;
-  border-bottom: 1px dotted #c7cbf5;
+  border-bottom: 1px dotted var(--accent-line);
 }
 
 .article a:hover {
@@ -1031,20 +1069,21 @@ body {
 .article code {
   font-family: 'Cascadia Mono', Consolas, 'JetBrains Mono', monospace;
   font-size: 12px;
-  background: #f4f5f7;
-  color: #c7254e;
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: var(--r-xs);
+  background: var(--bg-soft);
+  color: var(--danger);
 }
 
+/* 命中定位：从浅黄淡回透明，比"跳过去就没了"更容易找到位置 */
 .article .found {
-  animation: flash 2.2s ease;
+  animation: flash 2.2s var(--ease);
 }
 
 @keyframes flash {
   0%,
   60% {
-    background: #fff8db;
+    background: var(--mark-soft);
   }
   100% {
     background: transparent;
@@ -1053,10 +1092,10 @@ body {
 
 .code {
   margin: 10px 0;
-  border: 1px solid #eceef1;
-  border-radius: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
   overflow: hidden;
-  background: #fbfcfd;
+  background: var(--bg-soft);
 }
 
 .code-bar {
@@ -1064,10 +1103,10 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 4px 8px;
-  background: #f5f6f8;
-  border-bottom: 1px solid #eceef1;
+  background: var(--bg-soft);
+  border-bottom: 1px solid var(--line);
   font-size: 11px;
-  color: #8f959e;
+  color: var(--text-3);
 }
 
 .code pre {
@@ -1078,12 +1117,13 @@ body {
 }
 
 .code pre code {
-  background: none;
-  color: #24292f;
   padding: 0;
+  background: none;
+  color: var(--text-1);
   font-size: 12px;
   line-height: 1.6;
   white-space: pre;
+  user-select: text;
 }
 
 .list {
@@ -1094,35 +1134,35 @@ body {
 .list li {
   display: flex;
   gap: 6px;
-  line-height: 1.75;
-  color: #2b2f36;
   padding: 1px 0;
+  line-height: 1.75;
+  color: var(--text-1);
   word-break: break-word;
 }
 
 .list .marker {
-  color: #a1a6ad;
+  flex-shrink: 0;
   min-width: 12px;
   text-align: right;
-  flex-shrink: 0;
+  color: var(--text-3);
 }
 
 .article blockquote {
   margin: 10px 0;
   padding: 8px 12px;
-  border-left: 3px solid #c7cbf5;
-  background: #fafbff;
-  border-radius: 0 8px 8px 0;
+  border-left: 3px solid var(--accent-line);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: var(--bg-soft);
 }
 
 .article blockquote p {
-  color: #4e5969;
+  color: var(--text-2);
   margin: 3px 0;
 }
 
 .quote-h {
   font-weight: 600;
-  color: #1f2329 !important;
+  color: var(--text-1) !important;
 }
 
 .tbl {
@@ -1134,23 +1174,25 @@ body {
 
 .tbl th,
 .tbl td {
-  border: 1px solid #eceef1;
+  border: 1px solid var(--line);
   padding: 6px 9px;
   text-align: left;
   line-height: 1.6;
 }
 
 .tbl th {
-  background: #fafbfc;
+  background: var(--bg-soft);
   font-weight: 600;
-  color: #4e5969;
+  color: var(--text-2);
 }
 
 .article hr {
   border: none;
-  border-top: 1px solid #f0f1f3;
+  border-top: 1px solid var(--line-soft);
   margin: 16px 0;
 }
+
+/* ---------- 概览 / 欢迎页 ---------- */
 
 .overview,
 .welcome {
@@ -1165,19 +1207,19 @@ body {
 }
 
 .desc {
-  color: #4e5969;
+  color: var(--text-2);
   line-height: 1.7;
   margin: 6px 0;
 }
 
 .meta {
   font-size: 11.5px;
-  color: #a1a6ad;
+  color: var(--text-3);
   margin: 6px 0 12px;
 }
 
 .meta a {
-  color: #8f959e;
+  color: var(--text-3);
 }
 
 .cards {
@@ -1190,26 +1232,29 @@ body {
 .card {
   display: flex;
   flex-direction: column;
-  gap: 2px;
   align-items: flex-start;
-  padding: 9px 12px;
-  border: 1px solid #eceef1;
-  border-radius: 10px;
-  background: #fff;
-  cursor: pointer;
-  font-size: 12.5px;
-  color: #1f2329;
+  gap: 2px;
   max-width: 210px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  font-size: 12.5px;
+  color: var(--text-1);
+  cursor: pointer;
+  transition:
+    background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
 }
 
 .card:hover {
-  border-color: #c7cbf5;
-  background: #f7f8ff;
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
 }
 
 .card span {
   font-size: 11px;
-  color: #a1a6ad;
+  color: var(--text-3);
 }
 
 .toast {
@@ -1217,34 +1262,21 @@ body {
   left: 50%;
   bottom: 22px;
   transform: translateX(-50%);
-  background: rgba(31, 35, 41, 0.88);
-  color: #fff;
-  font-size: 12px;
   padding: 7px 14px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
+  background: var(--toast-bg);
+  color: var(--on-accent);
+  font-size: 12px;
+  box-shadow: var(--shadow-2);
 }
 
 .fade-enter-active,
 .fade-leave-active {
-  transition: opacity 0.18s;
+  transition: opacity 0.18s var(--ease);
 }
 
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
-}
-
-.side::-webkit-scrollbar,
-.doc::-webkit-scrollbar,
-.code pre::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-.side::-webkit-scrollbar-thumb,
-.doc::-webkit-scrollbar-thumb,
-.code pre::-webkit-scrollbar-thumb {
-  background: #d9dce1;
-  border-radius: 3px;
 }
 </style>

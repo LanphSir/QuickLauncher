@@ -71,6 +71,89 @@
 
 ---
 
+## v0.6.6 — 内置插件统一到同一套 UI 基线（2026-11-03）
+
+**目标**：v0.6.5 只把主面板与 AI 插件收成了一套，其余四个内置插件还各写各的——四份 reset、
+四份按钮样式、四个色系（翻译插件甚至是天蓝色），删除入口也还是"行尾一个 ✕"。
+这一版把插件页也拉进同一个基线。
+
+### 1. 公共层：`src/shared/plugin-ui.css`
+
+和 `theme.css` 的分工写进了文件头：theme.css 给**值**（颜色、圆角、阴影、reset、滚动条），
+plugin-ui.css 给**形**（插件页共有的结构）。放这里而不是塞进 theme.css，是因为主面板有
+自己的组件体系（PanelShell / ContextMenu / OverlayHost），这些类对它没用；反过来插件页
+是独立构建，拿不到宿主组件，只能靠 CSS。
+
+提供的东西：`.pl-page`（三段式满高）、`.pl-head` / `.pl-title`、`.pl-btn`（含 primary / danger）、
+`.pl-icon-btn`、`.pl-input` / `.pl-search`、`.pl-list` / `.pl-row`（含 `.tile` 卡片变体与
+`.active`）、`.pl-empty` / `.pl-tip` / `.pl-hint`、`.pl-mask` / `.pl-dialog` / `.pl-actions`。
+`body` 在插件页统一 13px（面板是浮窗，网页默认 16px 一屏装不下几行）。
+
+顺带给 theme.css 补了四个语义令牌：`--scrim`（遮罩）、`--toast-bg`、`--mark` / `--mark-soft`
+（搜索命中高亮）、`--on-accent`（落在主色/危险色底上的文字）。以前这些散在各处写死。
+
+### 2. 浮层组件从"每个插件一份"变成共享
+
+v0.6.5 把 `PopMenu` / `ConfirmDialog` 做在 AI 插件里，当时的判断是"插件页是原生层，
+宿主组件复用不了"。这话只对了一半——**宿主**那份确实复用不了（OverlayHost 体系不同），
+但插件与插件之间是可以复用的：它们都是独立构建，跨目录 import 一个 .vue 完全没问题
+（`theme.css` 早就这么干了）。
+
+于是有了 `src/shared/ui/{menu.ts,PopMenu.vue,ConfirmDialog.vue}`，AI 插件的本地副本删掉。
+共享版本比原来多了三件小事：上下键在菜单项间移动焦点、滚动容器一滚就关（否则菜单悬在半空）、
+菜单项支持 `disabled`。
+
+### 3. 四个插件重做
+
+| 插件 | 改动 |
+|---|---|
+| 计算器 | 只换了皮：键盘/屏幕/运算符全部走令牌，删掉自己的 reset 与按钮样式 |
+| 剪贴板 | 行从"透明文本"改成卡片式 `.pl-row.tile`；行尾 `✕` 换成 hover 出现的 `···`（右键同菜单）；「清空」从页头按钮挪进页头 `···`，并且**先确认再清** |
+| 翻译 | 天蓝 `#0ea5e9` 换成主色 indigo（之前和整个面板像两个产品）；侧栏三个小图标（↑↓✕）换成一个 `···`，右键同菜单；添加源的弹窗改用 `.pl-dialog` 骨架 |
+| 手册 | 六百科 CSS 逐条令牌化；自定义文档行的 `✕` 换成 `···`（阅读 / 在目录中查看 / 删除 + 确认）；搜索高亮与定位闪烁改用 `--mark` |
+
+### 关键决策
+
+1. **确认框只该有一种长相**。复制到第三份时必然有一份按钮顺序是反的，所以宁可在
+   `src/shared/ui` 里维护一份"插件版"，也不让每个插件自己画。
+2. **插件页不引 naive-ui**。AI 插件的界面是手写的，四个插件若各引一套组件库，主题覆盖、
+   体积、圆角粒度都会再次分叉；这次给的是一条 CSS 骨架，成本几乎为零。
+3. **`···` 的可见性按行高定档**：剪贴板/会话这类密行默认隐形（hover / 选中才出），
+   列表页常驻 35% 透明。全部隐形等于入口不可发现，全部常驻又会让列表变成图标墙。
+
+### 关键文件
+
+- `src/shared/plugin-ui.css`（新，插件页公共层）
+- `src/shared/ui/{menu.ts,PopMenu.vue,ConfirmDialog.vue}`（新，插件页浮层）
+- `src/shared/theme.css`（新增 `--scrim` / `--toast-bg` / `--mark` / `--mark-soft` / `--on-accent`）
+- `plugins/{calculator,clipboard,translator,handbook,ai}/src/{main.ts,App.vue}`
+- 删除：`plugins/ai/src/components/{PopMenu,ConfirmDialog}.vue`、`plugins/ai/src/menu.ts`
+
+### 验证
+
+- `pnpm typecheck` 零错误；`pnpm test` 268/268
+- `pnpm build:plugins` 五个插件全部构建通过（跨目录 import `.vue` 与 `.css` 都没问题）
+- `pnpm smoke` **135/135**（选择器与交互契约未变，AI 页的 `.composer textarea` 仍在）
+- 逐屏截图核对：计算器、剪贴板空态/列表/行菜单/页菜单/清空确认、翻译空态/添加弹窗、
+  手册正文/管理页/文档行菜单/删除确认、AI 页与会话菜单
+- 四页 `document.documentElement.scrollWidth === clientWidth`（无横向溢出）
+
+### 顺带修掉的
+
+- 手册侧栏底部的横向滚动条：`.kw` 用 `width: calc(100% - 18px)` 再加 `margin-left: 27px`，
+  必然溢出，改 `width: auto` + margin；`.side` 补 `overflow-x: hidden`
+- 剪贴板「清空」原本点了就清，没有任何确认
+- 翻译插件的 `#0ea5e9` 与 indigo 主题打架
+
+### 遗留事项
+
+- `PLUGIN_FEATURES` 里的 `"ai"` 仍没有消费点（名字误导，见 v0.6.5 遗留）
+- 计算器键盘区在超宽窗口下按键会被拉得很大，沿用原布局，未加最大宽度
+- 宿主与插件页的浮层仍是两份实现（定位/Esc/焦点逻辑重复），彻底合并需要把宿主也切到
+  插件版组件上，牵扯 OverlayHost 的可见性登记，留到后面单独做
+
+---
+
 ## v0.6.5 — 界面统一与操作收口（2026-11-03）
 
 **目标**：把"一个功能一个样子"的界面收成一套。三件事：横向对齐颜色/圆角/边框/间距；

@@ -154,13 +154,13 @@ function format(value: number): string {
 </script>
 
 <template>
-  <div class="page">
-    <header>
-      <button class="ghost" @click="exit">
+  <div class="pl-page calc">
+    <header class="pl-head">
+      <button class="pl-btn" @click="exit">
         <span class="arrow">‹</span> 返回
       </button>
-      <h1>计算器</h1>
-      <button class="ghost" @click="press('C')">清空</button>
+      <h1 class="pl-title">计算器</h1>
+      <button class="pl-btn" @click="press('C')">清空</button>
     </header>
 
     <div class="screen">
@@ -179,99 +179,47 @@ function format(value: number): string {
         {{ key }}
       </button>
     </div>
-    <p class="tip">支持键盘输入 · Enter 等号 · Backspace 删除 · Esc 返回</p>
+    <p class="pl-tip">支持键盘输入 · Enter 等号 · Backspace 删除 · Esc 返回</p>
   </div>
 </template>
 
 <style>
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-html,
-body,
-#app {
-  height: 100%;
-}
-
-body {
-  font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-  color: #1f2329;
-  background: #fff;
-  user-select: none;
-}
-
-.page {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  padding: 14px 22px 12px;
-}
-
-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-h1 {
-  flex: 1;
-  text-align: center;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.ghost {
-  font-size: 13px;
-  color: #646a73;
-  padding: 5px 10px;
-  border-radius: 8px;
-  border: none;
-  background: none;
-  cursor: pointer;
-}
-
-.ghost:hover {
-  background: #f2f3f5;
-  color: #1f2329;
-}
-
-.arrow {
-  font-size: 15px;
+/* 颜色/圆角/阴影全部取自 theme.css 的令牌；骨架来自 plugin-ui.css 的 .pl-* */
+.calc {
+  padding-bottom: 10px;
 }
 
 .screen {
-  margin: 12px 0;
+  margin: 10px 0;
   padding: 14px 16px;
-  background: #f5f6f7;
-  border-radius: 12px;
-  text-align: right;
-  min-height: 84px;
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 4px;
+  min-height: 84px;
+  border-radius: var(--r-lg);
+  background: var(--bg-soft);
+  text-align: right;
 }
 
 .expr {
-  font-size: 15px;
-  color: #646a73;
-  word-break: break-all;
   min-height: 20px;
+  font-size: 15px;
+  color: var(--text-2);
+  word-break: break-all;
 }
 
 .result {
+  min-height: 34px;
   font-size: 26px;
   font-weight: 600;
-  min-height: 34px;
+  color: var(--text-1);
 }
 
 .result.err {
   font-size: 14px;
-  color: #d5304f;
   font-weight: 400;
+  color: var(--danger);
 }
 
 .keys {
@@ -282,45 +230,42 @@ h1 {
 }
 
 .key {
-  border: none;
-  border-radius: 10px;
-  background: #f5f6f7;
+  border-radius: var(--r-md);
+  background: var(--bg-soft);
+  color: var(--text-1);
   font-size: 18px;
-  cursor: pointer;
-  transition: background 0.1s;
+  transition: background var(--dur) var(--ease);
 }
 
 .key:hover {
-  background: #ececee;
+  background: var(--bg-hover);
 }
 
 .key:active {
-  background: #e0e2e5;
+  background: var(--bg-active);
 }
 
 .key.op {
-  color: #4f46e5;
   font-size: 17px;
+  color: var(--accent-strong);
 }
 
 .key.fn {
-  color: #d5304f;
+  color: var(--danger);
 }
 
 .key.eq {
-  background: #6366f1;
-  color: #fff;
   font-size: 20px;
+  color: var(--on-accent);
+  background: var(--accent);
 }
 
 .key.eq:hover {
-  background: #5759ec;
+  background: var(--accent-hover);
 }
 
-.tip {
-  text-align: center;
-  font-size: 11px;
-  color: #a1a6ad;
-  margin-top: 8px;
+/* 键盘按下的那一下要看得见：键太密，光靠 :active 不够 */
+.key:focus-visible {
+  box-shadow: var(--ring);
 }
 </style>

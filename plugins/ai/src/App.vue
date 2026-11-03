@@ -13,9 +13,9 @@ import type {
   AiToolCallPart,
   AiToolResultPart
 } from '../../../src/shared/ai'
-import PopMenu from './components/PopMenu.vue'
-import ConfirmDialog from './components/ConfirmDialog.vue'
-import { MENU_W, type MenuItem } from './menu'
+import PopMenu from '../../../src/shared/ui/PopMenu.vue'
+import ConfirmDialog from '../../../src/shared/ui/ConfirmDialog.vue'
+import { MENU_W, type MenuItem } from '../../../src/shared/ui/menu'
 
 const api = window.appapi
 
@@ -618,7 +618,7 @@ onMounted(async () => {
             aria-label="更多操作"
             @click.stop="openMenu(s, $event, true)"
           >
-            <span class="dots"><i /><i /><i /></span>
+            <span class="pl-dots">···</span>
           </button>
         </div>
         <p v-if="!sessions.length" class="list-empty">还没有会话，点右上角 ＋ 开始</p>
@@ -991,11 +991,6 @@ onMounted(async () => {
   color: var(--text-1);
 }
 
-.dots {
-  display: flex;
-  gap: 1.5px;
-}
-
 .dots i {
   width: 2.5px;
   height: 2.5px;
@@ -1186,7 +1181,7 @@ onMounted(async () => {
   border-radius: 50%;
   font-size: 10.5px;
   font-weight: 500;
-  color: #fff;
+  color: var(--on-accent);
   background: #b9bfc9;
 }
 
@@ -1513,7 +1508,7 @@ onMounted(async () => {
   padding: 0 14px;
   border-radius: 8px;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   font-size: 12.5px;
   font-weight: 500;
   transition: background var(--dur) var(--ease), transform var(--dur) var(--ease);
@@ -1540,7 +1535,7 @@ onMounted(async () => {
   padding: 7px 13px;
   border-radius: 9px;
   background: rgba(31, 35, 41, 0.9);
-  color: #fff;
+  color: var(--on-accent);
   font-size: 12px;
   box-shadow: var(--shadow-2);
   animation: toast-in 0.16s var(--ease);
@@ -1925,7 +1920,7 @@ onMounted(async () => {
   padding: 0 16px;
   border-radius: 8px;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   font-size: 12.5px;
 }
 

@@ -197,6 +197,60 @@ onUnmounted(stop)                               // 页面真被销毁时也停
 - **关键控件别贴内容区最边缘**：留白那一圈是缩放热区的作用带，贴边的按钮容易被拖拽/缩放手势抢走点击。
 - 布局用 `height: 100%` / `100vh` 即可，进插件时面板会自动伸展到适合阅读的尺寸，退出时还原主页尺寸。
 
+### 界面基线：两份 CSS + 两个共享组件（v0.6.6 起）
+
+插件页和主面板是**同一块面板里的两块**。以前每个插件都自带一份 reset、一份按钮样式和一套
+自己的色值（翻译插件甚至是天蓝色），凑在同一个面板里就是"几个产品拼起来的"。现在基线只有一份：
+
+```ts
+// src/main.ts —— 顺序不能反：先令牌与 reset，再公共骨架
+import '../../../src/shared/theme.css'      // 值：颜色 / 圆角 / 阴影 / reset / 滚动条
+import '../../../src/shared/plugin-ui.css'  // 形：页头 / 按钮 / 输入 / 列表 / 空态 / 对话框
+```
+
+`plugin-ui.css` 提供的类（都用令牌，不需要再写颜色）：
+
+| 类 | 用途 |
+|---|---|
+| `.pl-page`（`.flush`） | 满高三段式页面容器；需要贴边布局（整块 webview）时用 `.pl-page.flush` |
+| `.pl-head` / `.pl-title` / `.pl-title-sub` | 页头与居中标题 |
+| `.pl-btn`（`.primary` / `.danger`） | 文字按钮，30px 高 |
+| `.pl-icon-btn` / `.pl-dots` | 28×28 图标按钮与 `···` 字形 |
+| `.pl-input` / `.pl-search` | 输入框（`.mono` 等宽）与页头搜索框 |
+| `.pl-list` / `.pl-row`（`.tile` / `.active`） | 可滚列表与行；卡片式行加 `.tile`，行内 `···` 默认隐形、hover/选中才出 |
+| `.pl-empty` / `.pl-tip` / `.pl-hint` | 空态、底部快捷键提示、段落说明 |
+| `.pl-mask` / `.pl-dialog` / `.pl-actions` | 表单类弹窗的遮罩、卡片与按钮行 |
+| `.pl-selectable` | 把 `body` 的"整页不可选中"在正文/代码区打开 |
+
+浮层组件（`···` 菜单与确认框）在 `src/shared/ui/`，直接 import 用，**不要再复制一份**：
+
+```ts
+import PopMenu from '../../../src/shared/ui/PopMenu.vue'
+import ConfirmDialog from '../../../src/shared/ui/ConfirmDialog.vue'
+import { MENU_W, type MenuItem } from '../../../src/shared/ui/menu'
+```
+
+- `PopMenu` 接 `x` / `y` / `items`，`items` 每项是 `{ key, label, icon?, danger?, disabled? }`；
+  自带贴边翻转、Esc（捕获阶段，不会连带退出插件）、点外面关闭、上下键切换焦点、滚动即关。
+- `ConfirmDialog` 接 `title` / `message` / `hint?` / `confirmLabel?` / `danger`；**默认焦点在取消**。
+- 宿主那份实现（`src/renderer/src/components/`）走 `OverlayHost` 的可见性登记，插件拿不到也用不了，
+  两边的组件文件是各自独立的。
+
+```vue
+<!-- 行内 ··· + 右键，同一套菜单 -->
+<li class="pl-row tile" @contextmenu.prevent="openMenu(item, $event)">
+  <span class="pl-row-main">{{ item.text }}</span>
+  <button class="pl-icon-btn" @click.stop="openMenu(item, $event)"><span class="pl-dots">···</span></button>
+</li>
+
+<PopMenu v-if="menu" :x="menu.x" :y="menu.y" :items="items" @pick="onPick" @close="menu = null" />
+<ConfirmDialog v-if="confirm" :title="confirm.title" :message="confirm.message" danger
+  @confirm="run" @cancel="confirm = null" />
+```
+
+**破坏性操作不要放在按钮行**：删除/清空/卸载一律进 `···` 或右键菜单，并过一遍 `ConfirmDialog`。
+参考 `plugins/clipboard/`（行删除 + 清空）、`plugins/translator/`（引擎删除）、`plugins/handbook/`（文档删除）。
+
 ## 权限一览
 
 | 权限 | 控制的 API |
@@ -604,6 +658,9 @@ appapi.onInlineQuery(async ({ seq, query }) => {
 - `vite.config.ts` 里 `base: './'`（插件页用相对路径加载资源，dev server 与打包后都能跑）
 - manifest 和图标放 `public/`，构建后自动进入 `dist/`
 - 构建产物 `dist/plugin.json` 会被扫描器识别
+- 入口按顺序 import `../../../src/shared/theme.css` 与 `plugin-ui.css`（跨目录引用在这套
+  vite 配置里可行，五个内置插件都是这么做的），页面结构与按钮直接从公共层取
+- 浮层（`···` 菜单、确认框）用 `src/shared/ui/` 里的共享组件，不要自己复制一份
 
 ## 调试建议
 

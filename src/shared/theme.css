@@ -42,6 +42,16 @@
   --bg-hover: rgba(15, 23, 42, 0.045);
   --bg-active: rgba(15, 23, 42, 0.075);
 
+  /* 半透明压暗层：对话框、抽屉后面的遮罩 */
+  --scrim: rgba(15, 18, 25, 0.32);
+  /* 深色浮条（toast）底色 */
+  --toast-bg: rgba(31, 35, 41, 0.9);
+  /* 落在主色/危险色底上的文字色 */
+  --on-accent: #ffffff;
+  /* 搜索命中高亮：mark 是常态底色，soft 用于定位闪烁的淡出起点 */
+  --mark: #fff3bf;
+  --mark-soft: #fff8db;
+
   --r-xs: 6px;
   --r-sm: 8px;
   --r-md: 10px;

@@ -99,27 +99,34 @@ await appapi.window.hide()                 // 无需权限 —— 隐藏整个�
 关闭、返回主界面这类窗口级控件**，自己的"返回"只用于内部层级；关键按钮也别贴内容区最边缘
 （留白那一圈是缩放热区的作用带）。布局用 `height: 100%` 自适应即可，进插件时面板会自动伸展。
 
-### 4. 界面：只用令牌，破坏性操作进菜单（v0.6.5 起）
+### 4. 界面：两份 CSS + 共享浮层，破坏性操作进菜单（v0.6.6 起）
 
 插件页和主面板是**同一块面板里的两块**，圆角、颜色、滚动条差一点就能看出"不是一家做的"。
-所以视觉基线只有一份：`src/shared/theme.css`。
+基线只有一份，入口按这个顺序 import（顺序不能反）：
 
 ```ts
-// src/main.ts 第一行（要在任何组件样式之前）
-import '../../../src/shared/theme.css'
+// src/main.ts 第一行
+import '../../../src/shared/theme.css'      // 值：颜色/圆角/阴影/reset/滚动条
+import '../../../src/shared/plugin-ui.css'  // 形：页头/按钮/输入/列表/空态/对话框
 ```
 
-- **这行不能省**。它同时提供 reset：漏掉它，`body` 默认 8px margin 叠上容器 `height: 100vh`
+- **第一行不能省**。它同时提供 reset：漏掉它，`body` 默认 8px margin 叠上容器 `height: 100vh`
   就多出 16px，表现为"怎么拉伸都有滚动条"（v0.6.5 踩过）。
-- **不写字面量色值**：用 `--text-1…4`（正文/次要/弱化/占位）、`--line` / `--line-strong`（边框）、
-  `--bg` / `--bg-soft` / `--bg-hover`、`--accent*`（主色 indigo）、`--danger*`、
-  `--r-xs…xl`（圆角）、`--shadow-1…3`。要新的语义色，先加到 `theme.css`，不要就地发明。
-- **破坏性操作不进按钮行**：删除/清除/卸载一律收进 `···` 菜单 + 右键菜单，并走自绘确认框
-  （默认焦点在「取消」）。插件页自带一套：`plugins/ai/src/components/PopMenu.vue` 与
-  `ConfirmDialog.vue`（宿主那份在 `src/renderer/src/components/`，跨构建不能复用，抄结构别抄 import）。
+- **结构别自己写**：`.pl-page`（满高三段式）、`.pl-head` / `.pl-title`、`.pl-btn`（`.primary` /
+  `.danger`）、`.pl-icon-btn` / `.pl-dots`、`.pl-input` / `.pl-search`、`.pl-list` / `.pl-row`
+  （`.tile` 卡片行 / `.active`）、`.pl-empty` / `.pl-tip` / `.pl-hint`、`.pl-mask` / `.pl-dialog` /
+  `.pl-actions`。完整清单见 `docs/plugin-dev-guide.md` 的「界面基线」。
+- **不写字面量色值**：`--text-1…4`、`--line` / `--line-strong`、`--bg*`、`--accent*`、
+  `--danger*`、`--r-xs…xl`、`--shadow-1…3`、`--scrim`（遮罩）、`--mark`（命中高亮）、
+  `--on-accent`（主色底上的文字）。要新的语义色先加到 `theme.css`，不要就地发明。
+- **浮层用共享组件，不要复制**：`src/shared/ui/{PopMenu.vue,ConfirmDialog.vue,menu.ts}`。
+  宿主那份在 `src/renderer/src/components/`（走 OverlayHost 的可见性登记），插件拿不到；
+  但插件与插件之间可以共用——独立构建照样能跨目录 import `.vue`。
+- **破坏性操作不进按钮行**：删除/清空/卸载一律收进 `···` 或右键菜单，并过一遍 `ConfirmDialog`
+  （默认焦点在「取消」）。参考 `plugins/clipboard/`（行删除 + 清空）、`plugins/translator/`（引擎删除）。
 - **不用 `window.confirm`**，也别在插件页引 naive-ui：体积、风格、主题覆盖都不对，得不偿失。
-- `···` 的可见性分两档：密行列表（会话项那种）默认隐形、hover/选中才出；常驻列表页可给 35% 透明度。
-  全部隐形等于入口不可发现。
+- `···` 的可见性分两档：密行列表（会话项、剪贴板那种）默认隐形、hover/选中才出；
+  行高足够的列表页可常驻 35% 透明。全部隐形等于入口不可发现。
 - 全局 `:focus-visible` 已经画了焦点环；输入框/编辑器自己画焦点态时记得 `box-shadow: none` 覆盖掉，别叠两层。
 
 ### 5. 让 AI 能用你的插件（v0.6.2 声明，v0.6.3 可被调用，v0.6.4 可接 MCP）
@@ -224,7 +231,7 @@ window.appapi.ai.onToolCall(async (call) => {
 2. 插件需要的任何新系统能力：`src/shared/pluginApi.ts` 声明通道 + 权限（`PLUGIN_PERMS`）→ `src/main/plugin/api/<域>.ts` 加一条 `defineApi`（带 payload 校验）→ `src/preload/plugin.ts` 暴露 → manifest 声明。网关 `gateway.ts` 只做身份/权限/入参校验，**不要把具体能力的实现塞进网关**
 3. 不在插件间提供任何直接通信/共享存储
 4. 插件代码不 `eval` 用户不可信输入（计算器插件有现成的表达式解析器可抄）
-5. 界面一律走 `theme.css` 令牌；破坏性操作进 `···` / 右键菜单 + 自绘确认框，不进按钮行
+5. 界面一律走 `theme.css` 令牌 + `plugin-ui.css` 骨架；破坏性操作进 `···` / 右键菜单 + 共享 `ConfirmDialog`，不进按钮行
 6. AI 工具的 `risk` 如实声明；确认只在主进程那一处弹，插件不自己再弹一次
 7. `ai/tools.json` 与 `ai/SKILL.md` 会进模型上下文，**只写插件自己目录内的东西**，别把它们当成读取任意文件的通道
 
@@ -235,6 +242,8 @@ window.appapi.ai.onToolCall(async (call) => {
 | 面板搜不到插件 | manifest 校验失败（看主进程控制台 `[plugin] 跳过 ...`）：常见是缺 entry、entry 文件不存在、id 含非法字符 |
 | 页面白屏、资源 404 | vite 忘了 `base: './'`，或用绝对路径引用了资源 |
 | 插件页"怎么拉伸都有滚动条" | 入口没 `import '../../../src/shared/theme.css'`（缺 reset，body 8px margin 撑出文档溢出）；容器高度用 `100%` 而不是 `100vh` |
+| 侧栏底部冒出横向滚动条 | 元素写了 `width: calc(100% - 18px)` 又加 `margin-left: 27px`，加起来超 100%。改 `width: auto` + 左右 margin，滚动容器补 `overflow-x: hidden` |
+| 菜单/确认框点了 Esc 把插件退了 | 用 `src/shared/ui` 里的共享组件（在捕获阶段拦 Esc），别自己写 `keydown` 处理 |
 | 调用 API 报"缺少权限" | manifest `permissions` 没声明，加上后**重新 build** |
 | 改了插件没变化 | 没起 `pnpm dev:plugin <name>` 时需先 `pnpm build:plugins`；旧视图有缓存，Esc 重进即可。起了 dev server 仍不更新 → 看 `.dev-plugins.json` 是否登记、vite 是否还在跑 |
 | 插件页白屏、只显示骨架 HTML | manifest 放在了插件根目录而不是 `public/`——扫描器会命中源码目录，入口变成未被 vite 处理的 `index.html`（scaffold 已修正，老目录手动挪一下） |

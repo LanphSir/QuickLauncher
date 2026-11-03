@@ -1,14 +1,28 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
+import PopMenu from '../../../src/shared/ui/PopMenu.vue'
+import ConfirmDialog from '../../../src/shared/ui/ConfirmDialog.vue'
+import { MENU_W, type MenuItem } from '../../../src/shared/ui/menu'
 
 interface ClipItem {
   text: string
   ts: number
 }
 
+/** 一次待确认的破坏性操作：把「要做什么」连同文案一起存下来，确认后才执行 */
+interface PendingConfirm {
+  title: string
+  message: string
+  hint?: string
+  confirmLabel: string
+  run: () => void
+}
+
 const MAX_ITEMS = 100
 const items = ref<ClipItem[]>([])
 const copiedTs = ref<number | null>(null)
+const menu = ref<{ x: number; y: number; item: ClipItem | null } | null>(null)
+const confirm = ref<PendingConfirm | null>(null)
 let timer: ReturnType<typeof setInterval> | undefined
 let last = ''
 
@@ -43,7 +57,10 @@ function stopPolling(): void {
 }
 
 function onKeydown(e: KeyboardEvent): void {
-  if (e.key === 'Escape') void window.appapi.exit()
+  // 菜单/确认框自己处理 Esc（捕获阶段），这里只负责「没有浮层时退出插件」
+  if (e.key !== 'Escape') return
+  if (menu.value || confirm.value) return
+  void window.appapi.exit()
 }
 
 function exit(): void {
@@ -90,8 +107,8 @@ async function copy(item: ClipItem): Promise<void> {
   }, 800)
 }
 
-async function removeAt(index: number): Promise<void> {
-  items.value.splice(index, 1)
+async function removeItem(item: ClipItem): Promise<void> {
+  items.value = items.value.filter((x) => x.ts !== item.ts)
   await save()
 }
 
@@ -104,176 +121,140 @@ function preview(text: string): string {
   const oneLine = text.replace(/\s+/g, ' ').trim()
   return oneLine.length > 90 ? oneLine.slice(0, 90) + '…' : oneLine
 }
+
+// ---------- 浮层菜单 ----------
+
+/** 同一套菜单给 `···` 按钮和右键共用：按钮按右边缘对齐，右键跟随光标 */
+function openMenu(item: ClipItem, event: MouseEvent): void {
+  const isContextMenu = event.type === 'contextmenu'
+  if (isContextMenu) {
+    menu.value = { x: event.clientX, y: event.clientY, item }
+    return
+  }
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const rightAligned = rect.right - MENU_W
+  menu.value = { x: rightAligned < 8 ? rect.left : rightAligned, y: rect.bottom + 5, item }
+}
+
+/** 页面级 `···`：只有「清空全部」这一个破坏性动作，不占页头按钮位 */
+function openPageMenu(event: MouseEvent): void {
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const rightAligned = rect.right - MENU_W
+  menu.value = { x: rightAligned < 8 ? rect.left : rightAligned, y: rect.bottom + 5, item: null }
+}
+
+function menuItems(item: ClipItem | null): MenuItem[] {
+  if (!item) {
+    return [{ key: 'clear', label: '清空全部记录', icon: 'delete', danger: true, disabled: items.value.length === 0 }]
+  }
+  return [
+    { key: 'copy', label: '复制这一条', icon: 'copy' },
+    { key: 'delete', label: '删除这一条', icon: 'delete', danger: true }
+  ]
+}
+
+function onMenuPick(key: string): void {
+  const target = menu.value?.item ?? null
+  menu.value = null
+  if (key === 'clear') {
+    askConfirm({
+      title: '清空剪贴板历史？',
+      message: `将删除全部 ${items.value.length} 条记录。`,
+      hint: '只清空本应用记录的历史，系统剪贴板当前内容不受影响。',
+      confirmLabel: '清空',
+      run: () => void clearAll()
+    })
+    return
+  }
+  if (!target) return
+  if (key === 'copy') {
+    void copy(target)
+    return
+  }
+  if (key === 'delete') {
+    askConfirm({
+      title: '删除这条记录？',
+      message: preview(target.text),
+      confirmLabel: '删除',
+      run: () => void removeItem(target)
+    })
+  }
+}
+
+function askConfirm(state: PendingConfirm): void {
+  confirm.value = state
+}
+
+function runConfirm(): void {
+  const state = confirm.value
+  confirm.value = null
+  state?.run()
+}
 </script>
 
 <template>
-  <div class="page">
-    <header>
-      <button class="ghost" @click="exit">
-        <span class="arrow">‹</span> 返回
+  <div class="pl-page">
+    <header class="pl-head">
+      <button class="pl-btn" @click="exit"><span class="arrow">‹</span> 返回</button>
+      <h1 class="pl-title">剪贴板历史</h1>
+      <button class="pl-icon-btn" title="更多操作" @click.stop="openPageMenu($event)">
+        <span class="pl-dots">···</span>
       </button>
-      <h1>剪贴板历史</h1>
-      <button class="ghost danger" @click="clearAll">清空</button>
     </header>
-    <p class="tip">自动记录复制的文本（最近 {{ MAX_ITEMS }} 条）· 点击条目重新复制 · Esc 返回</p>
-    <ul v-if="items.length">
+
+    <p class="hint">自动记录复制的文本（最近 {{ MAX_ITEMS }} 条）· 点击条目重新复制 · Esc 返回</p>
+
+    <ul v-if="items.length" class="pl-list">
       <li
-        v-for="(item, i) in items"
+        v-for="item in items"
         :key="item.ts"
+        class="pl-row tile clip-item"
         :class="{ copied: copiedTs === item.ts }"
         @click="copy(item)"
+        @contextmenu.prevent="openMenu(item, $event)"
       >
-        <span class="text">{{ preview(item.text) }}</span>
-        <button class="del" title="删除" @click.stop="removeAt(i)">✕</button>
+        <span class="pl-row-main">{{ preview(item.text) }}</span>
+        <button class="pl-icon-btn" title="更多操作" @click.stop="openMenu(item, $event)">
+          <span class="pl-dots">···</span>
+        </button>
       </li>
     </ul>
-    <p v-else class="empty">暂无记录，去别处复制点内容试试</p>
+    <p v-else class="pl-empty">
+      暂无记录
+      <span class="sub">去别的窗口复制点内容，这里会自动收进来</span>
+    </p>
+
+    <PopMenu v-if="menu" :x="menu.x" :y="menu.y" :items="menuItems(menu.item)" @pick="onMenuPick" @close="menu = null" />
+    <ConfirmDialog
+      v-if="confirm"
+      :title="confirm.title"
+      :message="confirm.message"
+      :hint="confirm.hint"
+      :confirm-label="confirm.confirmLabel"
+      danger
+      @confirm="runConfirm"
+      @cancel="confirm = null"
+    />
   </div>
 </template>
 
 <style>
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-html,
-body {
-  height: 100%;
-  background: #fff;
-}
-
-body {
-  font-family: 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-  color: #1f2329;
-  user-select: none;
-}
-
-#app {
-  height: 100%;
-}
-
-.page {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  padding: 14px 18px;
-}
-
-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-h1 {
-  flex: 1;
-  text-align: center;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.ghost {
-  font-size: 13px;
-  color: #646a73;
-  padding: 5px 10px;
-  border-radius: 8px;
-  border: none;
-  background: none;
-  cursor: pointer;
-}
-
-.ghost:hover {
-  background: #f2f3f5;
-  color: #1f2329;
-}
-
-.ghost.danger:hover {
-  color: #d5304f;
-  background: #fdecef;
-}
-
-.arrow {
-  font-size: 15px;
-}
-
-.tip {
+/* 骨架与控件来自 plugin-ui.css，这里只写剪贴板特有的部分 */
+.hint {
+  flex: none;
+  margin: 2px 0 8px;
   text-align: center;
   font-size: 11px;
-  color: #a1a6ad;
-  margin: 6px 0 10px;
+  color: var(--text-3);
 }
 
-ul {
-  flex: 1;
-  overflow-y: auto;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.clip-item.copied {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
 }
 
-li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 12px;
-  border-radius: 9px;
-  background: #f5f6f7;
-  cursor: pointer;
-  transition: background 0.12s;
-}
-
-li:hover {
-  background: #ececee;
-}
-
-li.copied {
-  background: #eef0fe;
-  outline: 1px solid #c3c8f9;
-}
-
-.text {
-  flex: 1;
+.pl-row-main {
   font-size: 13px;
   line-height: 1.5;
-  word-break: break-all;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.del {
-  flex: none;
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  font-size: 11px;
-  color: #a1a6ad;
-  border: none;
-  background: none;
-  cursor: pointer;
-}
-
-.del:hover {
-  background: rgba(0, 0, 0, 0.07);
-  color: #d5304f;
-}
-
-.empty {
-  margin-top: 80px;
-  text-align: center;
-  font-size: 13px;
-  color: #a1a6ad;
-}
-
-::-webkit-scrollbar {
-  width: 6px;
-}
-
-::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.14);
-  border-radius: 3px;
 }
 </style>

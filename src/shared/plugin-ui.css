@@ -1,0 +1,425 @@
+/*
+ * 插件页公共层：骨架类 + 基础控件。
+ *
+ * 和 theme.css 的分工：
+ * - theme.css 给「值」——颜色、圆角、阴影、字体、reset、滚动条，核心渲染层与插件页共用；
+ * - 本文件给「形」——插件页共有的结构（页头、列表行、空态、对话框），只给插件用。
+ *
+ * 为什么单独一份而不是塞进 theme.css：主面板有自己的组件体系（PanelShell / ContextMenu /
+ * OverlayHost），这些类对它没用；反过来，插件页是独立构建、拿不到宿主的组件，只能靠 CSS。
+ *
+ * 用法（插件入口，顺序不能反）：
+ *   import '../../../src/shared/theme.css'
+ *   import '../../../src/shared/plugin-ui.css'
+ *
+ * 约束：这里只用 theme.css 的令牌，不出现字面量色值；需要新语义色先加到 theme.css。
+ */
+
+/* ---------- 页面骨架 ---------- */
+
+/* 插件页基准：13px。面板是浮窗，网页默认的 16px 一屏装不下几行；
+   整页不选中（正文/代码/历史文本用 .pl-selectable 单独打开） */
+body {
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--text-1);
+  user-select: none;
+}
+
+/* 满高三段式：页头固定 / 中间自适应 / 底部提示固定。矮面板里内容自己滚，不整页滚 */
+.pl-page {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 18px 12px;
+}
+
+/* 需要贴边布局的（比如整块 webview）用这个，自行补内边距 */
+.pl-page.flush {
+  padding: 0;
+}
+
+/* 页头：左侧返回、中间标题、右侧操作。标题居中靠两侧等宽撑住，不靠绝对定位 */
+.pl-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+}
+
+.pl-title {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+  line-height: 1.4;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 页头里的次级标题（如「已选 3 项」），和主标题同排但不抢视线 */
+.pl-title-sub {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* ---------- 控件 ---------- */
+
+.pl-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  color: var(--text-2);
+  transition:
+    background var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+
+.pl-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.pl-btn:active {
+  background: var(--bg-active);
+}
+
+.pl-btn:disabled {
+  color: var(--text-4);
+  background: none;
+}
+
+.pl-btn.primary {
+  color: var(--on-accent);
+  background: var(--accent);
+}
+
+.pl-btn.primary:hover {
+  background: var(--accent-hover);
+  color: var(--on-accent);
+}
+
+/* 破坏性动作用它，但注意：真正的删除入口应该进 ··· 菜单，不是页头按钮 */
+.pl-btn.danger:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+/* 纯图标按钮（28×28 的方框），用于 ··· 触发器、关闭、工具栏图标 */
+.pl-icon-btn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  color: var(--text-3);
+  font-size: 14px;
+  line-height: 1;
+  transition:
+    background var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+
+.pl-icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+/* ··· 字形：三个点铺开一点，别挤成一坨 */
+.pl-dots {
+  font-size: 15px;
+  letter-spacing: 1.5px;
+  line-height: 1;
+  transform: translateY(-1px);
+}
+
+/* 返回箭头：‹ 的字号要比文字大一档，否则视觉上会缩成一个小撇 */
+.pl-btn .arrow {
+  font-size: 16px;
+  line-height: 1;
+  transform: translateY(-0.5px);
+}
+
+.pl-input {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+  color: var(--text-1);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  outline: none;
+  transition:
+    border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.pl-input::placeholder {
+  color: var(--text-4);
+}
+
+/* 键盘焦点环由 theme.css 的 :focus-visible 统一给；这里只画"聚焦中"的边框，
+   box-shadow 明确覆盖掉全局环，避免输入框里套两圈 */
+.pl-input:focus {
+  border-color: var(--accent-line);
+  box-shadow: none;
+}
+
+.pl-input.mono {
+  font-family: ui-monospace, Consolas, 'Courier New', monospace;
+  font-size: 12px;
+}
+
+/* 搜索框：贴在页头里，底色比白更淡一档，focus 时回到白 */
+.pl-search {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+  color: var(--text-1);
+  background: var(--bg-soft);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  outline: none;
+  transition:
+    background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.pl-search::placeholder {
+  color: var(--text-4);
+}
+
+.pl-search:focus {
+  background: var(--bg);
+  border-color: var(--accent-line);
+  box-shadow: none;
+}
+
+/* ---------- 列表 ---------- */
+
+/* 中间可滚区：flex:1 + min-height:0 才能真的滚（不给 min-height 会被内容顶开） */
+.pl-list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  padding-right: 2px;
+  list-style: none;
+}
+
+.pl-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur) var(--ease);
+}
+
+.pl-row:hover {
+  background: var(--bg-hover);
+}
+
+/*
+ * 卡片式行：需要一眼看出"这是一条记录"时用（剪贴板历史、搜索结果）。
+ * 菜单式列表（设置项那种）不要加——整页都是灰块反而更乱。
+ */
+.pl-row.tile {
+  background: var(--bg-soft);
+  border: 1px solid transparent;
+}
+
+.pl-row.tile:hover {
+  background: var(--bg-active);
+}
+
+.pl-row.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+/* 行内主文本：占满剩余宽度并省略号截断 */
+.pl-row-main {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pl-row-sub {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+/*
+ * 行内 ··· 触发器的可见性分两档：
+ * - 密行列表（多、矮）默认隐形，hover / 键盘 focus / 选中时才出现；
+ * - 想让它常驻，加 .always。
+ * 全部隐形等于入口不可发现，所以"常驻"是给行高足够的列表页用的。
+ */
+.pl-row .pl-icon-btn {
+  width: 24px;
+  height: 24px;
+  opacity: 0;
+  transition:
+    opacity var(--dur) var(--ease),
+    background var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+
+.pl-row:hover .pl-icon-btn,
+.pl-row.active .pl-icon-btn,
+.pl-icon-btn.always,
+.pl-icon-btn:focus-visible {
+  opacity: 1;
+}
+
+/* ---------- 空态与提示 ---------- */
+
+.pl-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.pl-empty .sub {
+  font-size: 12px;
+  color: var(--text-4);
+}
+
+/* 底部一行快捷键提示：固定不滚，语气最弱 */
+.pl-tip {
+  flex: none;
+  margin-top: 8px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+/* 段落式说明，可以用在滚动区里 */
+.pl-hint {
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--text-3);
+}
+
+.pl-hint code {
+  font-family: ui-monospace, Consolas, 'Courier New', monospace;
+  font-size: 10.5px;
+  padding: 1px 4px;
+  border-radius: var(--r-xs);
+  background: var(--bg-soft);
+}
+
+/* ---------- 表单对话框 ---------- */
+
+.pl-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: var(--scrim);
+  animation: pl-fade 0.12s var(--ease);
+}
+
+@keyframes pl-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.pl-dialog {
+  width: min(420px, 100%);
+  max-height: 100%;
+  padding: 16px 18px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  background: var(--bg);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-3);
+  animation: pl-pop 0.16s var(--ease);
+}
+
+@keyframes pl-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.pl-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pl-dialog-head h2 {
+  flex: 1;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* 字段标签：小一号、比正文弱，靠间距分组而不是靠加框 */
+.pl-label {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+/* 对话框底部按钮行：右对齐，取消在左、主操作在右 */
+.pl-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.pl-divider {
+  height: 1px;
+  background: var(--line-soft);
+}
+
+/* 允许选中的区域（正文、代码、历史文本）用它把 body 的 user-select:none 打开 */
+.pl-selectable {
+  user-select: text;
+  cursor: text;
+}

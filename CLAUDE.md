@@ -43,7 +43,8 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 - **main/preload 是 CJS 产物**（根 package.json 无 `"type": "module"`，这是有意的：sandbox preload 只支持 CJS）。main/preload 源码里直接用 `__dirname` 定位 `out/` 内兄弟产物（如 `join(__dirname, '../preload/panel.js')`），不要用 import.meta。
 - **渲染层一律 Vue 3 `<script setup lang="ts">`**；全局类型集中在 `src/renderer/src/env.d.ts`（`window.panel` / `window.appapi` 已声明，不要重复 declare）。
 - **UI 图标统一用 `<AppIcon name="..." />`**（path 数据登记在 `components/icons.ts`），不要散落内联 SVG；新图标先在 `icons.ts` 登记。
-- **颜色/圆角/阴影只用令牌**：`src/shared/theme.css` 是唯一来源（`--text-1…4`、`--line`、`--r-sm…xl`、`--shadow-1…3`、`--accent`、`--danger`）。核心渲染层与插件页入口都先 `import` 它，组件里不再写字面量色值；要新语义色先加到 theme.css。
+- **颜色/圆角/阴影只用令牌**：`src/shared/theme.css` 是唯一来源（`--text-1…4`、`--line`、`--r-sm…xl`、`--shadow-1…3`、`--accent`、`--danger`、`--scrim`、`--mark`、`--on-accent`）。核心渲染层与插件页入口都先 `import` 它，组件里不再写字面量色值；要新语义色先加到 theme.css。
+- **插件页另有一层公共骨架**：`src/shared/plugin-ui.css`（`.pl-page` / `.pl-head` / `.pl-btn` / `.pl-input` / `.pl-list` / `.pl-row` / `.pl-dialog` …）。插件页的结构与基础控件从这里取，别在各自的 App.vue 里重写一份 reset 和按钮；浮层用 `src/shared/ui/{PopMenu,ConfirmDialog}.vue`，不要再复制第三份。宿主那份（`src/renderer/src/components/`）走 OverlayHost 体系，两边不共用。
 - **破坏性操作不进按钮行**：删除 / 卸载 / 清除数据一律收进 `···` 菜单（宿主用 `ContextMenu`，插件页用 `PopMenu`）或右键菜单，并走自绘 `ConfirmDialog`（默认焦点在「取消」）。新代码不再用 `window.confirm` 和 `NPopconfirm`。
 - **UI 文案中文**，代码注释中文、只写"为什么"，不复述代码。日志前缀用模块名：`[plugin]`、`[config]`、`[storage]`、`[external]`。
 - 命名：文件用 kebab 或与周边一致；插件 id 一律反向域名 `com.launcher.<name>`；IPC 通道前缀 `panel:*` / `plugin:*`。
@@ -77,7 +78,7 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
   `PLUGIN_FEATURES` 里，但代码里没有消费者，**别当成门禁**。第三方插件参与 AI 的唯一姿势是**被调用**：
   `plugin:ai.tool-call`（主→插件）→ 执行 → `plugin:ai.tool.reply`（`plugin:ai.*` 里唯一不标 internalOnly 的通道）；
   对话/确认/附件/会话那几组仍是 `internalOnly`，只有内置插件能调
-- 插件的界面不另起一套：入口先 `import '../../../src/shared/theme.css'`（同时给 reset，漏了就是常驻滚动条），
+- 插件的界面不另起一套：入口先 `import '../../../src/shared/theme.css'`（同时给 reset，漏了就是常驻滚动条）再 `import '../../../src/shared/plugin-ui.css`，
   颜色/圆角/阴影只用令牌；删除/清除这类操作收进 `···` 菜单 + 右键 + 自绘确认框，不进按钮行
 - 想给插件配一个**建议启动键** → manifest 写 `hotkey`（accelerator，如 `Alt+Shift+V`）：只作设置页提示，**不会自动注册**；实际生效值在 `config.pluginHotkeys`
 - external 型插件 = 目录里一个 `plugin.json` + 图标，零代码
@@ -110,7 +111,8 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 | `-webkit-app-region` 吞掉缩放热区 | drag region 按**文档顺序**做 drag 加/no-drag 减，与 DOM 层叠无关——no-drag 元素必须在 drag 元素之后（见 PanelShell 模板中 `.rz` 的位置注释） |
 | 插件页白屏、只显示骨架 HTML | manifest 放到插件根目录而不是 `public/`：扫描器命中源码目录，入口成了未被 vite 处理的 `index.html`。manifest/icon 一律进 `public/` |
 | `fs.watch` 监听插件目录会刷屏 | 插件构建会整目录重写 JS/CSS，按文件名只认 `plugin.json` / `dist`，且事件必须合并（300ms）；见 `plugin/watcher.ts` |
-| 插件页"怎么拉伸都有滚动条" | 插件是独立 HTML，没有宿主的全局样式：`body` 默认 8px margin 叠加 `.app{height:100vh}` 就多出 16px，垂直滚动条常驻；滚动条再占宽，`textarea` 的 content-box 让横向也溢出。插件入口必须先 `import '../../../src/shared/theme.css'`（含 reset），容器高度用 `100%` |
+| 插件页"怎么拉伸都有滚动条" | 插件是独立 HTML，没有宿主的全局样式：`body` 默认 8px margin 叠加 `.app{height:100vh}` 就多出 16px，垂直滚动条常驻；滚动条再占宽，`textarea` 的 content-box 让横向也溢出。插件入口必须先 `import '../../../src/shared/theme.css'`（含 reset）+ `plugin-ui.css`，容器高度用 `100%` |
+| 侧栏底部出现横向滚动条 | 块级元素写了 `width: calc(100% - 18px)` 又加 `margin-left: 27px`，加起来超过 100%。让宽度自动填充（`width: auto` + 左右 margin），滚动容器再补 `overflow-x: hidden`（手册侧栏的 `.kw` 踩过） |
 | 插件 manifest 里的 `ai` 路径被当成"随便写个相对路径" | 一律过 `safeRelative()`：挡 `../`、绝对路径、盘符、URL。工具描述与 SKILL 正文都会进模型上下文，越界路径等于开了一条读任意文件的路 |
 | `tools.json` 用 ajv 编译 schema 会抛异常 | 编译要逐个 try/catch 并**只丢该工具**（`toolsSpec.parseToolsSpec`）；一处 schema 写错不该让整个插件的工具全消失，更不该让插件加载失败 |
 | AI 工具授权状态被缓存 | `grantedTools()` 每次现算，不要缓存结果：用户撤权后工具还在下发，是无法解释的行为。只缓存 `tools.json` / `SKILL.md` 的解析结果（按 mtime+size） |

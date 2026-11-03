@@ -1,10 +1,13 @@
 <script lang="ts">
 /**
- * 插件页内的确认框（替代 window.confirm）。
+ * 插件页确认框（替代 window.confirm）。
  *
  * 原生对话框在这个圆角浮窗里像另一个程序弹出来的：字体、圆角、按钮顺序全都对不上，
  * 而且它会阻塞渲染进程。自己画一个，顺便把"默认焦点在取消"这条安全规则固定下来——
  * 回车就能通过的删除确认等于没有确认。
+ *
+ * 所有插件共用这一份，别再各自复制：确认框是"全项目只有一种长相"的东西，
+ * 复制第三份之后必然有一份按钮顺序是反的。
  */
 </script>
 
@@ -30,7 +33,7 @@ const cancelRef = ref<HTMLButtonElement | null>(null)
 
 function onKey(event: KeyboardEvent): void {
   if (event.key !== 'Escape') return
-  // capture 拦下：AI 页的全局 Esc 会把整个插件退掉
+  // capture 拦下：插件页的全局 Esc 会把整个插件退掉，这里只关对话框
   event.preventDefault()
   event.stopPropagation()
   emit('cancel')
@@ -69,7 +72,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey, true))
   display: grid;
   place-items: center;
   padding: 20px;
-  background: rgba(15, 18, 25, 0.32);
+  background: var(--scrim);
   animation: mask-in 0.12s var(--ease);
 }
 
@@ -137,7 +140,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKey, true))
   border-radius: var(--r-sm);
   font-size: 12.5px;
   font-weight: 500;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+  transition:
+    background var(--dur) var(--ease),
+    color var(--dur) var(--ease);
 }
 
 .btn.ghost {
@@ -151,7 +156,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey, true))
 }
 
 .btn.primary {
-  color: #fff;
+  color: var(--on-accent);
   background: var(--accent);
 }
 
@@ -160,7 +165,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey, true))
 }
 
 .btn.danger {
-  color: #fff;
+  color: var(--on-accent);
   background: var(--danger);
 }
 
