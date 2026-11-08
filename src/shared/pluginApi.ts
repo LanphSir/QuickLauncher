@@ -47,15 +47,14 @@ export type PluginPermission = (typeof PLUGIN_PERMISSIONS)[number]
 /**
  * 可选功能声明（manifest `features`）。与 permissions 的区别：
  * 权限是「能调哪些系统能力」，功能是「以哪种形态参与启动器」。
+ *
+ * 只有**真的有门禁**的形态才配留在这个表里：声明了就解锁某条通道。
+ * v0.6.2 曾登记过一个 `"ai"`，但它没有任何消费点——参与 AI 的门槛一直是
+ * `permissions: ["ai"]` + `ai.tools` + 用户授权，那个名字只会误导人，v0.6.10 移除。
  */
 export const PLUGIN_FEATURES = [
   /** 内联结果：面板每敲一次键就把查询推给插件，插件回几条结果直接显示在搜索框下方 */
-  'inline',
-  /**
-   * AI 能力：允许被内置 AI 应用当作工具调用（v0.6.2 起生效）。
-   * 只有声明了它、且用户在该插件上打开开关，工具才会出现在模型的可调用列表里。
-   */
-  'ai'
+  'inline'
 ] as const
 
 export type PluginFeature = (typeof PLUGIN_FEATURES)[number]

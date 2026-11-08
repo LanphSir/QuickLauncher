@@ -11,6 +11,86 @@
 
 ---
 
+## v0.6.10 — 再收四笔挂账：正文补齐四种语法、MCP 空转自收、菜单改锚点对齐（2026-11-08）
+
+**目标**：v0.6.9 收尾时又留下四笔"知道没做"——三笔是能力边界，一笔是名不副实的声明。
+这一版把它们清到"没有已知破绽"，不加新功能面。
+
+### 1. 正文补齐：任务列表、嵌套引用、图片、单元格换行
+
+`plugins/ai/src/markdown.ts` 从"够看"补到"模型爱写什么就画什么"：
+
+- **任务列表**：`- [ ]` / `- [x]` 渲染成 `<span class="task-box">` + `li.task` / `li.task-on`。
+  用 `span` 而不是 `<input type=checkbox>`：这是只读展示，一个能点、点了没反应的勾选框
+  比不能点的方框更让人困惑。勾是两条白边转 45° 画出来的，换字号不会歪；
+- **嵌套引用**：剥一层 `>` 后内层仍是 `>` 就递归一层，边框颜色按层递减（`line-strong` → `line`）。
+  为此把 `renderMarkdown` 拆成 `renderMarkdown = escape + renderBlocks`：
+  递归必须进**已转义**的 `renderBlocks`，再逃一次会把 `&amp;` 变成 `&amp;amp;`
+  （这条现在有测试钉着）；
+- **图片**：`![alt](https://…)` → `<img class="md-img">`，只放行 http(s)。
+  `data:`（几十兆 base64 直接进 DOM）、`javascript:`、`file:` 一律退化成原始文字——
+  宁可在正文里看到 `![x](file:///…)`，也不要在渲染正文的地方开一个能读本地文件的口子；
+  alt/src 里的引号转成 `&quot;`，防止把属性截断；
+- **单元格换行**：模型写的 `<br>` 已被转义成 `&lt;br&gt;`，单独认回来（带属性的
+  `<br onclick=…>` 不认，仍是文字）；表格靠列宽排版，不能留真换行。
+
+### 2. MCP：空转半小时就把进程收掉（v0.6.4 第三条偏差）
+
+以前批准过的 server 一旦连上就常驻到应用退出——`npx -y xxx` 起的是 node 常驻进程，
+一个几十到上百兆，而用户可能一整天只聊一次 AI。现在：
+
+- `Runtime` 记 `lastUsedAt`（连上、每次调用完都写）与 `activeCalls`（在飞调用数）；
+- 60 秒扫一次，空转超过 `MCP_IDLE_TIMEOUT_MS`（30 分钟）就 `shutdownRuntime`；
+- **有调用在飞绝不收**：一次工具调用可能跑几十秒（抓网页、构建），收掉等于把这次调用连结果一起丢；
+  正在建连的也不动；
+- 定时器只在第一个 server 连上后才开，而且 `unref()`——不为了一个清理任务把主进程钉在事件循环里；
+- 下次对话 `ensureForChat` 自动重新拉起，此时 `everConnected` 为真，按 20 秒预算走，不会又等 45 秒。
+
+判定抽成纯函数 `mcpIdleExpired(state, now)`（`src/shared/ai.ts`），5 条单测覆盖
+"没在跑/在建连/已停用/有调用在飞"四种不该收的情况。
+
+### 3. 菜单右缘：从「减 176」改成锚点
+
+四处调用点都在做 `x: rect.right - 176`——用最小宽度 `MENU_W` 反推菜单左边缘。
+菜单宽度是随标签和提示文字长的，标签一长右缘就比按钮偏出十几像素。现在：
+
+- `PopMenu` 新增 `anchorRight`：量完真实宽度再让右缘贴住按钮；
+- 锚点模式**不翻转**，只夹进视口（按钮贴左/贴右时各自让开），展开方向按位移判断；
+- 宿主 `ContextMenu.vue` 透传，`AppManage` / `SettingsView` / `PluginDetail` / `AiSettings`
+  与插件页会话菜单全部换成 `anchorRight: rect.right`；`MENU_W` 的注释改成明确写着"别拿它算右缘"。
+
+### 4. `features: ["ai"]` 删掉（v0.6.6 挂账）
+
+`PLUGIN_FEATURES` 里一直有个 `"ai"`，代码里**没有任何消费点**（参与 AI 的门槛始终是
+`permissions: ["ai"]` + `ai.tools` + 用户授权）。一个名字登记在"功能声明"表里却不门禁任何东西，
+只会让人以为必须写。这一版把名字从表里移除，`features` 只剩真有门禁的 `inline`，
+文档（`ai-architecture` / `plugin-dev-guide` / SKILL / CLAUDE.md）统一口径。
+老 manifest 若写了 `"ai"`，会被当作未知项告警丢掉——行为与之前完全一致（它本来就不生效）。
+
+### 关键文件
+
+`plugins/ai/src/markdown.ts`、`plugins/ai/src/App.vue`（`:deep` 样式）、`src/shared/ai.ts`、
+`src/main/ai/mcpManager.ts`、`src/shared/ui/PopMenu.vue`、`src/shared/ui/menu.ts`、
+`src/renderer/src/components/{ContextMenu,AppManage,SettingsView,PluginDetail,AiSettings}.vue`、
+`src/shared/pluginApi.ts`、`tests/{markdown,aiMcp}.test.ts`
+
+### 验证
+
+- `pnpm typecheck` 0 错；`pnpm test` **347/347**（+17：渲染 17 条，其中任务列表/嵌套引用/图片/
+  单元格各带反例）；`pnpm smoke` **135/135**；
+- 插件页实测（CDP 注入 `renderMarkdown` 的真实输出后量计算样式）：
+  `li.task` 3 项 / 完成 2 项、方框 `12px × 12px` 圆角 4px、已完成底色 `rgb(99,102,241)` 且文字降为
+  `--text-3`、引用 2 层（内层边框 `0.09` < 外层 `0.16`）、图片 `max-width: 100%` + `inline-block`、
+  含 `<br>` 的单元格高 49px（两行）、容器仍 `pre-wrap`；
+- 宿主菜单实测：把菜单强行撑到 320px 宽（等价于标签很长），菜单右缘与按钮右缘 **差 0px**
+  （旧写法会偏出 144px）；贴边时只夹进视口。
+
+### 遗留
+
+- MCP 仍只支持 stdio，`resources`/`prompts`/`sampling` 未做；空闲回收阈值固定 30 分钟，未做成可配置；
+- markdown 仍不做脚注、数学公式、HTML 块（有意不做的部分写在文件头）；
+- 图片只放行 http(s)：`data:` 图（有些客户端会把图表塞成 base64）看不到，需要的话得先定个体积上限。
+
 ## v0.6.9 — 收尾三笔挂账：浮层只留一份实现、正文能画表格、MCP 停用后可恢复（2026-11-08）
 
 **目标**：把 v0.6.6/v0.6.7/v0.6.4 留下的三处「已知但没做」收掉——它们都不是新功能，

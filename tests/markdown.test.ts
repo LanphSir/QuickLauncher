@@ -156,3 +156,94 @@ describe('列表', () => {
     expect(html).toBe('<ul><li>甲</li></ul><ol><li>乙</li></ol>')
   })
 })
+
+describe('任务列表', () => {
+  it('未完成与已完成各带自己的方框类名', () => {
+    const html = renderMarkdown('- [ ] 待办\n- [x] 已完成\n- [X] 也已完成')
+    expect(html).toContain('<li class="task"><span class="task-box" aria-hidden="true"></span>待办')
+    expect(html).toContain('<li class="task task-on"><span class="task-box" aria-hidden="true"></span>已完成')
+    expect(html.match(/task-on/g)).toHaveLength(2)
+  })
+
+  it('方框之后的文字照常渲染行内格式', () => {
+    const html = renderMarkdown('- [x] 跑 `pnpm test`')
+    expect(html).toContain('<code>pnpm test</code>')
+    expect(textOf(html)).toBe('跑 pnpm test')
+  })
+
+  it('嵌套的任务列表跟着父项走', () => {
+    const html = renderMarkdown('- [ ] 父\n  - [x] 子')
+    expect(html).toContain('<ul><li class="task"><span class="task-box" aria-hidden="true"></span>父')
+    expect(html).toContain('<li class="task task-on">')
+  })
+
+  it('普通列表项不会被当成任务项', () => {
+    const html = renderMarkdown('- 普通\n- [不是勾选] 方括号开头')
+    expect(html).not.toContain('task-box')
+    expect(textOf(html)).toContain('[不是勾选] 方括号开头')
+  })
+})
+
+describe('引用嵌套', () => {
+  it('第二层再包一层 blockquote', () => {
+    const html = renderMarkdown('> 外层\n> > 内层')
+    expect(html.match(/<blockquote/g)).toHaveLength(2)
+    expect(textOf(html)).toContain('外层')
+    expect(textOf(html)).toContain('内层')
+  })
+
+  it('三层也不会丢字，且转义不会被逃第二次', () => {
+    const html = renderMarkdown('> > > a & b')
+    expect(html.match(/<blockquote/g)).toHaveLength(3)
+    // 只该逃一次：再逃一次会变成 &amp;amp;
+    expect(html).toContain('a &amp; b')
+    expect(html).not.toContain('&amp;amp;')
+  })
+
+  it('行中间出现的 > 不算嵌套', () => {
+    const html = renderMarkdown('> a > b')
+    expect(html.match(/<blockquote/g)).toHaveLength(1)
+  })
+})
+
+describe('图片', () => {
+  it('http(s) 图片出 img，alt 与 title 带上', () => {
+    const html = renderMarkdown('![架构图](https://example.com/a.png "标题")')
+    expect(html).toContain('<img class="md-img" src="https://example.com/a.png" alt="架构图"')
+    expect(html).toContain('title="标题"')
+    expect(html).toContain('loading="lazy"')
+  })
+
+  it('非 http(s) 协议退化成原始文字（不在正文里开读本地文件的口子）', () => {
+    for (const src of ['file:///c:/secret.png', 'data:image/png;base64,AAA', 'javascript:alert(1)']) {
+      const html = renderMarkdown(`![x](${src})`)
+      expect(html).not.toContain('<img')
+      expect(textOf(html)).toContain(src)
+    }
+  })
+
+  it('alt 里的引号不会把属性截断', () => {
+    const html = renderMarkdown('![a" onerror="x](https://e.com/a.png)')
+    expect(html).toContain('alt="a&quot; onerror=&quot;x"')
+    expect(html).not.toContain('onerror="x"')
+  })
+
+  it('代码里的图片语法保持原样', () => {
+    expect(renderMarkdown('`![x](https://e.com/a.png)`')).toContain('<code>![x](https://e.com/a.png)</code>')
+  })
+})
+
+describe('单元格换行', () => {
+  it('模型写的 <br> 变成真换行（表格里不能留换行符）', () => {
+    const html = renderMarkdown('| 列 |\n| --- |\n| 上<br>下 |')
+    expect(html).toContain('上<br>下')
+    expect(html.replace(/\n/g, '')).toBe(html)
+  })
+
+  it('转义过的尖括号不会被当成 HTML 注入', () => {
+    const html = renderMarkdown('<br onclick="x">')
+    // 只有裸的 `<br>` 才认；带属性的整段仍是文字
+    expect(html).not.toContain('<br onclick')
+    expect(html).toContain('&lt;br onclick="x"&gt;')
+  })
+})

@@ -16,7 +16,7 @@ import type {
 } from '../../../src/shared/ai'
 import PopMenu from '../../../src/shared/ui/PopMenu.vue'
 import ConfirmDialog from '../../../src/shared/ui/ConfirmDialog.vue'
-import { MENU_W, type MenuItem } from '../../../src/shared/ui/menu'
+import { type MenuItem } from '../../../src/shared/ui/menu'
 import { answerStart } from './answer'
 import { escapeHtml, renderMarkdown, textSegs, type TextSeg } from './markdown'
 
@@ -523,7 +523,7 @@ async function newSession(): Promise<void> {
 /* ---------------- 会话条目操作：··· 菜单 / 右键 / 行内重命名 / 自绘确认 ---------------- */
 
 /** 菜单锚点与目标。x/y 已经是"菜单左上角"的位置，由触发方式决定 */
-const menu = ref<{ x: number; y: number; session: AiSessionMeta } | null>(null)
+const menu = ref<{ x?: number; y: number; anchorRight?: number; session: AiSessionMeta } | null>(null)
 const renamingId = ref('')
 const renameDraft = ref('')
 const pendingDelete = ref<AiSessionMeta | null>(null)
@@ -536,14 +536,15 @@ const sessionMenuItems: MenuItem[] = [
 /**
  * 打开菜单。点「···」时把菜单右边缘对齐按钮，右键时跟随鼠标——
  * 两种入口给同一个菜单，但锚点要各自自然，否则右键出来的菜单会飘在光标左上。
+ *
+ * 按钮入口传 `anchorRight`（按钮右缘）而不是 `rect.right - MENU_W`：
+ * 菜单宽度随标签长度变，按常量减出来的右缘总会差几个像素。
  */
 function openMenu(session: AiSessionMeta, event: MouseEvent, fromButton = false): void {
   event.stopPropagation()
   if (fromButton) {
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
-    // 优先右对齐按钮；按钮贴着窗口左边缘时右对齐会把菜单顶出视口，改为左对齐
-    const rightAligned = rect.right - MENU_W
-    menu.value = { x: rightAligned < 8 ? rect.left - 4 : rightAligned, y: rect.bottom + 5, session }
+    menu.value = { anchorRight: rect.right, y: rect.bottom + 5, session }
   } else {
     menu.value = { x: event.clientX, y: event.clientY, session }
   }
@@ -1193,8 +1194,9 @@ onMounted(async () => {
 
     <PopMenu
       v-if="menu"
-      :x="menu.x"
+      :x="menu.x ?? 0"
       :y="menu.y"
+      :anchor-right="menu.anchorRight"
       :items="sessionMenuItems"
       @pick="onMenuPick"
       @close="menu = null"
@@ -1809,6 +1811,64 @@ onMounted(async () => {
   padding: 2px 0 2px 10px;
   border-left: 2px solid var(--line-strong);
   color: var(--text-2);
+}
+
+/* 嵌套引用：每层各有一条竖线，靠内缩拉开层次，不再换颜色 */
+.pre :deep(.md-quote .md-quote) {
+  margin: 6px 0 0;
+  padding-left: 8px;
+  border-left-color: var(--line);
+}
+
+/* 任务列表：方框自己画，项目符号留给普通列表 */
+.pre :deep(li.task) {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  list-style: none;
+}
+
+.pre :deep(li.task-on) {
+  color: var(--text-3);
+}
+
+.pre :deep(.task-box) {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin-top: 2.5px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.pre :deep(.task-on .task-box) {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+/* 勾用两条边叠出来，不用字符：换字号时不会歪 */
+.pre :deep(.task-on .task-box)::after {
+  content: '';
+  display: block;
+  width: 5px;
+  height: 2.5px;
+  margin: 1.5px 0 0 1px;
+  border-left: 1.5px solid var(--on-accent);
+  border-bottom: 1.5px solid var(--on-accent);
+  transform: rotate(-45deg);
+}
+
+/* 图片：单独一行时自己撑开，夹在句子里也不把段落打断 */
+.pre :deep(.md-img) {
+  display: inline-block;
+  max-width: 100%;
+  max-height: 320px;
+  margin: 4px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  vertical-align: top;
+  object-fit: contain;
 }
 
 .pre :deep(.md-hr) {

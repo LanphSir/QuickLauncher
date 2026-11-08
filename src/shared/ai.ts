@@ -572,6 +572,40 @@ export const MCP_CHAT_BUDGET_MS = 3000
 /** 连续崩溃多少次后停用该 server（本会话内不再拉起，避免「崩-拉-崩」烧 CPU） */
 export const MCP_MAX_CRASHES = 3
 
+/**
+ * 空转多久就把 MCP 子进程收掉（v0.6.10）。
+ *
+ * 第一次对话之后进程会一直挂着，而 `npx -y xxx` 起的往往是一个 node 常驻进程，
+ * 一个几十到上百兆。用户可能一整天只用一次 AI，剩下的时间都是白占内存。
+ * 半小时没调用就退：下次发消息 `ensureForChat` 会重新拉起（那时 `everConnected`
+ * 已经是 true，按 20 秒预算而不是首次的 45 秒）。
+ */
+export const MCP_IDLE_TIMEOUT_MS = 30 * 60_000
+
+/** 空闲检查的间隔：不用精确，只求「不会一直挂着」 */
+export const MCP_IDLE_SWEEP_MS = 60_000
+
+/** 盘一个 MCP 运行时「现在能不能收」所需的全部状态 */
+export interface McpIdleState {
+  running: boolean
+  connecting: boolean
+  disabled: boolean
+  activeCalls: number
+  lastUsedAt: number
+}
+
+/**
+ * 这个 server 现在该不该被收掉。
+ *
+ * 单独抽成纯函数是因为条件比看起来多：没在跑没什么可收、正在建连不能收、
+ * 有调用在飞更不能收（收掉就把这次调用连结果一起丢了）。
+ */
+export function mcpIdleExpired(state: McpIdleState, now: number): boolean {
+  if (!state.running || state.connecting || state.disabled) return false
+  if (state.activeCalls > 0) return false
+  return now - state.lastUsedAt >= MCP_IDLE_TIMEOUT_MS
+}
+
 /** server 的 stdout/stderr 各留多少字节用于排错（只保留尾部） */
 export const MCP_LOG_TAIL_BYTES = 64 * 1024
 

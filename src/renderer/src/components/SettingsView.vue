@@ -211,20 +211,20 @@ async function revealDir(p: PluginSummary): Promise<void> {
  * 开关留在原地（它是状态，不是动作），其余收进菜单。
  */
 
-function openRowMenu(items: ContextMenuItem[], pos: { x: number; y: number }): void {
+function openRowMenu(items: ContextMenuItem[], pos: { x?: number; y: number; anchorRight?: number }): void {
   let id = 0
   id = openOverlay({
     component: ContextMenu,
     backdrop: 'transparent',
     autoFocus: false,
     label: 'settings-row-menu',
-    props: { x: pos.x, y: pos.y, items, onClose: () => closeOverlay(id) }
+    props: { x: pos.x, y: pos.y, anchorRight: pos.anchorRight, items, onClose: () => closeOverlay(id) }
   })
 }
 
 function openRowMenuFromButton(items: ContextMenuItem[], event: MouseEvent): void {
   const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
-  openRowMenu(items, { x: rect.right - 176, y: rect.bottom + 5 })
+  openRowMenu(items, { anchorRight: rect.right, y: rect.bottom + 5 })
 }
 
 function confirmRemoveShortcut(p: PluginSummary): void {

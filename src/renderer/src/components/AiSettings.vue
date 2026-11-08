@@ -210,7 +210,7 @@ function openProviderMenu(provider: AiProviderView, event: MouseEvent): void {
     autoFocus: false,
     label: 'provider-menu',
     props: {
-      x: Math.max(8, rect.right - 176),
+      anchorRight: rect.right,
       y: rect.bottom + 5,
       items,
       onClose: () => closeOverlay(id)
@@ -416,7 +416,8 @@ async function setDefault(model: string): Promise<void> {
 
     <p class="hint">
       这些条目是<strong>要在这台机器上执行的命令</strong>，所以默认一条都不跑：必须由你看过完整命令行后逐条允许，
-      允许绑定到命令本身——插件改了任何参数都会重新问你。进程只在 AI 需要用到工具时才启动；
+      允许绑定到命令本身——插件改了任何参数都会重新问你。进程只在 AI 需要用到工具时才启动，
+      空转半小时后会自动退出（下次对话再拉起，所以「已允许但没在运行」是正常状态）；
       允许某个 server 时会顺带打开该插件在「AI 工具」里的开关，关掉那个开关也会一并停用它的 MCP 工具。
     </p>
   </section>

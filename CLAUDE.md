@@ -35,7 +35,7 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 8. **模型调用只有内置插件能发起**：`plugin:ai.chat.*` 等通道在 `define.ts` 标了 `internalOnly`，网关只放行 `source === 'builtin'`。模型调用花的是用户自己的钱，第三方插件即使声明了 `ai` 权限也调不通。第三方插件参与 AI 的唯一姿势是**被调用**：`plugin:ai.tool-call`（主→插件，宿主代发）→ 插件执行 → `plugin:ai.tool.reply`（插件→主，`internalOnly`）。工具调用的编排（选工具、限轮次、风险确认、审计）全在主进程 `main/ai/`，插件侧只负责执行单个 `handler`。
 9. **密钥只在主进程**：AI 的 apiKey 走 `safeStorage` 密文（`main/ai/secrets.ts`），渲染层与插件页只能拿掩码；日志、审计、错误信息里一律脱敏。
 10. **工具调用必须有闸门**：任何模型发起的工具调用都要经过 `main/ai/toolExec.ts` 的同一条流水（参数校验 → `needsConfirm` → `askConfirm` → 执行 → `writeAudit`）。`dangerous` 级工具每次都问，不给「本次会话不再询问」；确认超时按拒绝；任何失败都折成 `tool-result.error` 回给模型而不是抛出去。绕过这条流水直接 dispatch 是禁止的。
-11. **MCP 命令必须用户逐条确认且与指纹绑定**：`ai/mcp.json` 里的命令默认一条都不执行；用户批准时把 `command+args+env+cwd` 的 sha256 一起存进 `config.aiMcpApprovals`，命令改了（指纹对不上）必须重新批准。执行一律 `spawn(cmd, args, {shell:false})`——**不许拼字符串走 shell**，也不许把整份 `process.env` 换成声明里的 env（`npx`/`node` 靠 PATH）。子进程必须在退出时收掉（Windows 用 `taskkill /T`），连续失败 3 次本会话停用。
+11. **MCP 命令必须用户逐条确认且与指纹绑定**：`ai/mcp.json` 里的命令默认一条都不执行；用户批准时把 `command+args+env+cwd` 的 sha256 一起存进 `config.aiMcpApprovals`，命令改了（指纹对不上）必须重新批准。执行一律 `spawn(cmd, args, {shell:false})`——**不许拼字符串走 shell**，也不许把整份 `process.env` 换成声明里的 env（`npx`/`node` 靠 PATH）。子进程必须在退出时收掉（Windows 用 `taskkill /T`），连续失败 3 次本会话停用；空转 30 分钟主动收掉（`mcpIdleExpired()`，有调用在飞时绝不收），下次对话再拉起。
 
 ## 3. 代码规范
 
@@ -50,10 +50,12 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
   `managed`（不 Teleport、不画遮罩、不拦 Esc 和外部点击——那两件归宿主，自己再来一遍就会出现
   "Esc 关了菜单又触发面板隐藏"）。宿主的 `components/{ContextMenu,ConfirmDialog}.vue` 只是
   把 `IconName`/回调翻译过去的适配层，别再往里加实现。
+- **菜单右对齐传 `anchorRight`，不要 `rect.right - MENU_W`**：菜单宽度随标签/提示文字变，
+  拿最小宽度反推左边缘，标签一长右缘就偏出几个像素。`MENU_W` 只是最小宽度。
 - **破坏性操作不进按钮行**：删除 / 卸载 / 清除数据一律收进 `···` 菜单（宿主用 `ContextMenu`，插件页用 `PopMenu`）或右键菜单，并走自绘 `ConfirmDialog`（默认焦点在「取消」）。新代码不再用 `window.confirm` 和 `NPopconfirm`。
 - **AI 对话页的「过程」不能平铺**：推理、工具调用、过程中的碎话都归「过程」块（`answerStart()` 之前的一切），生成中展开、结束后收起成一行摘要；用户手动开合过的记在 `procOverride` 里并优先于默认值。别再把工具卡片直接铺进正文（`docs/ai-architecture.md` §5.1）。
 - **答案的分界是「最后一次工具调用之后」**，不是"最后一段正文"：模型拿到工具结果常先来一句过渡，按最后一段切会把过渡算进答案、把结论前几段藏进折叠区。规则在 `plugins/ai/src/answer.ts`（有单测），别在 `.vue` 里另写一份。
-- **正文渲染只在 `plugins/ai/src/markdown.ts`**：围栏拆段、表格、嵌套列表、标题/引用、行内格式都在这；改渲染先加测试用例（`tests/markdown.test.ts`）再改实现。
+- **正文渲染只在 `plugins/ai/src/markdown.ts`**：围栏拆段、表格、嵌套列表（含任务列表）、标题/可嵌套引用、图片（只放行 http(s)）、单元格 `<br>`、行内格式都在这；改渲染先加测试用例（`tests/markdown.test.ts`）再改实现。递归（嵌套引用）只能进 `renderBlocks`——它吃**已转义**的文本，再逃一次会把 `&amp;` 变成 `&amp;amp;`。
 - **流式输出不要无脑滚到底**：按 `stick`（离底 < 48px）判断要不要跟随，否则用户往上翻历史时会被一帧帧拽回去。
 - **无边框窗口的每个顶层页面都要有拖动区**：主页靠 `.search-row` 的 `-webkit-app-region: drag`，设置页 / 全部应用页各自补头部 `drag` + 子元素 `no-drag`。新加一个铺满面板的页面时先想这件事。
 - **插件里的纯逻辑要单独成模块并单测**：状态机/解析/格式化别写在 `.vue` 里——`.vue` 不参与任何 tsconfig，错了只能靠点界面发现。放 `<plugin>/src/x.ts`，在 `tests/` 里 import 它（测试被 tsconfig include，插件代码才会顺带被 tsc 检查）。参考 `plugins/calculator/src/{evaluator,keypad}.ts` + `tests/calculator.test.ts`。
@@ -85,8 +87,9 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 - 内联插件视图会被后台拉起但**不挂到面板**（`pluginHost.warmPluginContents`）：不要在这里做重活，慢数据自己缓存；页面未加载完时面板会在 `did-finish-load` 后自动补查一次
 - 改插件后：日常用 `pnpm dev:plugin <name>`（vite dev server + HMR，启动器自动切入口、改代码即时生效，manifest 改动仍需 `pnpm build:plugins` 并重开插件）；没起 dev server 时一律 `pnpm build:plugins`
 - 想让插件被 AI 当工具调用 → manifest 声明 `permissions: ["ai"]` + `ai: { tools, skill }` 两个
-  **插件目录内**的相对路径（v0.6.2 声明、v0.6.3 可被调用）；`features: ["ai"]` 这个名字虽然在
-  `PLUGIN_FEATURES` 里，但代码里没有消费者，**别当成门禁**。第三方插件参与 AI 的唯一姿势是**被调用**：
+  **插件目录内**的相对路径（v0.6.2 声明、v0.6.3 可被调用）。`features` 里**不要再写 `"ai"`**：
+  v0.6.10 已把那个没有消费点的名字从 `PLUGIN_FEATURES` 删掉，写了只会告警；第三方插件参与 AI
+  的唯一姿势是**被调用**：
   `plugin:ai.tool-call`（主→插件）→ 执行 → `plugin:ai.tool.reply`（`plugin:ai.*` 里唯一不标 internalOnly 的通道）；
   对话/确认/附件/会话那几组仍是 `internalOnly`，只有内置插件能调
 - 插件的界面不另起一套：入口先 `import '../../../src/shared/theme.css'`（同时给 reset，漏了就是常驻滚动条）再 `import '../../../src/shared/plugin-ui.css`，

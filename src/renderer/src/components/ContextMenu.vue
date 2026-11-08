@@ -29,8 +29,11 @@ import type { MenuItem } from '../../../shared/ui/menu'
 import { ICONS } from './icons'
 
 const props = defineProps<{
-  x: number
+  /** 光标位置：右键菜单用这个 */
+  x?: number
   y: number
+  /** 触发按钮的右边缘：菜单右缘对齐它，别再用「rect.right - 176」猜宽度 */
+  anchorRight?: number
   items: ContextMenuItem[]
 }>()
 
@@ -57,5 +60,13 @@ function onPick(key: string): void {
 </script>
 
 <template>
-  <PopMenu :x="props.x" :y="props.y" :items="mapped" managed @pick="onPick" @close="emit('close')" />
+  <PopMenu
+    :x="props.x ?? 0"
+    :y="props.y"
+    :anchor-right="props.anchorRight"
+    :items="mapped"
+    managed
+    @pick="onPick"
+    @close="emit('close')"
+  />
 </template>

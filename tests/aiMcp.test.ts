@@ -13,7 +13,10 @@ import {
   DEFAULT_MCP_CALL_TIMEOUT_MS,
   MAX_MCP_SERVERS_PER_PLUGIN,
   MAX_MCP_TIMEOUT_MS,
-  MIN_MCP_TIMEOUT_MS
+  MCP_IDLE_TIMEOUT_MS,
+  MIN_MCP_TIMEOUT_MS,
+  mcpIdleExpired,
+  type McpIdleState
 } from '../src/shared/ai'
 
 /** 一条最小可用的声明 */
@@ -164,5 +167,39 @@ describe('MCP 的 inputSchema 复用同一套校验', () => {
     const compiled = compileToolSchema(undefined)
     expect(compiled).not.toBeNull()
     expect(compiled!.validator({})).toBeNull()
+  })
+})
+
+describe('MCP 空闲回收', () => {
+  const now = 1_700_000_000_000
+  /** 一个空转超时的健康运行时 */
+  const idle = (extra: Partial<McpIdleState> = {}): McpIdleState => ({
+    running: true,
+    connecting: false,
+    disabled: false,
+    activeCalls: 0,
+    lastUsedAt: now - MCP_IDLE_TIMEOUT_MS - 1,
+    ...extra
+  })
+
+  it('空转超过阈值才收', () => {
+    expect(mcpIdleExpired(idle(), now)).toBe(true)
+    expect(mcpIdleExpired(idle({ lastUsedAt: now - MCP_IDLE_TIMEOUT_MS + 1 }), now)).toBe(false)
+  })
+
+  it('有调用在飞时绝不收（收掉就把这次调用连结果一起丢了）', () => {
+    expect(mcpIdleExpired(idle({ activeCalls: 1 }), now)).toBe(false)
+  })
+
+  it('没在跑、正在建连、已停用的都不动', () => {
+    expect(mcpIdleExpired(idle({ running: false }), now)).toBe(false)
+    expect(mcpIdleExpired(idle({ connecting: true }), now)).toBe(false)
+    expect(mcpIdleExpired(idle({ disabled: true }), now)).toBe(false)
+  })
+
+  it('lastUsedAt 还停在初值 0 时算作空转——所以连上那一刻必须写它', () => {
+    // 这条钉的是约定：`makeRuntime` 里 lastUsedAt 初始为 0，只有「连上/调用完」才写。
+    // 如果哪天把 connectRuntime 里的赋值删了，运行中的 server 会在下一次清扫时被收掉。
+    expect(mcpIdleExpired(idle({ lastUsedAt: 0 }), now)).toBe(true)
   })
 })

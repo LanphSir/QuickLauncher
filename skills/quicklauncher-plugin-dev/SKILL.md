@@ -155,8 +155,9 @@ my-plugin/
 ```
 
 - 三个路径都必须**在插件目录内**且文件存在；`../`、绝对路径、URL 会被 `safeRelative()` 拒掉。
-- ⚠ `features: ["ai"]` **不是门禁**：`PLUGIN_FEATURES` 里有这个名字，但代码里没有消费点。
-  真正的门槛是 `permissions: ["ai"]` + `ai.tools` 路径 + 用户在设置页授权。写了不生效，别当成必需。
+- ⚠ **不要写 `features: ["ai"]`**：`PLUGIN_FEATURES` 里已经删掉这个名字（v0.6.10），
+  写了会被当成未知功能名告警丢掉。真正的门槛是 `permissions: ["ai"]` + `ai.tools` 路径
+  + 用户在设置页授权；`features` 只有 `inline` 一项，管的是"内联结果"这种形态。
 - `external` 型不支持 `ai` 段（没有页面能回执，发下去只会超时）。
 
 `ai/tools.json` 的字段：

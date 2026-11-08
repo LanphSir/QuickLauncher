@@ -2,8 +2,9 @@
  * 对话正文的极轻 markdown 渲染。
  *
  * 不引 markdown 库：引进来就要背一整棵 AST、插件包体积和 HTML 清洗的口径，
- * 而这里真正需要「比纯文本好看」的只有几样——代码块、表格、列表、标题。
- * 剩下的（脚注、数学、嵌套引用）放在对话里出现频率极低，不做。
+ * 而这里真正需要「比纯文本好看」的只有几样——代码块、表格、列表（含任务列表）、
+ * 标题、引用（可嵌套）、图片。剩下的（脚注、数学、HTML 块）放在对话里出现频率
+ * 极低，不做。
  *
  * 三条必须守住的规矩：
  * 1. **先转义再拼标签**。模型输出里出现 `<script>` 只能是字面量。
@@ -66,8 +67,33 @@ export function escapeHtml(text: string): string {
 function inline(text: string): string {
   return text
     .split('`')
-    .map((part, i) => (i % 2 === 1 ? `<code>${part}</code>` : emphasis(part)))
+    .map((part, i) => (i % 2 === 1 ? `<code>${part}</code>` : emphasis(rich(part))))
     .join('')
+}
+
+/** 模型写的 `<br>` 已经被转义成 `&lt;br&gt;`，单元格里要靠它换行（表格不能留真换行） */
+const BR = /&lt;br\s*\/?&gt;/gi
+/** `![说明](https://…)`，可带 `"标题"` */
+const IMAGE = /!\[([^\]\n]*)\]\(\s*([^)\s]+)(?:\s+"([^"\n]*)")?\s*\)/g
+
+const attr = (text: string): string => text.replace(/"/g, '&quot;')
+
+/**
+ * 行内富文本：图片与 `<br>`。
+ *
+ * 图片只放行 http(s)：对话里出现的图九成是外链，`data:`（几十兆塞进 DOM）、
+ * `javascript:`、`file:` 一律退化成原始文字——宁可看到 `![x](file:///…)`，
+ * 也不要在渲染正文的地方开一个能读本地文件的口子。
+ */
+function rich(text: string): string {
+  return text
+    .replace(BR, '<br>')
+    .replace(IMAGE, (raw, alt: string, src: string, title?: string) => {
+      const url = src.replace(/^<|>$/g, '')
+      if (!/^https?:\/\//i.test(url)) return raw
+      const t = title ? ` title="${attr(title)}"` : ''
+      return `<img class="md-img" src="${attr(url)}" alt="${attr(alt)}"${t} loading="lazy" />`
+    })
 }
 
 function emphasis(text: string): string {
@@ -185,7 +211,9 @@ function listBlock(lines: string[], start: number): { html: string; next: number
     }
     const indent = m[1].replace(/\t/g, '  ').length
     const tag: 'ul' | 'ol' = /^\d/.test(m[2]) ? 'ol' : 'ul'
-    const content = inline(m[3])
+    const item = listItem(m[3])
+    const content = item.content
+    const li = item.cls
 
     // 回到不比上一项更深的层
     while (stack.length && indent < stack[stack.length - 1].indent) closeTop()
@@ -194,15 +222,15 @@ function listBlock(lines: string[], start: number): { html: string; next: number
       // 新列表，或者比上一层更深 = 子列表（父级 `<li>` 保持打开，正好包住它）
       out.push(`<${tag}>`)
       stack.push({ indent, tag })
-      out.push(`<li>${content}`)
+      out.push(`<li${li}>${content}`)
     } else if (stack[stack.length - 1].tag === tag) {
-      out.push(`</li><li>${content}`)
+      out.push(`</li><li${li}>${content}`)
     } else {
       // 同缩进换了类型（`-` 接 `1.`）：这一层结束，另起一层
       closeTop()
       out.push(`<${tag}>`)
       stack.push({ indent, tag })
-      out.push(`<li>${content}`)
+      out.push(`<li${li}>${content}`)
     }
     i++
   }
@@ -211,12 +239,35 @@ function listBlock(lines: string[], start: number): { html: string; next: number
 }
 
 /**
+ * 列表项正文：`- [ ] 待办` / `- [x] 已完成` 渲染成带方框的条目。
+ *
+ * 方框画成 `<span>` 而不是 `<input type=checkbox>`：这个是只读展示，
+ * 一个能点、点了没反应的勾选框比不能点的方框更让人困惑。
+ */
+function listItem(raw: string): { content: string; cls: string } {
+  const task = /^\[([ xX])\][ \t]+(.*)$/.exec(raw)
+  if (!task) return { content: inline(raw), cls: '' }
+  const done = task[1].toLowerCase() === 'x'
+  return {
+    content: `<span class="task-box" aria-hidden="true"></span>${inline(task[2])}`,
+    cls: done ? ' class="task task-on"' : ' class="task"'
+  }
+}
+
+/**
  * 渲染一段正文（不含围栏代码块——那部分由 `textSegs` 拆出去单独渲染）。
  *
  * 输出里所有标签紧挨着，不留换行：正文容器是 pre-wrap，多一个换行就多一条空行。
  */
 export function renderMarkdown(text: string): string {
-  const lines = escapeHtml(text).split('\n')
+  return renderBlocks(escapeHtml(text).split('\n'))
+}
+
+/**
+ * 行 → HTML。入参**必须是已经转义过的**：嵌套引用要再进来渲染一次，
+ * 这里若重做 escapeHtml，内层的 `&amp;` 会被逃成 `&amp;amp;` 显示成乱码。
+ */
+function renderBlocks(lines: string[]): string {
   const out: string[] = []
   let i = 0
 
@@ -262,7 +313,10 @@ export function renderMarkdown(text: string): string {
     if (QUOTE.test(line)) {
       const body: string[] = []
       while (i < lines.length && QUOTE.test(lines[i])) body.push(QUOTE.exec(lines[i++])![1])
-      out.push(`<blockquote class="md-quote">${inline(body.join('\n'))}</blockquote>`)
+      // 剥掉一层 `>` 之后内层还有 `>`，就是嵌套引用：递归一层，缩进视觉由 CSS 递进
+      const nested = body.some((one) => QUOTE.test(one))
+      const html = nested ? renderBlocks(body) : inline(body.join('\n'))
+      out.push(`<blockquote class="md-quote">${html}</blockquote>`)
       continue
     }
 

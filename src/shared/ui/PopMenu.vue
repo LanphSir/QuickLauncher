@@ -13,6 +13,11 @@
  *
  * 定位：挂载后量真实尺寸再定向。菜单项可能换行、带提示、带分隔线，
  * 按 `itemCount * 行高` 估算迟早会在某个组合下把菜单顶出窗口。
+ *
+ * 两种锚点：
+ * - `x` / `y`：跟随鼠标（右键菜单）；
+ * - `anchorRight`：右缘贴住触发按钮。菜单宽度随内容变，调用方**不要**再用
+ *   `rect.right - 176` 这种减法去凑——标签长一点就会差出十几像素。
  */
 </script>
 
@@ -25,13 +30,16 @@ const PAD = 8
 
 const props = withDefaults(
   defineProps<{
-    x: number
+    /** 光标 x；给了 `anchorRight` 时忽略 */
+    x?: number
     y: number
+    /** 触发按钮的右边缘：菜单右缘对齐到它，宽度自适应也不会错位 */
+    anchorRight?: number
     items: MenuItem[]
     /** 由 OverlayHost 托管：不 Teleport、不自己拦外部点击与 Esc */
     managed?: boolean
   }>(),
-  { managed: false }
+  { x: 0, managed: false }
 )
 
 const emit = defineEmits<{
@@ -41,7 +49,7 @@ const emit = defineEmits<{
 
 const el = ref<HTMLDivElement | null>(null)
 /** 先按原坐标渲染一次（不可见），量到尺寸后再定位，避免闪一帧在错误位置 */
-const pos = ref({ left: props.x, top: props.y, ready: false })
+const pos = ref({ left: props.anchorRight ?? props.x, top: props.y, ready: false })
 const origin = ref('top left')
 
 const valid = computed(() => props.items.filter((item) => item.separator || item.label))
@@ -57,12 +65,21 @@ function place(): void {
   const rect = node.getBoundingClientRect()
   const vw = window.innerWidth
   const vh = window.innerHeight
-  let left = props.x
+  const anchor = props.anchorRight
+  // 有锚点：右缘对齐按钮；没锚点：跟在光标右下方
+  const base = anchor === undefined ? props.x : anchor - rect.width
+  let left = base
   let top = props.y
-  // 右边放不下就翻到光标左侧；翻完还放不下就贴边（贴边总比被裁掉好）
-  if (left + rect.width > vw - PAD) left = Math.max(PAD, Math.min(props.x - rect.width, vw - rect.width - PAD))
+  if (anchor === undefined) {
+    // 右边放不下就翻到光标左侧；翻完还放不下就贴边（贴边总比被裁掉好）
+    if (left + rect.width > vw - PAD) left = Math.max(PAD, Math.min(props.x - rect.width, vw - rect.width - PAD))
+  } else {
+    // 锚点方案不翻转，只夹进视口：按钮贴左边时菜单往右让，贴右边时往左让
+    left = Math.max(PAD, Math.min(base, vw - rect.width - PAD))
+  }
   if (top + rect.height > vh - PAD) top = Math.max(PAD, props.y - rect.height)
-  origin.value = `${top < props.y ? 'bottom' : 'top'} ${left < props.x ? 'right' : 'left'}`
+  // 被视口挤走之后，动画要从正确的那条边展开
+  origin.value = `${top < props.y ? 'bottom' : 'top'} ${left < base ? 'right' : 'left'}`
   pos.value = { left, top, ready: true }
 }
 

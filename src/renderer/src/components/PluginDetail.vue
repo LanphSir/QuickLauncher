@@ -55,7 +55,7 @@ function openMoreMenu(event: MouseEvent): void {
     backdrop: 'transparent',
     autoFocus: false,
     label: 'detail-menu',
-    props: { x: Math.max(8, rect.right - 176), y: rect.bottom + 5, items, onClose: () => closeOverlay(id) }
+    props: { anchorRight: rect.right, y: rect.bottom + 5, items, onClose: () => closeOverlay(id) }
   })
 }
 

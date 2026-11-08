@@ -99,7 +99,7 @@ function menuItemsFor(p: PluginSummary): ContextMenuItem[] {
   return items
 }
 
-function openMenu(p: PluginSummary, pos: { x: number; y: number }): void {
+function openMenu(p: PluginSummary, pos: { x?: number; y: number; anchorRight?: number }): void {
   let id = 0
   id = openOverlay({
     component: ContextMenu,
@@ -109,16 +109,17 @@ function openMenu(p: PluginSummary, pos: { x: number; y: number }): void {
     props: {
       x: pos.x,
       y: pos.y,
+      anchorRight: pos.anchorRight,
       items: menuItemsFor(p),
       onClose: () => closeOverlay(id)
     }
   })
 }
 
-/** 菜单按钮：以按钮右下角为锚点，菜单自然展开在手指下方 */
+/** 菜单按钮：菜单右缘对齐按钮，往下展开 */
 function openMenuFromButton(p: PluginSummary, event: MouseEvent): void {
   const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
-  openMenu(p, { x: rect.right - 176, y: rect.bottom + 5 })
+  openMenu(p, { anchorRight: rect.right, y: rect.bottom + 5 })
 }
 
 /** 卸载不可逆，必须有一次看得懂的确认；原生 confirm 与面板风格差太远 */

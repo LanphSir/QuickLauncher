@@ -39,5 +39,11 @@ export interface MenuItem {
   separator?: boolean
 }
 
-/** 菜单宽度：调用方需要按它把菜单右边缘对齐到触发按钮 */
+/**
+ * 菜单最小宽度。
+ *
+ * **不要**拿它去算右边缘（`rect.right - MENU_W` 这种写法）：菜单宽度随标签、
+ * 提示文字变化，按常量减出来会差几个像素。右对齐请给 `PopMenu` 传
+ * `anchorRight`，让它量完真实宽度再对齐。
+ */
 export const MENU_W = 176

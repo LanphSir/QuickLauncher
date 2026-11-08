@@ -10,6 +10,8 @@
  *    否则装了十个 server 就等于开机起十个进程。
  * 3. **崩了不能一直拉起**。连续 `MCP_MAX_CRASHES` 次失败就本会话停用，
  *    否则一个配置错误的 server 会在每轮对话里重启一次，把 CPU 吃满。
+ * 4. **空了要收**。聊完就一直挂着的话，`npx` 起的 node 会整天空占内存，
+ *    所以空转 `MCP_IDLE_TIMEOUT_MS` 后收掉进程，下次对话再拉起。
  *
  * 状态全部从磁盘现算（声明的 mtime 指纹 + config 里的授权），只有「活着的进程」
  * 与「上次列出的工具」是内存态——重启后自然重新拉取，不存在缓存过期的问题。
@@ -21,7 +23,9 @@ import { getConfig, updateConfig } from '../config'
 import {
   MCP_CONNECT_TIMEOUT_MS,
   MCP_FIRST_CONNECT_TIMEOUT_MS,
+  MCP_IDLE_SWEEP_MS,
   MCP_MAX_CRASHES,
+  mcpIdleExpired,
   type AiMcpServerView,
   type AiToolRisk
 } from '../../shared/ai'
@@ -57,6 +61,10 @@ interface Runtime {
   disabled: boolean
   /** 这次会话里成功连上过：用来决定下次建连给常规预算还是首次预算 */
   everConnected: boolean
+  /** 最后一次用它的时刻（连上或调用完），空闲回收按它判 */
+  lastUsedAt: number
+  /** 正在飞的工具调用数：有调用在跑时不能收进程 */
+  activeCalls: number
   lastError?: string
 }
 
@@ -347,7 +355,9 @@ function makeRuntime(decl: Declared): Runtime {
     connecting: null,
     crashes: 0,
     disabled: false,
-    everConnected: false
+    everConnected: false,
+    lastUsedAt: 0,
+    activeCalls: 0
   }
 }
 
@@ -357,6 +367,47 @@ async function shutdownRuntime(rt: Runtime): Promise<void> {
   rt.tools = []
   rt.validators.clear()
   if (client) await client.close()
+}
+
+/* ---------------------------------------------------------------- 空闲回收 */
+
+let sweepTimer: ReturnType<typeof setInterval> | null = null
+
+/**
+ * 空转的 MCP 进程定时收掉。
+ *
+ * 不在每次调用里现扫：真正的场景是「聊完就不管了」，那时候没有任何调用可以
+ * 顺带触发检查。定时器只在第一个 server 连上后才开，`unref` 掉——不能为了
+ * 一个清理任务把主进程钉在事件循环里。
+ */
+function sweepIdle(): void {
+  const now = Date.now()
+  for (const rt of runtimes.values()) {
+    const state = {
+      running: rt.client?.isRunning === true,
+      connecting: rt.connecting !== null,
+      disabled: rt.disabled,
+      activeCalls: rt.activeCalls,
+      lastUsedAt: rt.lastUsedAt
+    }
+    if (!mcpIdleExpired(state, now)) continue
+    console.log(
+      `[mcp] ${rt.pluginName}/${rt.spec.name} 空转 ${Math.round((now - rt.lastUsedAt) / 60_000)} 分钟，收掉进程`
+    )
+    void shutdownRuntime(rt)
+  }
+}
+
+function ensureSweep(): void {
+  if (sweepTimer) return
+  sweepTimer = setInterval(sweepIdle, MCP_IDLE_SWEEP_MS)
+  sweepTimer.unref?.()
+}
+
+function stopSweep(): void {
+  if (!sweepTimer) return
+  clearInterval(sweepTimer)
+  sweepTimer = null
 }
 
 /**
@@ -400,7 +451,9 @@ async function connectRuntime(rt: Runtime): Promise<void> {
       rt.validators = validators
       rt.everConnected = true
       rt.crashes = 0
+      rt.lastUsedAt = Date.now()
       rt.lastError = undefined
+      ensureSweep()
       console.log(`[mcp] ${rt.pluginName}/${rt.spec.name} 已连接，${kept.length} 个工具`)
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
@@ -543,10 +596,18 @@ export async function callMcpTool(
     const client = rt.client
     if (!client) return { ok: false, text: '', error: `MCP server ${server} 没连上` }
 
-    const result = await client.callTool(toolName, args, timeoutMs)
-    if (result.ok) rt.crashes = 0
-    else if (!client.isRunning) rt.crashes++
-    return result
+    // 在飞期间挡住空闲回收：一次工具调用可能跑几十秒（浏览器抓取、构建），
+    // 收掉进程等于把这次调用连结果一起丢了
+    rt.activeCalls++
+    try {
+      const result = await client.callTool(toolName, args, timeoutMs)
+      if (result.ok) rt.crashes = 0
+      else if (!client.isRunning) rt.crashes++
+      return result
+    } finally {
+      rt.activeCalls--
+      rt.lastUsedAt = Date.now()
+    }
   } catch (err) {
     return { ok: false, text: '', error: err instanceof Error ? err.message : String(err) }
   }
@@ -554,6 +615,7 @@ export async function callMcpTool(
 
 /** 应用退出时收掉所有子进程（否则 npx 起的 node 会变成孤儿） */
 export async function shutdownMcp(): Promise<void> {
+  stopSweep()
   const all = [...runtimes.values()]
   runtimes.clear()
   await Promise.allSettled(all.map((rt) => shutdownRuntime(rt)))
