@@ -23,6 +23,7 @@ import type {
   AiStreamEvent,
   AiToolCallRequest,
   AiToolEntry,
+  AiToolPluginView,
   AiToolReply
 } from './ai'
 
@@ -222,6 +223,13 @@ export interface PluginApiTypes {
    */
   'plugin:ai.tools': { req: undefined; res: AiToolEntry[] }
   /**
+   * 工具目录（v0.6.7）：含未授权插件，供对话页直接开关授权。internalOnly——
+   * 第三方插件能读到这份清单，就等于能顺着枚举别人的能力。
+   */
+  'plugin:ai.tools.catalog': { req: undefined; res: AiToolPluginView[] }
+  /** 插件级授权开关（v0.6.7）。internalOnly：能自己授权自己等于没有授权 */
+  'plugin:ai.tool.grant': { req: { pluginId: string; granted: boolean }; res: SimpleResult }
+  /**
    * 工具执行回执（v0.6.3）。不是 internalOnly：第三方插件正是被调用的那一方。
    * 主进程按 callId 核对「这个回执是不是发给我正等的那个插件的」，串不了台。
    */
@@ -279,6 +287,8 @@ export const PLUGIN_PERMS: Record<PluginChannel, PluginPermission | null> = {
   'plugin:ai.chat.stop': 'ai',
   'plugin:ai.models': 'ai',
   'plugin:ai.tools': 'ai',
+  'plugin:ai.tools.catalog': 'ai',
+  'plugin:ai.tool.grant': 'ai',
   'plugin:ai.tool.reply': 'ai',
   'plugin:ai.tool.confirm': 'ai',
   'plugin:ai.attach.pick': 'ai',
@@ -389,6 +399,13 @@ export interface PluginApiSurface {
      * 界面据此告诉用户「现在模型手上有没有工具」，不必自己拼状态。
      */
     tools(): Promise<AiToolEntry[]>
+    /**
+     * 全部声明了 AI 能力的插件（含未授权）：对话页的「工具」面板据此画开关。
+     * 与设置页那份同源，区别只是走网关而不是 panel: 通道。
+     */
+    toolPlugins(): Promise<AiToolPluginView[]>
+    /** 开/关某个插件的工具授权。插件级，不是单个工具——理由见 tools.ts 顶部 */
+    grantTool(pluginId: string, granted: boolean): Promise<SimpleResult>
     /**
      * 接收一次工具调用（v0.6.3，需 `ai` 权限 + manifest 声明了 `ai.tools`）。
      *

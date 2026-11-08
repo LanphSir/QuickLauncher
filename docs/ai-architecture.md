@@ -233,6 +233,8 @@ SDK 藏起来的部分。代价是不支持 resources/prompts/sampling，http �
 | `plugin:ai.tools` | 设置页 → 主进程 | 列出识别到的工具（含被丢弃项的原因） | — |
 | `plugin:ai.tool.reply` | 插件 → 主进程 | 回 `{callId, ok, result\|error}`，`jsonValue` 上限 64KB | `ai` |
 | `plugin:ai.tool.confirm` | AI 页 → 主进程 | 回答确认框 `{requestId, allow, remember}`（`internalOnly`） | `ai` |
+| `plugin:ai.tools.catalog` | AI 页 → 主进程 | 全部声明了 AI 能力的插件（含未授权），供对话内开关授权（`internalOnly`） | `ai` |
+| `plugin:ai.tool.grant` | AI 页 → 主进程 | 插件级授权开关 `{pluginId, granted}`（`internalOnly`） | `ai` |
 | `plugin:ai.chat.send` | AI 插件 → 主进程 | 发消息（`internalOnly`） | `ai` |
 | `plugin:ai.chat.stop` | AI 插件 → 主进程 | 中断当前生成（`internalOnly`） | `ai` |
 | `plugin:ai.session.*` | AI 插件 → 主进程 | 列表/读取/改名/删除（`internalOnly`） | `ai` |
@@ -295,12 +297,27 @@ webContents，实际实现改为**复用 `pluginHost` 的视图**（`warmPluginC
 同一插件双实例会踩存储与生命周期，代价是占 LRU 里的名额（上限 5）。
 用完空闲 60s 回收（用户正开着该插件则不动），崩溃重建一次再失败就如实回报。
 
+## 5.1 对话页的呈现约定（v0.6.7）
+
+一次带工具的对话会被拆成「先说话 → 调工具 → 再说话」若干轮，全部写进**同一条** assistant
+消息。界面上不能把这些东西平铺，否则带两轮工具的答案满屏都是灰卡片。约定如下：
+
+| 决定 | 规则 | 为什么 |
+|---|---|---|
+| 过程与回答的分界 | `answerStart()` 从后往前找第一段非空正文，它之前的推理/工具/碎话进「过程」块 | 用户看的是最后那段回答；中间产物属于过程，不该和答案平级 |
+| 默认开合 | 生成中展开、结束后收起成一行；用户手动开合过则以手动为准（`procOverride`） | 「看得见过程又不占版面」；不能出现"我展开了，它一边生成一边自己收回去" |
+| 摘要内容 | `思考 N 段 · 调用 N 个工具 · N 个失败 · 用时 x.xs` | 收起状态下仍要能判断"这轮做了什么、值不值得展开" |
+| 跟随底部 | 离底 < 48px 才算跟随，`stick` 为假时不因增量滚到底 | 往上翻历史时被一帧帧拽回去，是长回答里最烦人的一件事 |
+| 回合导航 | 按用户消息（回合）画右侧刻度，少于 3 轮不显示 | 一屏能看完的对话不需要导航 |
+| 工具授权入口 | 输入框左侧「工具」面板，与设置页共用同一份 `aiToolGrants` | 决定要不要授权，往往发生在模型正要用的那一刻 |
+| 行内渲染 | 只做代码围栏/粗体/行内代码/行首标题，先转义再替换 | 引 markdown 库要处理表格与嵌套列表，收益不抵复杂度 |
+
 ## 6. 安全模型
 
 | 面 | 措施（v0.6.4 实际实现） |
 |---|---|
 | API Key | `safeStorage.encryptString` 密文落盘；渲染层/插件层只拿掩码；日志与审计里脱敏 |
-| 工具越权 | 四重门：manifest `permissions:["ai"]` + `ai.tools` 声明有效 + 设置页开关（默认全体关闭）+ 每次下发现算授权（撤销立即生效） |
+| 工具越权 | 四重门：manifest `permissions:["ai"]` + `ai.tools` 声明有效 + 用户开关（设置页或对话内面板，默认全体关闭）+ 每次下发现算授权（撤销立即生效） |
 | 用户确认 | 确认框渲染在 **AI 页内**（插件页是原生 `WebContentsView`，会盖住 `OverlayHost`）；默认焦点在「拒绝」、Esc 拒绝；`dangerous` 不给「本次会话不再询问」；60s 超时按拒绝 |
 | 提示注入 | 工具返回内容一律作为 `role:'tool'` 的 data 消息回填，不拼进 system；`shell.openExternal`、写入类归 `dangerous`；绝不执行模型给出的原样命令 |
 | 名字伪造 | 模型只能用 api 名（`[A-Za-z0-9_-]{1,64}`），主进程用 `byApiName` 反查真实工具；反查不到的调用直接失败，不接受模型自己拼的 `plugin:` 名 |

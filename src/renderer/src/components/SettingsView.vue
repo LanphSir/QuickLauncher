@@ -584,6 +584,13 @@ function pluginMenuItems(p: PluginSummary): ContextMenuItem[] {
   align-items: center;
   gap: 10px;
   padding: 14px 18px 8px;
+  /* 面板是无边框窗口：主页靠搜索行拖动，设置页没有搜索行，这一行必须补上，
+     否则进了设置就拖不动窗口（其余页面同理） */
+  -webkit-app-region: drag;
+}
+
+.settings-header > * {
+  -webkit-app-region: no-drag;
 }
 
 .settings-header h2 {

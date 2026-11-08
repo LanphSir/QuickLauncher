@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type {
   AiAttachResult,
   AiChatMessage,
@@ -11,6 +11,7 @@ import type {
   AiSessionMeta,
   AiStreamEvent,
   AiToolCallPart,
+  AiToolPluginView,
   AiToolResultPart
 } from '../../../src/shared/ai'
 import PopMenu from '../../../src/shared/ui/PopMenu.vue'
@@ -31,6 +32,24 @@ const toast = ref('')
 const scroller = ref<HTMLElement | null>(null)
 const composer = ref<HTMLTextAreaElement | null>(null)
 
+/* ---------------- 过程块：生成中展开，结束后收起 ---------------- */
+
+/** 本次会话里每条回答的开始/结束时间：用来算「这轮用了多久」，历史消息没有就不显示 */
+const runStart = ref<Record<string, number>>({})
+const runEnd = ref<Record<string, number>>({})
+/** 用户手动开合过的过程块。有值就以它为准，默认值只在没被干预时生效 */
+const procOverride = ref<Record<string, boolean>>({})
+/** 每秒跳一下的钟：生成中要显示「已用 8s」，不能只在结束时才算一次 */
+const clock = ref(Date.now())
+let clockTimer: ReturnType<typeof setInterval> | undefined
+
+/* ---------------- 长对话：跟随底部 + 回合导航 ---------------- */
+
+/** 是否贴着底部。用户往上翻看历史时不能被新内容拽回去，这是最基本的一条 */
+const stick = ref(true)
+const atBottom = ref(true)
+const activeRound = ref(0)
+
 /** 待发附件：attachId 交给主进程换回解析结果，part 只用于本地展示 */
 interface PendingFile {
   attachId: string
@@ -44,9 +63,14 @@ const askAbout = ref<Record<string, string> | null>(null)
 /**
  * 已授权给 AI 的插件工具数量。
  * 只用来给用户一句提示——「模型手上有没有工具」直接影响它该怎么答；
- * 具体有哪些工具在设置 → AI → AI 工具里看。
+ * 具体有哪些工具在输入框左侧的「工具」面板里，点开就能开关，不必跳去设置页。
  */
 const toolCount = ref(0)
+/** 工具目录（含未授权）：对话页的授权面板直接改开关，省得为了开一个工具切到设置 */
+const toolPlugins = ref<AiToolPluginView[]>([])
+const toolPanel = ref(false)
+const toolBusy = ref('')
+const toolWrap = ref<HTMLElement | null>(null)
 
 /**
  * 工具调用的风险确认（v0.6.3）。
@@ -69,41 +93,231 @@ async function answerConfirm(allow: boolean): Promise<void> {
   rememberConfirm.value = false
 }
 
-async function refreshToolCount(): Promise<void> {
+/** 工具面板的数据源：含未授权的插件，否则用户看不到「还有什么可以开」 */
+async function refreshToolPlugins(): Promise<void> {
   try {
-    toolCount.value = (await api.ai.tools()).length
+    toolPlugins.value = await api.ai.toolPlugins()
+    toolCount.value = toolPlugins.value
+      .filter((p) => p.granted && !p.disabled)
+      .reduce((n, p) => n + p.tools.length, 0)
   } catch {
+    toolPlugins.value = []
     toolCount.value = 0
   }
+}
+
+/**
+ * 开关一个插件的工具授权。
+ * 授权是插件级的（与设置页同一套数据）：同一个插件的工具共享权限，按工具开关只会
+ * 让人误以为「关掉这个就安全了」。改完立刻重拉目录，以主进程结果为准。
+ */
+async function toggleToolGrant(p: AiToolPluginView): Promise<void> {
+  if (toolBusy.value) return
+  toolBusy.value = p.pluginId
+  try {
+    const next = !p.granted
+    const r = await api.ai.grantTool(p.pluginId, next)
+    if (!r.ok) {
+      error.value = r.message ?? '授权失败'
+      return
+    }
+    await refreshToolPlugins()
+    showToast(next ? `已授权「${p.pluginName}」· 下一轮对话起可用` : `已收回「${p.pluginName}」`)
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    toolBusy.value = ''
+  }
+}
+
+/** 点面板外面收起：与其它浮层同一套直觉，不为一个浮层发明第二种关闭方式 */
+function onDocMousedown(event: MouseEvent): void {
+  if (!toolPanel.value) return
+  const wrap = toolWrap.value
+  if (wrap && !wrap.contains(event.target as Node)) toolPanel.value = false
 }
 
 const configured = computed(() => models.value.length > 0)
 const messages = computed<AiChatMessage[]>(() => current.value?.messages ?? [])
 const hasMessages = computed(() => messages.value.length > 0)
+/** 回合 = 一条用户消息（及其后面的回答）。右侧导航按回合画点，而不是按消息 */
+const userMessages = computed(() => messages.value.filter((m) => m.role === 'user'))
 
 function textOf(message: AiChatMessage): string {
   return message.parts.map((p) => (p.type === 'text' ? p.text : '')).join('')
-}
-
-function reasoningOf(message: AiChatMessage): string {
-  return message.parts.map((p) => (p.type === 'reasoning' ? p.text : '')).join('')
 }
 
 function filesOf(message: AiChatMessage): AiFilePart[] {
   return message.parts.filter((p): p is AiFilePart => p.type === 'file')
 }
 
-/** 消息正文里要按顺序渲染的部分：推理单独折叠、工具结果挂回它对应的调用上 */
+/**
+ * 最终回答从哪一段开始：从后往前找第一段非空正文。
+ *
+ * 为什么要切这一刀：一次带工具的对话会被拆成「先说话 → 调工具 → 再说话」若干轮，
+ * 这些中间产物全写进同一条 assistant 消息里。用户要看的是**最后那段回答**，
+ * 而前面的推理、工具、过程中的碎话都属于「过程」——它们不该和答案平铺在一起。
+ */
+function answerStart(message: AiChatMessage): number {
+  for (let i = message.parts.length - 1; i >= 0; i--) {
+    const p = message.parts[i]
+    if (p.type === 'text' && p.text.trim()) return i
+  }
+  return message.parts.length
+}
+
+/** 过程：最终回答之前的一切（推理 / 工具调用 / 过程中的叙述），按发生顺序 */
+function processParts(message: AiChatMessage): AiMessagePart[] {
+  return message.parts
+    .slice(0, answerStart(message))
+    .filter((p) => p.type === 'reasoning' || p.type === 'tool_call' || p.type === 'text')
+}
+
+/** 正文：只剩最终回答，工具结果挂回它对应的调用上，不在这里重复渲染 */
 function bodyParts(message: AiChatMessage): AiMessagePart[] {
-  return message.parts.filter((p) => p.type !== 'reasoning' && p.type !== 'tool_result')
+  return message.parts.slice(answerStart(message)).filter((p): p is AiMessagePart & { type: 'text' } => p.type === 'text')
+}
+
+interface ProcStats {
+  /** 推理段数（连续增量已经合并过，一「段」≈ 一次思考） */
+  think: number
+  calls: number
+  fails: number
+}
+
+function procStats(message: AiChatMessage): ProcStats {
+  const st: ProcStats = { think: 0, calls: 0, fails: 0 }
+  for (const p of message.parts) {
+    if (p.type === 'reasoning') st.think++
+    else if (p.type === 'tool_call') {
+      st.calls++
+      if (resultOf(message, p.callId)?.ok === false) st.fails++
+    }
+  }
+  return st
+}
+
+/** 这条消息还在生成吗：只用来决定「过程」默认展开还是收起 */
+function isRunning(message: AiChatMessage): boolean {
+  return runStart.value[message.id] !== undefined && runEnd.value[message.id] === undefined
+}
+
+/**
+ * 过程块开合。用户的每一次手动开合都记下来并优先于默认值——
+ * 不能出现「我展开了，结果它一边生成一边自己收回去」。
+ * 默认：生成中展开（要能看见它在干什么）；结束后收起，除非这条根本没有正文可看。
+ */
+function procOpen(message: AiChatMessage): boolean {
+  const manual = procOverride.value[message.id]
+  if (manual !== undefined) return manual
+  return isRunning(message) || bodyParts(message).length === 0
+}
+
+function toggleProc(message: AiChatMessage): void {
+  procOverride.value = { ...procOverride.value, [message.id]: !procOpen(message) }
+}
+
+function fmtMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
+  const m = Math.floor(ms / 60_000)
+  const s = Math.round((ms % 60_000) / 1000)
+  return `${m}m${s ? ` ${s}s` : ''}`
+}
+
+/** 这轮过程用了多久：只在本次会话里生成过的消息有值，历史消息不编造 */
+function procMs(message: AiChatMessage): number {
+  const start = runStart.value[message.id]
+  if (!start) return 0
+  const end = runEnd.value[message.id]
+  return Math.max(0, (end ?? clock.value) - start)
+}
+
+function procSummary(message: AiChatMessage): string {
+  const st = procStats(message)
+  const bits: string[] = []
+  if (st.think) bits.push(`思考 ${st.think} 段`)
+  if (st.calls) bits.push(`调用 ${st.calls} 个工具`)
+  if (st.fails) bits.push(`${st.fails} 个失败`)
+  const ms = procMs(message)
+  if (ms) bits.push(`用时 ${fmtMs(ms)}`)
+  return bits.join(' · ') || '过程'
+}
+
+/** 生成中那一行说的话：让用户知道模型此刻在做什么，而不是只看到一个转圈 */
+function runningLabel(message: AiChatMessage): string {
+  const parts = processParts(message)
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i]
+    if (p.type === 'tool_call') return toolRunning(message, p) ? `正在执行 ${p.title}…` : '继续处理…'
+    if (p.type === 'reasoning') return '正在思考…'
+    if (p.type === 'text') return '正在整理…'
+  }
+  return '正在思考…'
+}
+
+/**
+ * 正文分段：把 ``` 围栏拆成代码块渲染。
+ *
+ * 不引 markdown 库：这里只需要「代码块 + 其余原样」，引一个解析器反而要处理
+ * 表格、嵌套列表、HTML 转义一堆边界。没闭合的围栏也按代码块处理——流式输出时
+ * 首尾围栏不是同时到的，不这样会先闪一段带 ``` 的纯文本。
+ */
+interface TextSeg {
+  code: boolean
+  text: string
+  lang: string
+}
+
+function textSegs(text: string): TextSeg[] {
+  const out: TextSeg[] = []
+  let i = 0
+  while (i < text.length) {
+    const open = text.indexOf('```', i)
+    if (open < 0) {
+      out.push({ code: false, text: text.slice(i), lang: '' })
+      break
+    }
+    if (open > i) out.push({ code: false, text: text.slice(i, open), lang: '' })
+    const nl = text.indexOf('\n', open + 3)
+    const lang = (nl < 0 ? text.slice(open + 3) : text.slice(open + 3, nl)).trim()
+    const bodyStart = nl < 0 ? text.length : nl + 1
+    const close = text.indexOf('```', bodyStart)
+    out.push({
+      code: true,
+      text: text.slice(bodyStart, close < 0 ? text.length : close).replace(/\n$/, ''),
+      lang
+    })
+    i = close < 0 ? text.length : close + 3
+  }
+  return out
+}
+
+/** 用户消息不做代码块：气泡里嵌一块深色区域，比纯文本更难读 */
+function segsFor(message: AiChatMessage, text: string): TextSeg[] {
+  return message.role === 'assistant' ? textSegs(text) : [{ code: false, text, lang: '' }]
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+/**
+ * 极轻的行内格式：`代码`、**粗体**、行首 # 标题。
+ *
+ * 只做这三样，是因为它们在对话里出现频率最高，而「原样显示星号和井号」比
+ * 没有格式更难看。**先转义再替换**：模型输出里带 <script> 也只是字面量。
+ * 不做表格/嵌套列表——那需要真正的解析器，不是几行正则能兜住的。
+ */
+function inlineHtml(text: string): string {
+  return escapeHtml(text)
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/^#{1,6}[ \t]+(.+)$/gm, '<span class="md-h">$1</span>')
 }
 
 function resultOf(message: AiChatMessage, callId: string): AiToolResultPart | undefined {
   return message.parts.find((p): p is AiToolResultPart => p.type === 'tool_result' && p.callId === callId)
-}
-
-function hasToolParts(message: AiChatMessage): boolean {
-  return message.parts.some((p) => p.type === 'tool_call')
 }
 
 /** 还没拿到结果 = 正在执行（界面上转圈的那个） */
@@ -132,11 +346,95 @@ function fileSub(file: AiFilePart): string {
   return file.fullLength && file.fullLength > chars ? `${base}（原文 ${file.fullLength} 字，已截断）` : base
 }
 
-function scrollToEnd(): void {
+/**
+ * 滚到底部。默认**只在用户本来就贴着底部时**才滚——
+ * 以前每个增量都无脑 scrollTop = scrollHeight，导致往上翻历史时被一帧帧拽回去，
+ * 长回答里根本没法往回读。
+ */
+function scrollToEnd(force = false): void {
+  if (!force && !stick.value) return
   void nextTick(() => {
     const el = scroller.value
-    if (el) el.scrollTop = el.scrollHeight
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    stick.value = true
+    atBottom.value = true
   })
+}
+
+/** 点「回到底部」：平滑滚过去，并把跟随状态重新打开 */
+function toBottom(): void {
+  stick.value = true
+  const el = scroller.value
+  if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+}
+
+/** 离底部多远才算「用户主动离开了底部」：留一点余量，避免像素级抖动反复切换 */
+const STICK_GAP = 48
+
+function onScroll(): void {
+  const el = scroller.value
+  if (!el) return
+  const gap = el.scrollHeight - el.scrollTop - el.clientHeight
+  stick.value = gap < STICK_GAP
+  atBottom.value = gap < 8
+  updateActiveRound()
+}
+
+/** 当前正在看的是第几回合：以「最后一条顶端越过视口上沿的用户消息」为准 */
+function updateActiveRound(): void {
+  const el = scroller.value
+  if (!el) return
+  const line = el.getBoundingClientRect().top + 12
+  let index = 0
+  userMessages.value.forEach((m, i) => {
+    const node = roundEl(m.id)
+    if (node && node.getBoundingClientRect().top <= line) index = i
+  })
+  activeRound.value = index
+}
+
+function roundEl(id: string): HTMLElement | null {
+  return scroller.value?.querySelector<HTMLElement>(`[data-round="${id}"]`) ?? null
+}
+
+function jumpToRound(id: string): void {
+  const el = scroller.value
+  const node = roundEl(id)
+  if (!el || !node) return
+  const delta = node.getBoundingClientRect().top - el.getBoundingClientRect().top
+  el.scrollTo({ top: el.scrollTop + delta - 10, behavior: 'smooth' })
+}
+
+/** 导航上的悬停提示：用户消息的第一行，足够认出是哪一轮 */
+function previewOf(message: AiChatMessage): string {
+  const text = textOf(message).replace(/\s+/g, ' ').trim()
+  return text.length > 40 ? `${text.slice(0, 40)}…` : text || '（这一轮没有文字）'
+}
+
+/** 输入框随内容长高，到上限后自己滚：两行写不下就看不见自己刚打的字，很别扭 */
+function autoGrow(): void {
+  const el = composer.value
+  if (!el) return
+  el.style.height = 'auto'
+  const max = 168
+  el.style.height = `${Math.min(el.scrollHeight, max)}px`
+  el.style.overflowY = el.scrollHeight > max ? 'auto' : 'hidden'
+}
+
+watch(draft, () => void nextTick(autoGrow))
+
+/** 会话列表里那行小字：今天只给时间，隔天给日期——比「3 条消息」有用得多 */
+function whenOf(ts: number): string {
+  const d = new Date(ts)
+  const now = new Date()
+  const hh = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  if (d.toDateString() === now.toDateString()) return hh
+  const y = new Date(now)
+  y.setDate(now.getDate() - 1)
+  if (d.toDateString() === y.toDateString()) return `昨天 ${hh}`
+  if (d.getFullYear() === now.getFullYear()) return `${d.getMonth() + 1}月${d.getDate()}日`
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`
 }
 
 function showToast(text: string): void {
@@ -261,9 +559,12 @@ async function openSession(id: string): Promise<void> {
   if (!detail) return
   current.value = detail
   usage.value = null
+  // 换会话就是换上下文：上一个会话里手动展开的过程块不该跟过来
+  procOverride.value = {}
   if (detail.model && models.value.some((m) => m.id === detail.model)) model.value = detail.model
   else if (!model.value) model.value = models.value[0]?.id ?? ''
-  scrollToEnd()
+  stick.value = true
+  scrollToEnd(true)
 }
 
 async function newSession(): Promise<void> {
@@ -397,7 +698,9 @@ async function send(): Promise<void> {
     parts,
     createdAt: Date.now()
   })
-  scrollToEnd()
+  // 刚发出去：即使用户刚才翻在历史里，也要跟到这条消息上
+  stick.value = true
+  scrollToEnd(true)
 
   try {
     const r = await api.ai.send({
@@ -464,6 +767,8 @@ function onDelta(event: AiStreamEvent): void {
         model: event.model
       })
     }
+    // 记下开始时间：过程块的「用时」由此而来；顺手把上一条的收尾时间清干净
+    runStart.value = { ...runStart.value, [event.messageId]: Date.now() }
     scrollToEnd()
     return
   }
@@ -502,6 +807,9 @@ function onDelta(event: AiStreamEvent): void {
       if (event.stopped) message.stopped = true
       if (event.error) message.error = event.error
     }
+    if (runStart.value[event.messageId] !== undefined) {
+      runEnd.value = { ...runEnd.value, [event.messageId]: Date.now() }
+    }
     // 生成结束时不该还留着确认框：那一轮已经收尾了
     confirmReq.value = null
     busy.value = false
@@ -523,7 +831,12 @@ function onDelta(event: AiStreamEvent): void {
 
 onMounted(async () => {
   api.ai.onDelta(onDelta)
-  void refreshToolCount()
+  void refreshToolPlugins()
+  // 生成中的「已用 8s」要跳：只在忙的时候走，闲时不算无用功
+  clockTimer = setInterval(() => {
+    if (busy.value) clock.value = Date.now()
+  }, 500)
+  window.addEventListener('mousedown', onDocMousedown)
 
   // 打开插件时把面板搜索词当草稿：搜「写个正则」再回车打开，不用重敲
   api.onQuery((payload) => {
@@ -544,7 +857,7 @@ onMounted(async () => {
   api.onShow(() => {
     void refreshSessions()
     // 用户可能刚在设置里开了某个插件的授权，回来时提示要跟着变
-    void refreshToolCount()
+    void refreshToolPlugins()
   })
 
   const onKey = (event: KeyboardEvent): void => {
@@ -553,6 +866,11 @@ onMounted(async () => {
     // 那样用户会以为事情没发生，实际请求还挂着
     if (confirmReq.value) {
       void answerConfirm(false)
+      return
+    }
+    // 浮层先收起：能看得见的东西要优先响应 Esc，不然用户会以为 Esc 失灵了
+    if (toolPanel.value) {
+      toolPanel.value = false
       return
     }
     // 有草稿或待发附件先清掉：误按 Esc 直接退出会把刚准备的东西弄丢
@@ -565,13 +883,18 @@ onMounted(async () => {
     void api.exit()
   }
   window.addEventListener('keydown', onKey)
-  onUnmounted(() => window.removeEventListener('keydown', onKey))
+  onUnmounted(() => {
+    window.removeEventListener('keydown', onKey)
+    window.removeEventListener('mousedown', onDocMousedown)
+    if (clockTimer) clearInterval(clockTimer)
+  })
 
   models.value = await api.ai.models()
   model.value = models.value[0]?.id ?? ''
   await refreshSessions()
   // 有历史就开最近一条；没有就保持空态，等用户真的发消息再建会话
   if (sessions.value.length) await openSession(sessions.value[0].id)
+  void nextTick(autoGrow)
 })
 </script>
 
@@ -610,7 +933,7 @@ onMounted(async () => {
           />
           <template v-else>
             <span class="title">{{ s.title }}</span>
-            <span class="sub">{{ s.messageCount }} 条消息</span>
+            <span class="sub">{{ whenOf(s.updatedAt) }} · {{ s.messageCount }} 条</span>
           </template>
           <button
             class="more"
@@ -644,7 +967,8 @@ onMounted(async () => {
         <button class="ghost" :disabled="!hasMessages || busy" @click="newSession">新会话</button>
       </header>
 
-      <div ref="scroller" class="messages">
+      <div class="scroll-wrap">
+        <div ref="scroller" class="messages" @scroll.passive="onScroll">
         <div v-if="!hasMessages" class="welcome">
           <div class="welcome-title">问点什么</div>
           <p v-if="configured">
@@ -657,14 +981,15 @@ onMounted(async () => {
           </p>
         </div>
 
-        <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
+        <div
+          v-for="m in messages"
+          :key="m.id"
+          class="msg"
+          :class="m.role"
+          :data-round="m.role === 'user' ? m.id : undefined"
+        >
           <div class="avatar">{{ m.role === 'user' ? '我' : 'AI' }}</div>
           <div class="body">
-            <details v-if="reasoningOf(m)" class="reasoning">
-              <summary>思考过程</summary>
-              <div class="pre">{{ reasoningOf(m) }}</div>
-            </details>
-
             <div v-if="filesOf(m).length" class="files">
               <div v-for="(f, i) in filesOf(m)" :key="i" class="file" :class="{ bad: f.error }">
                 <img v-if="f.preview" :src="f.preview" class="thumb" alt="" />
@@ -680,38 +1005,87 @@ onMounted(async () => {
               </div>
             </div>
 
-            <template v-for="(p, i) in bodyParts(m)" :key="i">
-              <div v-if="p.type === 'text'" class="pre">{{ p.text }}</div>
-              <div
-                v-else-if="p.type === 'tool_call'"
-                class="tool-card"
-                :class="{
-                  bad: !!resultOf(m, p.callId) && resultOf(m, p.callId)?.ok === false,
-                  run: toolRunning(m, p)
-                }"
-              >
-                <div class="tool-head">
-                  <span class="tool-state">
-                    {{ toolRunning(m, p) ? '⋯' : resultOf(m, p.callId)?.ok ? '✓' : '✗' }}
-                  </span>
-                  <span class="tool-title">{{ p.title }}</span>
-                  <span class="tool-risk" :class="`risk-${p.risk}`">{{ riskLabel(p.risk) }}</span>
-                  <span v-if="p.pluginName" class="tool-from">{{ p.pluginName }}</span>
-                </div>
-                <template v-if="resultOf(m, p.callId)">
-                  <div v-if="resultOf(m, p.callId)?.ok" class="tool-out">{{ resultOf(m, p.callId)?.text }}</div>
-                  <div v-else class="tool-err">{{ resultOf(m, p.callId)?.error }}</div>
+            <!--
+              过程块：推理、工具调用、过程中的碎话都收在这里。
+              生成中默认展开——用户要能看见它在想什么、动了什么；结束后自动收起成一行，
+              不占版面，但点一下随时能翻。
+            -->
+            <div
+              v-if="processParts(m).length"
+              class="proc"
+              :class="{ open: procOpen(m), run: isRunning(m) }"
+            >
+              <button class="proc-head" :aria-expanded="procOpen(m)" @click="toggleProc(m)">
+                <svg class="proc-chev" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M9 6l6 6-6 6" />
+                </svg>
+                <span v-if="isRunning(m)" class="proc-spin" aria-hidden="true" />
+                <span v-else-if="procStats(m).fails" class="proc-dot bad" aria-hidden="true" />
+                <span v-else class="proc-dot" aria-hidden="true" />
+                <span class="proc-label">
+                  <template v-if="isRunning(m)">{{ runningLabel(m) }}</template>
+                  <template v-else>{{ procSummary(m) }}</template>
+                </span>
+                <span v-if="isRunning(m) && procMs(m)" class="proc-time">{{ fmtMs(procMs(m)) }}</span>
+              </button>
+
+              <div v-if="procOpen(m)" class="proc-body">
+                <template v-for="(p, i) in processParts(m)" :key="i">
+                  <div v-if="p.type === 'text'" class="pre proc-text">{{ p.text }}</div>
+                  <div v-else-if="p.type === 'reasoning'" class="pre proc-think">{{ p.text }}</div>
+                  <div
+                    v-else-if="p.type === 'tool_call'"
+                    class="tool-card"
+                    :class="{
+                      bad: !!resultOf(m, p.callId) && resultOf(m, p.callId)?.ok === false,
+                      run: toolRunning(m, p)
+                    }"
+                  >
+                    <div class="tool-head">
+                      <span class="tool-state">
+                        {{ toolRunning(m, p) ? '⋯' : resultOf(m, p.callId)?.ok ? '✓' : '✗' }}
+                      </span>
+                      <span class="tool-title">{{ p.title }}</span>
+                      <span class="tool-risk" :class="`risk-${p.risk}`">{{ riskLabel(p.risk) }}</span>
+                      <span v-if="p.pluginName" class="tool-from">{{ p.pluginName }}</span>
+                    </div>
+                    <template v-if="resultOf(m, p.callId)">
+                      <div v-if="resultOf(m, p.callId)?.ok" class="tool-out">{{
+                        resultOf(m, p.callId)?.text
+                      }}</div>
+                      <div v-else class="tool-err">{{ resultOf(m, p.callId)?.error }}</div>
+                    </template>
+                    <div v-else class="tool-out">正在执行…</div>
+                    <details class="tool-args">
+                      <summary>参数</summary>
+                      <div class="pre">{{ p.args || '（无）' }}</div>
+                    </details>
+                  </div>
                 </template>
-                <div v-else class="tool-out">正在执行…</div>
-                <details class="tool-args">
-                  <summary>参数</summary>
-                  <div class="pre">{{ p.args || '（无）' }}</div>
-                </details>
               </div>
+            </div>
+
+            <template v-for="(p, i) in bodyParts(m)" :key="`b${i}`">
+              <template v-if="p.type === 'text'">
+                <template v-for="(seg, si) in segsFor(m, p.text)" :key="si">
+                  <div v-if="seg.code" class="code">
+                    <div class="code-bar">
+                      <span class="code-lang">{{ seg.lang || 'text' }}</span>
+                      <button class="code-copy" @click="copy(seg.text)">复制</button>
+                    </div>
+                    <pre class="code-body">{{ seg.text }}</pre>
+                  </div>
+                  <div
+                    v-else
+                    class="pre"
+                    v-html="m.role === 'assistant' ? inlineHtml(seg.text) : escapeHtml(seg.text)"
+                  />
+                </template>
+              </template>
             </template>
 
             <div
-              v-if="!textOf(m) && !hasToolParts(m) && !m.error && !m.stopped && !filesOf(m).length"
+              v-if="m.role === 'assistant' && !m.parts.length && !m.error && !m.stopped"
               class="typing"
             >
               正在生成…
@@ -724,6 +1098,29 @@ onMounted(async () => {
             </div>
           </div>
         </div>
+        </div>
+
+        <!--
+          长对话的两个出路：右下角「回到底部」，右侧按回合排的导航点。
+        只在真的翻上去了才出现——常驻一个箭头只会占地方。
+      -->
+      <Transition name="rise">
+        <button v-if="!atBottom" class="to-bottom" title="回到底部" @click="toBottom">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6" /></svg>
+          <span v-if="busy" class="tb-dot" />
+        </button>
+      </Transition>
+
+        <nav v-if="userMessages.length >= 3" class="rail" aria-label="对话回合导航">
+          <button
+            v-for="(u, i) in userMessages"
+            :key="u.id"
+            class="rail-tick"
+            :class="{ on: i === activeRound }"
+            :title="previewOf(u)"
+            @click="jumpToRound(u.id)"
+          />
+        </nav>
       </div>
 
       <div v-if="error" class="banner">{{ error }}</div>
@@ -755,10 +1152,58 @@ onMounted(async () => {
             <button class="ghost attach-btn" :disabled="picking || busy" @click="pickFiles">
               {{ picking ? '读取中…' : '添加文件' }}
             </button>
+
+            <!-- 工具授权就地下手：看见模型想用什么，当场就能开，不必切到设置页 -->
+            <div ref="toolWrap" class="tool-wrap">
+              <button
+                class="ghost tool-btn"
+                :class="{ on: toolPanel }"
+                :disabled="!toolPlugins.length"
+                :title="toolPlugins.length ? '选择这一轮可用的插件工具' : '还没有插件声明 AI 能力'"
+                @click="toolPanel = !toolPanel"
+              >
+                工具
+                <span class="tool-count">{{ toolCount }}</span>
+              </button>
+              <div v-if="toolPanel" class="tool-pop" @mousedown.stop>
+                <div class="tool-pop-head">插件工具</div>
+                <p class="tool-pop-hint">授权是插件级的，改完下一轮对话生效。</p>
+                <div
+                  v-for="p in toolPlugins"
+                  :key="p.pluginId"
+                  class="tool-row"
+                  :class="{ off: p.disabled }"
+                >
+                  <div class="tool-row-main">
+                    <div class="tool-row-name">{{ p.pluginName }}</div>
+                    <div class="tool-row-meta">
+                      <span v-if="p.disabled">已停用</span>
+                      <span v-else-if="p.tools.length">{{ p.tools.length }} 个工具</span>
+                      <span v-else-if="p.skill">只有技能说明</span>
+                      <span v-else>没有可用工具</span>
+                      <span v-if="p.errors.length" class="tool-row-err" :title="p.errors.join('；')">有问题</span>
+                    </div>
+                  </div>
+                  <button
+                    class="sw"
+                    :class="{ on: p.granted }"
+                    role="switch"
+                    :aria-checked="p.granted"
+                    :aria-label="`${p.pluginName} 的 AI 工具授权`"
+                    :disabled="!!toolBusy"
+                    @click="toggleToolGrant(p)"
+                  >
+                    <span class="sw-knob" />
+                  </button>
+                </div>
+                <p v-if="!toolPlugins.length" class="tool-pop-empty">
+                  还没有插件声明 AI 能力。装上带 <code>ai.tools</code> 的插件后，这里会出现开关。
+                </p>
+              </div>
+            </div>
+
             <span class="tip">{{
-              configured
-                ? `Enter 发送 · Esc 退出${toolCount ? ` · ${toolCount} 个插件工具可用` : ''}`
-                : '先去 设置 → AI 配置模型'
+              configured ? 'Enter 发送 · Esc 退出' : '先去 设置 → AI 配置模型'
             }}</span>
             <button class="send" :disabled="(!draft.trim() && !attachments.length) || busy" @click="send">
               {{ busy ? '生成中' : '发送' }}
@@ -1134,15 +1579,136 @@ onMounted(async () => {
 }
 
 /* ---------------- 消息流 ---------------- */
+/*
+ * 滚动容器外面再套一层：消息区要能滚，但「回到底部」和回合导航必须钉在
+ * 视口上不动。绝对定位直接放进滚动容器里会跟着内容一起滚走。
+ */
+.scroll-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+}
+
 .messages {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 18px 20px 10px;
+  padding: 18px 22px 10px;
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+/* 回到底部：只在用户翻上去时出现 */
+.to-bottom {
+  position: absolute;
+  right: 20px;
+  bottom: 12px;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  box-shadow: var(--shadow-2);
+  color: var(--text-2);
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.to-bottom:hover {
+  color: var(--accent-strong);
+  border-color: var(--accent-line);
+}
+
+.to-bottom svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 生成中还在下面写东西：给个小圆点，说明「下去了有新内容」 */
+.tb-dot {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 1.5px solid var(--bg);
+}
+
+.rise-enter-active,
+.rise-leave-active {
+  transition: opacity 0.14s var(--ease), transform 0.14s var(--ease);
+}
+
+.rise-enter-from,
+.rise-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+/* 回合导航：一轮对话一条细线，当前那条加宽变主色 */
+.rail {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: space-between;
+  /* 少于 3 轮不显示；3 轮也要撑出「一列」的形状，否则看着像一根乱码 */
+  min-height: 120px;
+  max-height: 78%;
+  gap: 5px;
+  padding: 5px 4px;
+  border-radius: 8px;
+  overflow-y: auto;
+}
+
+.rail::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.rail:hover {
+  background: var(--bg);
+  box-shadow: var(--shadow-1);
+}
+
+.rail-tick {
+  width: 11px;
+  height: 9px;
+  border-radius: 2px;
+  background: var(--line-strong);
+  opacity: 0.55;
+  transition: width var(--dur) var(--ease), opacity var(--dur) var(--ease),
+    background var(--dur) var(--ease), margin var(--dur) var(--ease);
+}
+
+.rail-tick:hover {
+  width: 15px;
+  margin-right: -4px;
+  opacity: 1;
+  background: var(--text-3);
+}
+
+.rail-tick.on {
+  width: 15px;
+  margin-right: -4px;
+  opacity: 1;
+  background: var(--accent);
 }
 
 .welcome {
@@ -1194,6 +1760,14 @@ onMounted(async () => {
   max-width: 82%;
 }
 
+/*
+ * 助手这一侧占满可用宽度：不占满的话，「过程」那一行会被同条消息里最短的正文
+ * 卡住（摘要变成「思考 1 段 · 调用 1 个…」）。用户气泡反过来，要跟着文字收缩。
+ */
+.msg.assistant .body {
+  flex: 1 1 auto;
+}
+
 .msg.user .body {
   display: flex;
   flex-direction: column;
@@ -1217,6 +1791,39 @@ onMounted(async () => {
   margin-top: 8px;
 }
 
+/* 行内格式：只让「代码 / 粗体 / 标题」和正文有区分，不改字号底色整体观感 */
+.pre code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.06);
+  font-family: ui-monospace, SFMono-Regular, 'Cascadia Code', Consolas, monospace;
+  font-size: 0.94em;
+  color: var(--text-1);
+}
+
+.pre strong {
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* 行首 # 标题：在 pre-wrap 里也要独占一行，靠 block 撑开 */
+.pre .md-h {
+  display: block;
+  margin: 8px 0 2px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text-1);
+}
+
+.pre .md-h:first-child {
+  margin-top: 0;
+}
+
+.msg.user .pre code {
+  background: rgba(255, 255, 255, 0.6);
+}
+
 .msg.user .pre {
   padding: 8px 12px;
   border-radius: 12px;
@@ -1225,26 +1832,165 @@ onMounted(async () => {
   color: #2f3550;
 }
 
-.reasoning {
-  margin-bottom: 6px;
+/* ---------------- 过程块（思考 + 工具） ---------------- */
+.proc {
+  margin-bottom: 4px;
+}
+
+/*
+ * 收起时是一行小字，展开时才占版面。这里是「看得到过程又不占视图」的落点：
+ * 生成中默认展开，结束后收成一行，点一下随时翻回去。
+ */
+.proc-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /*
+   * width: max-content —— 否则这一行会被「同一条消息里最短的正文」卡住宽度，
+   * 摘要变成「思考 1 段 · 调用 1 个…」。它自己撑开，但不超过正文区。
+   */
+  width: max-content;
+  max-width: 100%;
+  margin-left: -4px;
+  padding: 3px 8px 3px 4px;
+  border-radius: 7px;
   font-size: 12px;
+  color: var(--text-3);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.proc-head:hover {
+  background: var(--bg-hover);
+  color: var(--text-2);
+}
+
+.proc-chev {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform var(--dur) var(--ease);
+}
+
+.proc.open .proc-chev {
+  transform: rotate(90deg);
+}
+
+.proc-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-4);
+}
+
+.proc-dot.bad {
+  background: var(--danger);
+}
+
+.proc-spin {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent-line);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+
+.proc-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proc-time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-4);
+}
+
+/* 左侧虚线是「这些都是过程」的视觉标记，和最终回答分开 */
+.proc-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 2px;
+  padding-left: 10px;
+  border-left: 1px dashed var(--line);
+}
+
+.proc-body .tool-card {
+  margin: 2px 0;
+}
+
+.proc-think {
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.72;
+}
+
+.proc-text {
+  color: var(--text-2);
+}
+
+/* ---------------- 代码块 ---------------- */
+.code {
+  margin: 7px 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--bg-soft);
+  overflow: hidden;
+}
+
+.code-bar {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 4px 0 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10.5px;
+  color: var(--text-3);
+  user-select: none;
+}
+
+.code-lang {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+
+.code-copy {
+  flex: none;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 10.5px;
   color: var(--text-3);
 }
 
-.reasoning summary {
-  cursor: pointer;
-  user-select: none;
-  width: fit-content;
+.code-copy:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
 }
 
-.reasoning .pre {
-  margin-top: 4px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px dashed var(--line);
-  background: var(--bg-soft);
-  color: var(--text-2);
+.code-body {
+  margin: 0;
+  padding: 9px 12px;
+  max-height: 360px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, 'Cascadia Code', Consolas, monospace;
   font-size: 12px;
+  line-height: 1.62;
+  color: var(--text-1);
+  white-space: pre;
+  user-select: text;
 }
 
 .typing {
@@ -1444,7 +2190,165 @@ onMounted(async () => {
 
 .composer {
   flex: none;
+  position: relative;
   padding: 8px 14px 12px;
+}
+
+/* ---------------- 工具授权面板 ---------------- */
+.tool-wrap {
+  position: relative;
+  flex: none;
+}
+
+.tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.tool-btn.on {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.tool-count {
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--bg-active);
+  color: var(--text-3);
+  font-size: 10px;
+  line-height: 15px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-btn.on .tool-count {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.tool-pop {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  z-index: 20;
+  width: 272px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--bg);
+  box-shadow: var(--shadow-3);
+  animation: pop-in 0.14s var(--ease);
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tool-pop-head {
+  padding: 2px 4px 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.tool-pop-hint {
+  padding: 2px 4px 6px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-4);
+}
+
+.tool-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 4px;
+  border-radius: 7px;
+}
+
+.tool-row:hover {
+  background: var(--bg-hover);
+}
+
+.tool-row.off {
+  opacity: 0.55;
+}
+
+.tool-row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.tool-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-1);
+}
+
+.tool-row-meta {
+  display: flex;
+  gap: 6px;
+  margin-top: 1px;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.tool-row-err {
+  color: var(--warn);
+  cursor: help;
+}
+
+.tool-pop-empty {
+  padding: 6px 4px 2px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-4);
+}
+
+/* 开关：36px 宽就够，再大在这个密度里显得笨 */
+.sw {
+  flex: none;
+  width: 30px;
+  height: 17px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--line-strong);
+  transition: background var(--dur) var(--ease);
+}
+
+.sw.on {
+  background: var(--accent);
+}
+
+.sw:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.sw-knob {
+  display: block;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--bg);
+  box-shadow: var(--shadow-1);
+  transition: transform var(--dur) var(--ease);
+}
+
+.sw.on .sw-knob {
+  transform: translateX(13px);
 }
 
 /* 输入框 + 工具条合成一张卡片：焦点在哪都用 focus-within 提整张卡 */

@@ -11,7 +11,7 @@ import { answerConfirm } from '../../ai/confirm'
 import { modelOptions } from '../../ai/provider'
 import { getAiConfig } from '../../ai/settings'
 import { createSession, deleteSession, getSession, listSessions, renameSession } from '../../ai/store'
-import { grantedTools } from '../../ai/tools'
+import { grantedTools, listToolPlugins, setToolGrant } from '../../ai/tools'
 import { handlePluginToolReply } from '../../ai/toolHost'
 import { MAX_ATTACHMENTS } from '../../../shared/ai'
 import { defineApi } from './define'
@@ -99,6 +99,31 @@ export const aiApi = [
   defineApi('plugin:ai.tools', {
     internalOnly: true,
     handle: () => grantedTools()
+  }),
+
+  /**
+   * 工具目录（v0.6.7）：与 `panel:ai-tools` 同一份数据，但走网关给 AI 插件页用。
+   *
+   * 为什么让对话页也能读目录：授权以前只能在「设置 → AI → AI 工具」里做，
+   * 而用户决定"要不要让它动我的剪贴板"的时机，恰恰是在对话里看到模型要用的时候。
+   * internalOnly：第三方插件若能读这份目录，就能顺着枚举别人的能力。
+   */
+  defineApi('plugin:ai.tools.catalog', {
+    internalOnly: true,
+    handle: () => listToolPlugins()
+  }),
+
+  /**
+   * 插件级授权开关（v0.6.7）。同样 internalOnly——能给自己授权的工具授权等于没有授权。
+   * 授权是插件级的，与设置页一致：同一插件的工具共享权限与数据。
+   */
+  defineApi('plugin:ai.tool.grant', {
+    internalOnly: true,
+    parse: object({
+      pluginId: str('pluginId', { max: 120 }),
+      granted: (input) => input === true
+    }),
+    handle: (_ctx, { pluginId, granted }) => setToolGrant(pluginId, granted)
   }),
 
   /**

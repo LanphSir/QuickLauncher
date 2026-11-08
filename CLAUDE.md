@@ -46,6 +46,9 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 - **颜色/圆角/阴影只用令牌**：`src/shared/theme.css` 是唯一来源（`--text-1…4`、`--line`、`--r-sm…xl`、`--shadow-1…3`、`--accent`、`--danger`、`--scrim`、`--mark`、`--on-accent`）。核心渲染层与插件页入口都先 `import` 它，组件里不再写字面量色值；要新语义色先加到 theme.css。
 - **插件页另有一层公共骨架**：`src/shared/plugin-ui.css`（`.pl-page` / `.pl-head` / `.pl-btn` / `.pl-input` / `.pl-list` / `.pl-row` / `.pl-dialog` …）。插件页的结构与基础控件从这里取，别在各自的 App.vue 里重写一份 reset 和按钮；浮层用 `src/shared/ui/{PopMenu,ConfirmDialog}.vue`，不要再复制第三份。宿主那份（`src/renderer/src/components/`）走 OverlayHost 体系，两边不共用。
 - **破坏性操作不进按钮行**：删除 / 卸载 / 清除数据一律收进 `···` 菜单（宿主用 `ContextMenu`，插件页用 `PopMenu`）或右键菜单，并走自绘 `ConfirmDialog`（默认焦点在「取消」）。新代码不再用 `window.confirm` 和 `NPopconfirm`。
+- **AI 对话页的「过程」不能平铺**：推理、工具调用、过程中的碎话都归「过程」块（`answerStart()` 之前的一切），生成中展开、结束后收起成一行摘要；用户手动开合过的记在 `procOverride` 里并优先于默认值。别再把工具卡片直接铺进正文（`docs/ai-architecture.md` §5.1）。
+- **流式输出不要无脑滚到底**：按 `stick`（离底 < 48px）判断要不要跟随，否则用户往上翻历史时会被一帧帧拽回去。
+- **无边框窗口的每个顶层页面都要有拖动区**：主页靠 `.search-row` 的 `-webkit-app-region: drag`，设置页 / 全部应用页各自补头部 `drag` + 子元素 `no-drag`。新加一个铺满面板的页面时先想这件事。
 - **UI 文案中文**，代码注释中文、只写"为什么"，不复述代码。日志前缀用模块名：`[plugin]`、`[config]`、`[storage]`、`[external]`。
 - 命名：文件用 kebab 或与周边一致；插件 id 一律反向域名 `com.launcher.<name>`；IPC 通道前缀 `panel:*` / `plugin:*`。
 - **不引入新的运行时依赖**除非确有必要；加依赖前先确认 electron 原生 API 覆盖不了。
@@ -112,6 +115,8 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 | 插件页白屏、只显示骨架 HTML | manifest 放到插件根目录而不是 `public/`：扫描器命中源码目录，入口成了未被 vite 处理的 `index.html`。manifest/icon 一律进 `public/` |
 | `fs.watch` 监听插件目录会刷屏 | 插件构建会整目录重写 JS/CSS，按文件名只认 `plugin.json` / `dist`，且事件必须合并（300ms）；见 `plugin/watcher.ts` |
 | 插件页"怎么拉伸都有滚动条" | 插件是独立 HTML，没有宿主的全局样式：`body` 默认 8px margin 叠加 `.app{height:100vh}` 就多出 16px，垂直滚动条常驻；滚动条再占宽，`textarea` 的 content-box 让横向也溢出。插件入口必须先 `import '../../../src/shared/theme.css'`（含 reset）+ `plugin-ui.css`，容器高度用 `100%` |
+| 设置页 / 全部应用页拖不动窗口 | 面板是无边框窗口，拖动区只在主页的 `.search-row` 上。每个铺满面板的页面都要给自己的头部加 `-webkit-app-region: drag`，并把里面的按钮标 `no-drag`，否则整页能点不能拖 |
+| 「过程」摘要被截成「思考 1 段 · 调用 1 个…」 | 助手消息 `.body` 作为 flex 项默认按内容收缩，摘要的 `max-width: 100%` 会跟着最短的正文走。助手侧给 `flex: 1 1 auto`（用户气泡保持收缩），或给摘要行 `width: max-content` |
 | 侧栏底部出现横向滚动条 | 块级元素写了 `width: calc(100% - 18px)` 又加 `margin-left: 27px`，加起来超过 100%。让宽度自动填充（`width: auto` + 左右 margin），滚动容器再补 `overflow-x: hidden`（手册侧栏的 `.kw` 踩过） |
 | 插件 manifest 里的 `ai` 路径被当成"随便写个相对路径" | 一律过 `safeRelative()`：挡 `../`、绝对路径、盘符、URL。工具描述与 SKILL 正文都会进模型上下文，越界路径等于开了一条读任意文件的路 |
 | `tools.json` 用 ajv 编译 schema 会抛异常 | 编译要逐个 try/catch 并**只丢该工具**（`toolsSpec.parseToolsSpec`）；一处 schema 写错不该让整个插件的工具全消失，更不该让插件加载失败 |

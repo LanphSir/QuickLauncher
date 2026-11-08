@@ -227,6 +227,12 @@ function askUninstall(p: PluginSummary): void {
   align-items: center;
   gap: 10px;
   padding: 14px 18px 8px;
+  /* 无边框窗口的拖动区：与设置页、主页搜索行一致，缺了这行这一页就拖不动 */
+  -webkit-app-region: drag;
+}
+
+.head > * {
+  -webkit-app-region: no-drag;
 }
 
 .head h2 {

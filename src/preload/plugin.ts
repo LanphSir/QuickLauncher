@@ -270,6 +270,9 @@ const api: PluginApiSurface = {
     stop: (sessionId: string) => invoke('plugin:ai.chat.stop', { sessionId }),
     models: () => invoke('plugin:ai.models'),
     tools: () => invoke('plugin:ai.tools'),
+    toolPlugins: () => invoke('plugin:ai.tools.catalog'),
+    grantTool: (pluginId: string, granted: boolean) =>
+      invoke('plugin:ai.tool.grant', { pluginId, granted }),
     onToolCall: (callback: (call: AiToolCallRequest) => unknown | Promise<unknown>) => {
       toolHandler = callback
       while (pendingToolCalls.length) void runToolHandler(pendingToolCalls.shift()!)
