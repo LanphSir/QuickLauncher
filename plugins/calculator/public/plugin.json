@@ -1,14 +1,14 @@
 {
   "id": "com.launcher.calculator",
   "name": "计算器",
-  "version": "0.2.0",
-  "description": "支持括号与键盘输入的四则计算器；可被 AI 调用做精确算术",
+  "version": "0.3.0",
+  "description": "支持括号、乘方、百分比与键盘输入的计算器，带历史记录；可被 AI 调用做精确算术",
   "type": "web",
   "entry": "index.html",
   "apiVersion": 2,
   "keywords": ["calc", "calculator", "计算", "计算器", "数学"],
   "features": ["inline"],
-  "permissions": ["ai"],
+  "permissions": ["ai", "storage", "clipboard"],
   "ai": { "tools": "ai/tools.json", "skill": "ai/SKILL.md" },
   "hotkey": "Alt+Shift+C"
 }

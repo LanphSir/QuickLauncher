@@ -49,6 +49,7 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 - **AI 对话页的「过程」不能平铺**：推理、工具调用、过程中的碎话都归「过程」块（`answerStart()` 之前的一切），生成中展开、结束后收起成一行摘要；用户手动开合过的记在 `procOverride` 里并优先于默认值。别再把工具卡片直接铺进正文（`docs/ai-architecture.md` §5.1）。
 - **流式输出不要无脑滚到底**：按 `stick`（离底 < 48px）判断要不要跟随，否则用户往上翻历史时会被一帧帧拽回去。
 - **无边框窗口的每个顶层页面都要有拖动区**：主页靠 `.search-row` 的 `-webkit-app-region: drag`，设置页 / 全部应用页各自补头部 `drag` + 子元素 `no-drag`。新加一个铺满面板的页面时先想这件事。
+- **插件里的纯逻辑要单独成模块并单测**：状态机/解析/格式化别写在 `.vue` 里——`.vue` 不参与任何 tsconfig，错了只能靠点界面发现。放 `<plugin>/src/x.ts`，在 `tests/` 里 import 它（测试被 tsconfig include，插件代码才会顺带被 tsc 检查）。参考 `plugins/calculator/src/{evaluator,keypad}.ts` + `tests/calculator.test.ts`。
 - **UI 文案中文**，代码注释中文、只写"为什么"，不复述代码。日志前缀用模块名：`[plugin]`、`[config]`、`[storage]`、`[external]`。
 - 命名：文件用 kebab 或与周边一致；插件 id 一律反向域名 `com.launcher.<name>`；IPC 通道前缀 `panel:*` / `plugin:*`。
 - **不引入新的运行时依赖**除非确有必要；加依赖前先确认 electron 原生 API 覆盖不了。
@@ -96,6 +97,7 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 | `pnpm` 报 `Cannot find module ...\corepack\pnpm\<v>\bin\pnpm.cjs` | PATH 里的 pnpm shim 指向别的 nvm 版本留下的旧 corepack，与新版 pnpm 的 `bin/pnpm.mjs` 布局不兼容。修法：`npm i -g pnpm@10` 装到 `E:\npm-global`，再把 shim（`~/.workbuddy/binaries/node/versions/<v>/pnpm{,.CMD,.ps1}`）里的 corepack 路径改成 `pnpm/bin/pnpm.cjs`；版本锁 10.x 以匹配 lockfileVersion 9.0 |
 | 渲染层 `<img>` 加载本地 file:// 图标会被 http origin 拦截 | 插件图标一律由主进程读文件转 dataURL 下发（`manager.ts` 的 `iconToDataUrl`），保持该做法 |
 | `protocol.handle` 只作用于 defaultSession | 插件各有独立分区，必须在对应 `session.fromPartition(...)` 上再注册一次（`plugin/protocol.ts` 的 `installOnSession`） |
+| `/** */` 注释里让 `*` 和 `/` 相邻（例如写 `` `*/-` ``）会提前闭合注释，esbuild 报的却是后面几十行的行号（"Expected ; but found 1.2"） | 注释里把符号分开写（`*` `/`）；报错位置明显不可能是语法错时，先回头翻注释 |
 | 自定义协议的响应不做 CORS 校验 | 插件 `fetch('plugin://别的插件/…')` 不会被 Chromium 拦，只能在 session 层 `webRequest.onBeforeRequest` 取消（`plugin/sessions.ts`）；handler 内另按 `referrer` 复核 |
 | `net.fetch` 的 `redirect: 'manual'` 在 Electron 直接失败 | 会以 `Redirect was cancelled` 结束，拿不到 302 响应。要逐跳裁定重定向只能用 `net.request` 的 `redirect` 事件；且在该事件里 `abort()` 不会触发 `error`，必须自己 reject（`plugin/api/net.ts`） |
 | 未挂到窗口的 `WebContentsView` 也能正常加载并执行 JS | 内联结果就靠这一点在后台跑（`pluginHost.warmPluginContents`）；但页面不可见时定时器会被节流，靠 `backgroundThrottling` 默认值即可，别把它关掉 |

@@ -813,7 +813,7 @@ check('分离为独立窗口', det?.ok === true && calcStill, JSON.stringify(det
 const det2 = await evaluate(ws, 'window.panel.detachPlugin("com.launcher.calculator")')
 check('重复分离=聚焦已有窗口', det2?.ok === true)
 
-// 10. 未声明权限的插件调用被拒（calculator 无 clipboard 权限）
+// 10. 未声明权限的插件调用被拒（calculator 声明了 ai/storage/clipboard，没有 notify）
 await evaluate(ws, 'window.panel.openPlugin("com.launcher.calculator")')
 await new Promise((r) => setTimeout(r, 1500))
 const list3 = await targets()
@@ -821,7 +821,9 @@ const calcPage = list3.find((t) => isPluginPage(t, 'calculator'))
 if (calcPage) {
   const cws = await connect(calcPage.webSocketDebuggerUrl)
   await send(cws, 'Runtime.enable')
-  const denied = await evaluate(cws, 'window.appapi.clipboard.readText().then(() => "leak").catch(e => String(e).includes("clipboard") ? "denied" : "other")')
+  // 计算器 v0.6.8 起声明了 clipboard（点结果即复制），所以这里改用一个它确实没声明的权限：
+  // 断言的东西没变——没在 manifest 里写的权限，调了就得被网关挡下来
+  const denied = await evaluate(cws, 'window.appapi.notify("a", "b").then(() => "leak").catch(e => String(e).includes("notify") ? "denied" : "other")')
   check('权限模型生效(未声明即拒绝)', denied === 'denied', String(denied))
   const docsDenied = await evaluate(cws, 'window.appapi.docs.list().then(() => "leak").catch(e => String(e).includes("docs") ? "denied" : "other")')
   check('docs 权限未声明即拒绝', docsDenied === 'denied', String(docsDenied))
