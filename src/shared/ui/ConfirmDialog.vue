@@ -8,6 +8,9 @@
  *
  * 所有插件共用这一份，别再各自复制：确认框是"全项目只有一种长相"的东西，
  * 复制第三份之后必然有一份按钮顺序是反的。
+ *
+ * 两种用法：插件页自管（`<Teleport>` + 遮罩 + 自己拦 Esc）；宿主走 `OverlayHost`
+ * 时传 `managed`，遮罩/Esc/焦点全交给宿主，这里只画卡片本身。
  */
 </script>
 
@@ -23,8 +26,10 @@ const props = withDefaults(
     confirmLabel?: string
     cancelLabel?: string
     danger?: boolean
+    /** 由 OverlayHost 托管：不 Teleport、不画遮罩、不自己拦 Esc */
+    managed?: boolean
   }>(),
-  { hint: '', confirmLabel: '确定', cancelLabel: '取消', danger: false }
+  { hint: '', confirmLabel: '确定', cancelLabel: '取消', danger: false, managed: false }
 )
 
 const emit = defineEmits<{ confirm: []; cancel: [] }>()
@@ -40,15 +45,20 @@ function onKey(event: KeyboardEvent): void {
 }
 
 onMounted(() => {
-  window.addEventListener('keydown', onKey, true)
+  // 托管时 Esc 归 OverlayHost（它只关栈顶，还负责把焦点还回去）
+  if (!props.managed) window.addEventListener('keydown', onKey, true)
+  // 默认焦点在取消：回车就能通过的删除确认等于没有确认
   requestAnimationFrame(() => cancelRef.value?.focus())
 })
-onUnmounted(() => window.removeEventListener('keydown', onKey, true))
+onUnmounted(() => {
+  if (props.managed) return
+  window.removeEventListener('keydown', onKey, true)
+})
 </script>
 
 <template>
-  <Teleport to="body">
-    <div class="dlg-mask" @click.self="emit('cancel')">
+  <Teleport to="body" :disabled="props.managed">
+    <div :class="props.managed ? 'dlg-wrap' : 'dlg-mask'" @click.self="emit('cancel')">
       <div class="dlg" role="alertdialog" aria-modal="true">
         <div class="dlg-title">{{ props.title }}</div>
         <p class="dlg-msg">{{ props.message }}</p>
@@ -74,6 +84,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKey, true))
   padding: 20px;
   background: var(--scrim);
   animation: mask-in 0.12s var(--ease);
+}
+
+/* 托管模式：遮罩与居中由 OverlayHost 提供，这里只占内容盒 */
+.dlg-wrap {
+  display: flex;
+  max-width: 100%;
 }
 
 @keyframes mask-in {

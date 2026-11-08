@@ -9,7 +9,7 @@ import { ipcMain } from 'electron'
 import { loadAiConfig, saveProvider, deleteProvider, setDefaultModel, settingsView, testProvider } from './settings'
 import { stopAll } from './chat'
 import { listToolPlugins, setToolGrant } from './tools'
-import { decideMcpServer, listMcpServers, shutdownMcp } from './mcpManager'
+import { decideMcpServer, listMcpServers, retryMcpServer, shutdownMcp } from './mcpManager'
 import type { ProviderInput } from './settings'
 
 export function initAi(): void {
@@ -49,6 +49,12 @@ export function initAi(): void {
     'panel:ai-mcp-decision',
     (_event, payload: { pluginId?: unknown; server?: unknown; allow?: unknown }) =>
       decideMcpServer(String(payload?.pluginId ?? ''), String(payload?.server ?? ''), payload?.allow === true)
+  )
+  // 崩溃停用是会话内的保护，不是判决：给一个地方能立刻重试，别逼人重启应用
+  ipcMain.handle(
+    'panel:ai-mcp-retry',
+    (_event, payload: { pluginId?: unknown; server?: unknown }) =>
+      retryMcpServer(String(payload?.pluginId ?? ''), String(payload?.server ?? ''))
   )
 
   const providers = settingsView().providers.length

@@ -553,6 +553,15 @@ export const MAX_MCP_TIMEOUT_MS = 120_000
 export const MCP_CONNECT_TIMEOUT_MS = 20_000
 
 /**
+ * 第一次建连的预算。
+ *
+ * `npx -y some-server` 首次启动要把依赖下载到本地缓存，20 秒经常不够，
+ * 表现是「命令没错、点允许却超时」，第二次反而好了。只放宽第一次：
+ * 稳态还是 20 秒，免得一个配错的 server 每次都要等满 45 秒。
+ */
+export const MCP_FIRST_CONNECT_TIMEOUT_MS = 45_000
+
+/**
  * 每次发消息前给 MCP 建连的时间预算。
  *
  * 只影响「刚打开应用/刚批准」的第一次：连上之后进程就常驻了，后续是 0 等待。

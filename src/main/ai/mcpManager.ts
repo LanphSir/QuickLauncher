@@ -20,6 +20,7 @@ import { join } from 'node:path'
 import { getConfig, updateConfig } from '../config'
 import {
   MCP_CONNECT_TIMEOUT_MS,
+  MCP_FIRST_CONNECT_TIMEOUT_MS,
   MCP_MAX_CRASHES,
   type AiMcpServerView,
   type AiToolRisk
@@ -54,6 +55,8 @@ interface Runtime {
   /** 连续失败次数；成功执行一次工具才清零 */
   crashes: number
   disabled: boolean
+  /** 这次会话里成功连上过：用来决定下次建连给常规预算还是首次预算 */
+  everConnected: boolean
   lastError?: string
 }
 
@@ -277,6 +280,36 @@ export async function decideMcpServer(
   }
 }
 
+/**
+ * 「重新尝试」：清掉停用标记再连一次。
+ *
+ * 停用只是本会话的保护（避免崩-拉-崩），不该变成"必须重启应用"的死结：
+ * 用户改好依赖、连上网之后，得有个地方能立刻试。
+ */
+export async function retryMcpServer(
+  pluginId: string,
+  server: string
+): Promise<{ ok: boolean; message?: string }> {
+  const { list } = declaredServers()
+  const target = list.find((d) => d.rec.manifest.id === pluginId && d.spec.name === server)
+  if (!target) return { ok: false, message: '这个 MCP server 已经不存在了（插件可能被卸载或改了声明）' }
+  if (!isUsable(pluginId, server, target.fingerprint)) {
+    return { ok: false, message: '这个 server 还没被允许（或命令改过），先允许一次再试' }
+  }
+
+  const rt = runtimeFor(target)
+  rt.crashes = 0
+  rt.disabled = false
+  rt.lastError = undefined
+  await shutdownRuntime(rt)
+  try {
+    await connectRuntime(rt)
+    return { ok: true, message: `已连接，${rt.tools.length} 个工具` }
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) }
+  }
+}
+
 export function clearMcpCache(): void {
   declCache.clear()
 }
@@ -313,7 +346,8 @@ function makeRuntime(decl: Declared): Runtime {
     validators: new Map(),
     connecting: null,
     crashes: 0,
-    disabled: false
+    disabled: false,
+    everConnected: false
   }
 }
 
@@ -336,16 +370,19 @@ async function connectRuntime(rt: Runtime): Promise<void> {
   if (rt.client?.isRunning) return
   if (rt.connecting) return rt.connecting
 
+  // 首次可能要下载依赖（npx），给更宽的预算；连上过之后就按常规超时
+  const budget = rt.everConnected ? MCP_CONNECT_TIMEOUT_MS : MCP_FIRST_CONNECT_TIMEOUT_MS
+
   const task = (async () => {
     const client = new McpStdioClient(rt.spec, {
       clientName: 'QuickLauncher',
       clientVersion: app.getVersion(),
       cwd: rt.spec.cwd ? join(rt.pluginDir, rt.spec.cwd) : rt.pluginDir,
-      connectTimeoutMs: MCP_CONNECT_TIMEOUT_MS
+      connectTimeoutMs: budget
     })
     try {
       await client.connect()
-      const tools = await client.listTools(MCP_CONNECT_TIMEOUT_MS)
+      const tools = await client.listTools(budget)
 
       const validators = new Map<string, ToolValidator>()
       const kept: McpToolInfo[] = []
@@ -361,6 +398,8 @@ async function connectRuntime(rt: Runtime): Promise<void> {
       rt.client = client
       rt.tools = kept
       rt.validators = validators
+      rt.everConnected = true
+      rt.crashes = 0
       rt.lastError = undefined
       console.log(`[mcp] ${rt.pluginName}/${rt.spec.name} 已连接，${kept.length} 个工具`)
     } catch (err) {
@@ -371,6 +410,10 @@ async function connectRuntime(rt: Runtime): Promise<void> {
       rt.validators.clear()
       rt.crashes++
       rt.lastError = tail ? `${reason}（${tail.split('\n').slice(-2).join(' / ').slice(0, 300)}）` : reason
+      // 从没连上过又超时：最可能是 npx 正在下载依赖。说清楚，别让人以为命令写错了
+      if (!rt.everConnected && /timed? ?out|超时/i.test(reason)) {
+        rt.lastError = `${rt.lastError} — 首次启动可能正在下载依赖，稍后可在设置页点「重新尝试」`
+      }
       if (rt.crashes >= MCP_MAX_CRASHES) {
         rt.disabled = true
         rt.lastError = `${rt.lastError} — 连续失败 ${rt.crashes} 次，本会话已停用`

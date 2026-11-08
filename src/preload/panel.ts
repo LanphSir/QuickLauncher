@@ -49,6 +49,8 @@ const api = {
   aiMcpServers: () => ipcRenderer.invoke('panel:ai-mcp'),
   aiMcpDecision: (pluginId: string, server: string, allow: boolean) =>
     ipcRenderer.invoke('panel:ai-mcp-decision', { pluginId, server, allow }),
+  aiMcpRetry: (pluginId: string, server: string) =>
+    ipcRenderer.invoke('panel:ai-mcp-retry', { pluginId, server }),
   installPlugin: (mode: 'dir' | 'zip') => ipcRenderer.invoke('panel:install-plugin', mode),
   uninstallPlugin: (id: string) => ipcRenderer.invoke('panel:uninstall-plugin', id),
   setPluginDisabled: (id: string, disabled: boolean) =>

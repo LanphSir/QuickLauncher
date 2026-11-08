@@ -230,11 +230,12 @@ import ConfirmDialog from '../../../src/shared/ui/ConfirmDialog.vue'
 import { MENU_W, type MenuItem } from '../../../src/shared/ui/menu'
 ```
 
-- `PopMenu` 接 `x` / `y` / `items`，`items` 每项是 `{ key, label, icon?, danger?, disabled? }`；
-  自带贴边翻转、Esc（捕获阶段，不会连带退出插件）、点外面关闭、上下键切换焦点、滚动即关。
+- `PopMenu` 接 `x` / `y` / `items`，`items` 每项是 `{ key, label?, icon?, hint?, danger?, disabled?, separator? }`；
+  `icon` 写 `MENU_ICONS` 里的名字（`'delete'` / `'rename'` …），`separator: true` 出一条分隔线。
+  自带贴边翻转（量真实尺寸）、Esc（捕获阶段，不会连带退出插件）、点外面关闭、上下键切换焦点、滚动即关。
 - `ConfirmDialog` 接 `title` / `message` / `hint?` / `confirmLabel?` / `danger`；**默认焦点在取消**。
-- 宿主那份实现（`src/renderer/src/components/`）走 `OverlayHost` 的可见性登记，插件拿不到也用不了，
-  两边的组件文件是各自独立的。
+- 宿主用的是**同一份组件**（v0.6.9 起），只是多传 `managed`：不 Teleport、不画遮罩、
+  Esc 与外部点击交给 `OverlayHost`。插件侧不要传这个开关，也不要自己再造一份。
 
 ```vue
 <!-- 行内 ··· + 右键，同一套菜单 -->

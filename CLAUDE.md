@@ -44,9 +44,16 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 - **渲染层一律 Vue 3 `<script setup lang="ts">`**；全局类型集中在 `src/renderer/src/env.d.ts`（`window.panel` / `window.appapi` 已声明，不要重复 declare）。
 - **UI 图标统一用 `<AppIcon name="..." />`**（path 数据登记在 `components/icons.ts`），不要散落内联 SVG；新图标先在 `icons.ts` 登记。
 - **颜色/圆角/阴影只用令牌**：`src/shared/theme.css` 是唯一来源（`--text-1…4`、`--line`、`--r-sm…xl`、`--shadow-1…3`、`--accent`、`--danger`、`--scrim`、`--mark`、`--on-accent`）。核心渲染层与插件页入口都先 `import` 它，组件里不再写字面量色值；要新语义色先加到 theme.css。
-- **插件页另有一层公共骨架**：`src/shared/plugin-ui.css`（`.pl-page` / `.pl-head` / `.pl-btn` / `.pl-input` / `.pl-list` / `.pl-row` / `.pl-dialog` …）。插件页的结构与基础控件从这里取，别在各自的 App.vue 里重写一份 reset 和按钮；浮层用 `src/shared/ui/{PopMenu,ConfirmDialog}.vue`，不要再复制第三份。宿主那份（`src/renderer/src/components/`）走 OverlayHost 体系，两边不共用。
+- **插件页另有一层公共骨架**：`src/shared/plugin-ui.css`（`.pl-page` / `.pl-head` / `.pl-btn` / `.pl-input` / `.pl-list` / `.pl-row` / `.pl-dialog` …）。插件页的结构与基础控件从这里取，别在各自的 App.vue 里重写一份 reset 和按钮。
+- **浮层只有一份实现**：`src/shared/ui/{PopMenu,ConfirmDialog}.vue`，宿主与插件页都用它。
+  插件页直接挂（自管：Teleport + 遮罩 + 自己拦 Esc / 点外面）；宿主经 `OverlayHost` 打开时传
+  `managed`（不 Teleport、不画遮罩、不拦 Esc 和外部点击——那两件归宿主，自己再来一遍就会出现
+  "Esc 关了菜单又触发面板隐藏"）。宿主的 `components/{ContextMenu,ConfirmDialog}.vue` 只是
+  把 `IconName`/回调翻译过去的适配层，别再往里加实现。
 - **破坏性操作不进按钮行**：删除 / 卸载 / 清除数据一律收进 `···` 菜单（宿主用 `ContextMenu`，插件页用 `PopMenu`）或右键菜单，并走自绘 `ConfirmDialog`（默认焦点在「取消」）。新代码不再用 `window.confirm` 和 `NPopconfirm`。
 - **AI 对话页的「过程」不能平铺**：推理、工具调用、过程中的碎话都归「过程」块（`answerStart()` 之前的一切），生成中展开、结束后收起成一行摘要；用户手动开合过的记在 `procOverride` 里并优先于默认值。别再把工具卡片直接铺进正文（`docs/ai-architecture.md` §5.1）。
+- **答案的分界是「最后一次工具调用之后」**，不是"最后一段正文"：模型拿到工具结果常先来一句过渡，按最后一段切会把过渡算进答案、把结论前几段藏进折叠区。规则在 `plugins/ai/src/answer.ts`（有单测），别在 `.vue` 里另写一份。
+- **正文渲染只在 `plugins/ai/src/markdown.ts`**：围栏拆段、表格、嵌套列表、标题/引用、行内格式都在这；改渲染先加测试用例（`tests/markdown.test.ts`）再改实现。
 - **流式输出不要无脑滚到底**：按 `stick`（离底 < 48px）判断要不要跟随，否则用户往上翻历史时会被一帧帧拽回去。
 - **无边框窗口的每个顶层页面都要有拖动区**：主页靠 `.search-row` 的 `-webkit-app-region: drag`，设置页 / 全部应用页各自补头部 `drag` + 子元素 `no-drag`。新加一个铺满面板的页面时先想这件事。
 - **插件里的纯逻辑要单独成模块并单测**：状态机/解析/格式化别写在 `.vue` 里——`.vue` 不参与任何 tsconfig，错了只能靠点界面发现。放 `<plugin>/src/x.ts`，在 `tests/` 里 import 它（测试被 tsconfig include，插件代码才会顺带被 tsc 检查）。参考 `plugins/calculator/src/{evaluator,keypad}.ts` + `tests/calculator.test.ts`。
@@ -119,6 +126,10 @@ node scripts/gen-icons.mjs   # 重新生成图标（应用/托盘）
 | 插件页"怎么拉伸都有滚动条" | 插件是独立 HTML，没有宿主的全局样式：`body` 默认 8px margin 叠加 `.app{height:100vh}` 就多出 16px，垂直滚动条常驻；滚动条再占宽，`textarea` 的 content-box 让横向也溢出。插件入口必须先 `import '../../../src/shared/theme.css'`（含 reset）+ `plugin-ui.css`，容器高度用 `100%` |
 | 设置页 / 全部应用页拖不动窗口 | 面板是无边框窗口，拖动区只在主页的 `.search-row` 上。每个铺满面板的页面都要给自己的头部加 `-webkit-app-region: drag`，并把里面的按钮标 `no-drag`，否则整页能点不能拖 |
 | 「过程」摘要被截成「思考 1 段 · 调用 1 个…」 | 助手消息 `.body` 作为 flex 项默认按内容收缩，摘要的 `max-width: 100%` 会跟着最短的正文走。助手侧给 `flex: 1 1 auto`（用户气泡保持收缩），或给摘要行 `width: max-content` |
+| `v-html` 塞进来的内容不吃 scoped 样式 | scoped 会把 `[data-v-x]` 加到选择器最后一个复合选择器上，而 v-html 的节点没有这个属性——规则一条都不生效（表现为表格没边框、标题不放大）。正文的后代选择器一律写成 `.pre :deep(...)` |
+| 表格在窄窗口里被挤成"一行一个字" | 只写 `width: 100%` 时列宽会跟着容器塌陷。给 `table` 补 `min-width: max-content`，让外层 `.md-table` 横向滚 |
+| 本地 mock 的 SSE 一帧都发不出来 | Node 16+ 的 `req.on('close')` 在请求体读完时就触发，用它收尾会立刻清掉发送定时器。判断客户端断连要用 `res.on('close')` |
+| 同一份浮层在宿主里 Esc 后连锁关面板 | 托管模式（`managed`）下不要再自己监听 Esc / pointerdown：宿主 `OverlayHost` 已经在 capture 阶段处理，双份监听会关两次（第二次落到面板自身） |
 | 侧栏底部出现横向滚动条 | 块级元素写了 `width: calc(100% - 18px)` 又加 `margin-left: 27px`，加起来超过 100%。让宽度自动填充（`width: auto` + 左右 margin），滚动容器再补 `overflow-x: hidden`（手册侧栏的 `.kw` 踩过） |
 | 插件 manifest 里的 `ai` 路径被当成"随便写个相对路径" | 一律过 `safeRelative()`：挡 `../`、绝对路径、盘符、URL。工具描述与 SKILL 正文都会进模型上下文，越界路径等于开了一条读任意文件的路 |
 | `tools.json` 用 ajv 编译 schema 会抛异常 | 编译要逐个 try/catch 并**只丢该工具**（`toolsSpec.parseToolsSpec`）；一处 schema 写错不该让整个插件的工具全消失，更不该让插件加载失败 |

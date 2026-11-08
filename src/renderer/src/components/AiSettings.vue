@@ -97,6 +97,22 @@ function askApprove(row: AiMcpServerView): void {
   })
 }
 
+/**
+ * 「重新尝试」：崩溃三次被停用之后，改好命令/装好依赖还得能立刻试一次。
+ * 停用只是本会话的保护，不该变成"重启应用才能恢复"。
+ */
+async function retryMcp(row: AiMcpServerView): Promise<void> {
+  mcpBusy.value = `${row.pluginId}::${row.server}`
+  try {
+    const r = await window.panel.aiMcpRetry(row.pluginId, row.server)
+    if (!r.ok) message.error(r.message ?? '重新连接失败')
+    else message.success(r.message ?? '已重新连接')
+    await refreshMcp()
+  } finally {
+    mcpBusy.value = ''
+  }
+}
+
 async function decide(row: AiMcpServerView, allow: boolean): Promise<void> {
   mcpBusy.value = `${row.pluginId}::${row.server}`
   try {
@@ -369,6 +385,16 @@ async function setDefault(model: string): Promise<void> {
           @click="askApprove(s)"
         >
           {{ s.state === 'approved' ? '重新确认' : '查看命令' }}
+        </NButton>
+        <NButton
+          v-if="s.state === 'disabled'"
+          size="tiny"
+          quaternary
+          :loading="mcpBusy === `${s.pluginId}::${s.server}`"
+          :disabled="mcpBusy === `${s.pluginId}::${s.server}`"
+          @click="retryMcp(s)"
+        >
+          重新尝试
         </NButton>
         <NButton
           v-if="s.state !== 'rejected'"

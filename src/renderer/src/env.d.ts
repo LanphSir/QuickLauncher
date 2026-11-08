@@ -211,6 +211,8 @@ interface PanelApi {
   /** MCP 服务（v0.6.4）：列出声明的命令；决策会落盘并把指纹绑到当前命令 */
   aiMcpServers(): Promise<AiMcpServerView[]>
   aiMcpDecision(pluginId: string, server: string, allow: boolean): Promise<{ ok: boolean; message?: string }>
+  /** 崩溃停用后重新连一次（清掉本会话的停用标记） */
+  aiMcpRetry(pluginId: string, server: string): Promise<{ ok: boolean; message?: string }>
   /** 自定义外部应用（设置 → 外部应用） */
   getShortcuts(): Promise<ShortcutEntry[]>
   getShortcut(id: string): Promise<ShortcutEntry | null>

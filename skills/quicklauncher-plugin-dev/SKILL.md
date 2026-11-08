@@ -120,8 +120,8 @@ import '../../../src/shared/plugin-ui.css'  // 形：页头/按钮/输入/列表
   `--danger*`、`--r-xs…xl`、`--shadow-1…3`、`--scrim`（遮罩）、`--mark`（命中高亮）、
   `--on-accent`（主色底上的文字）。要新的语义色先加到 `theme.css`，不要就地发明。
 - **浮层用共享组件，不要复制**：`src/shared/ui/{PopMenu.vue,ConfirmDialog.vue,menu.ts}`。
-  宿主那份在 `src/renderer/src/components/`（走 OverlayHost 的可见性登记），插件拿不到；
-  但插件与插件之间可以共用——独立构建照样能跨目录 import `.vue`。
+  宿主从 v0.6.9 起用的也是这同一份（多传 `managed`，Esc 与外部点击交给 OverlayHost），
+  插件侧直接挂就行——独立构建照样能跨目录 import `.vue`。
 - **破坏性操作不进按钮行**：删除/清空/卸载一律收进 `···` 或右键菜单，并过一遍 `ConfirmDialog`
   （默认焦点在「取消」）。参考 `plugins/clipboard/`（行删除 + 清空）、`plugins/translator/`（引擎删除）。
 - **不用 `window.confirm`**，也别在插件页引 naive-ui：体积、风格、主题覆盖都不对，得不偿失。

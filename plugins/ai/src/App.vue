@@ -17,6 +17,8 @@ import type {
 import PopMenu from '../../../src/shared/ui/PopMenu.vue'
 import ConfirmDialog from '../../../src/shared/ui/ConfirmDialog.vue'
 import { MENU_W, type MenuItem } from '../../../src/shared/ui/menu'
+import { answerStart } from './answer'
+import { escapeHtml, renderMarkdown, textSegs, type TextSeg } from './markdown'
 
 const api = window.appapi
 
@@ -158,14 +160,6 @@ function filesOf(message: AiChatMessage): AiFilePart[] {
  * 这些中间产物全写进同一条 assistant 消息里。用户要看的是**最后那段回答**，
  * 而前面的推理、工具、过程中的碎话都属于「过程」——它们不该和答案平铺在一起。
  */
-function answerStart(message: AiChatMessage): number {
-  for (let i = message.parts.length - 1; i >= 0; i--) {
-    const p = message.parts[i]
-    if (p.type === 'text' && p.text.trim()) return i
-  }
-  return message.parts.length
-}
-
 /** 过程：最终回答之前的一切（推理 / 工具调用 / 过程中的叙述），按发生顺序 */
 function processParts(message: AiChatMessage): AiMessagePart[] {
   return message.parts
@@ -257,63 +251,13 @@ function runningLabel(message: AiChatMessage): string {
 }
 
 /**
- * 正文分段：把 ``` 围栏拆成代码块渲染。
+ * 正文分段与渲染：代码块拆出去单独渲染，剩下的交给 markdown.ts。
  *
- * 不引 markdown 库：这里只需要「代码块 + 其余原样」，引一个解析器反而要处理
- * 表格、嵌套列表、HTML 转义一堆边界。没闭合的围栏也按代码块处理——流式输出时
- * 首尾围栏不是同时到的，不这样会先闪一段带 ``` 的纯文本。
+ * 纯逻辑都在 `markdown.ts`（可单测），这里只剩两件事：按角色选渲染器、
+ * 用户消息不做格式——气泡里嵌粗体/表格比纯文本更难读。
  */
-interface TextSeg {
-  code: boolean
-  text: string
-  lang: string
-}
-
-function textSegs(text: string): TextSeg[] {
-  const out: TextSeg[] = []
-  let i = 0
-  while (i < text.length) {
-    const open = text.indexOf('```', i)
-    if (open < 0) {
-      out.push({ code: false, text: text.slice(i), lang: '' })
-      break
-    }
-    if (open > i) out.push({ code: false, text: text.slice(i, open), lang: '' })
-    const nl = text.indexOf('\n', open + 3)
-    const lang = (nl < 0 ? text.slice(open + 3) : text.slice(open + 3, nl)).trim()
-    const bodyStart = nl < 0 ? text.length : nl + 1
-    const close = text.indexOf('```', bodyStart)
-    out.push({
-      code: true,
-      text: text.slice(bodyStart, close < 0 ? text.length : close).replace(/\n$/, ''),
-      lang
-    })
-    i = close < 0 ? text.length : close + 3
-  }
-  return out
-}
-
-/** 用户消息不做代码块：气泡里嵌一块深色区域，比纯文本更难读 */
 function segsFor(message: AiChatMessage, text: string): TextSeg[] {
   return message.role === 'assistant' ? textSegs(text) : [{ code: false, text, lang: '' }]
-}
-
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-}
-
-/**
- * 极轻的行内格式：`代码`、**粗体**、行首 # 标题。
- *
- * 只做这三样，是因为它们在对话里出现频率最高，而「原样显示星号和井号」比
- * 没有格式更难看。**先转义再替换**：模型输出里带 <script> 也只是字面量。
- * 不做表格/嵌套列表——那需要真正的解析器，不是几行正则能兜住的。
- */
-function inlineHtml(text: string): string {
-  return escapeHtml(text)
-    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/^#{1,6}[ \t]+(.+)$/gm, '<span class="md-h">$1</span>')
 }
 
 function resultOf(message: AiChatMessage, callId: string): AiToolResultPart | undefined {
@@ -1078,7 +1022,7 @@ onMounted(async () => {
                   <div
                     v-else
                     class="pre"
-                    v-html="m.role === 'assistant' ? inlineHtml(seg.text) : escapeHtml(seg.text)"
+                    v-html="m.role === 'assistant' ? renderMarkdown(seg.text) : escapeHtml(seg.text)"
                   />
                 </template>
               </template>
@@ -1791,8 +1735,12 @@ onMounted(async () => {
   margin-top: 8px;
 }
 
-/* 行内格式：只让「代码 / 粗体 / 标题」和正文有区分，不改字号底色整体观感 */
-.pre code {
+/*
+ * 行内格式：只让「代码 / 粗体 / 标题」和正文有区分，不改字号底色整体观感。
+ * 正文是 v-html 塞进来的，没有 scoped 的 data-v 属性，所有后代选择器都要走 :deep()，
+ * 否则规则一条都不生效（表格没边框、标题不放大就是这里漏了）。
+ */
+.pre :deep(code) {
   padding: 1px 5px;
   border-radius: 4px;
   background: rgba(15, 23, 42, 0.06);
@@ -1801,13 +1749,13 @@ onMounted(async () => {
   color: var(--text-1);
 }
 
-.pre strong {
+.pre :deep(strong) {
   font-weight: 600;
   color: var(--text-1);
 }
 
 /* 行首 # 标题：在 pre-wrap 里也要独占一行，靠 block 撑开 */
-.pre .md-h {
+.pre :deep(.md-h) {
   display: block;
   margin: 8px 0 2px;
   font-size: 14px;
@@ -1816,11 +1764,101 @@ onMounted(async () => {
   color: var(--text-1);
 }
 
-.pre .md-h:first-child {
+.pre :deep(.md-h:first-child) {
   margin-top: 0;
 }
 
-.msg.user .pre code {
+/* 标题分级：只差字号不加线，长答案里靠字号就够分层了 */
+.pre :deep(.md-h1) {
+  font-size: 15.5px;
+}
+
+.pre :deep(.md-h3),
+.pre :deep(.md-h4),
+.pre :deep(.md-h5),
+.pre :deep(.md-h6) {
+  font-size: 13px;
+}
+
+.pre :deep(.md-p) {
+  margin: 0;
+}
+
+.pre :deep(.md-p + .md-p) {
+  margin-top: 8px;
+}
+
+/* 列表：缩进只留一级的宽度，嵌套靠 padding-left 自然累加 */
+.pre :deep(ul),
+.pre :deep(ol) {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+
+.pre :deep(li) {
+  margin: 2px 0;
+}
+
+.pre :deep(li > ul),
+.pre :deep(li > ol) {
+  margin: 2px 0;
+}
+
+.pre :deep(.md-quote) {
+  margin: 8px 0;
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--text-2);
+}
+
+.pre :deep(.md-hr) {
+  height: 1px;
+  margin: 10px 0;
+  border: 0;
+  background: var(--line);
+}
+
+/*
+ * 表格：宽了就自己横向滚，别把整条消息撑出横向滚动条。
+ * 单元格里 reset 掉 pre-wrap——表格靠列宽排版，保留换行只会让格子歪。
+ */
+.pre :deep(.md-table) {
+  margin: 8px 0;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+
+.pre :deep(.md-table table) {
+  /* 容器窄时按内容撑开（在 .md-table 里横向滚），容器宽时铺满。
+     只写 width: 100% 的话，窄窗口会把三列表格挤成"一行一个字" */
+  width: 100%;
+  min-width: max-content;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: normal;
+}
+
+.pre :deep(.md-table th),
+.pre :deep(.md-table td) {
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.pre :deep(.md-table th) {
+  font-weight: 600;
+  color: var(--text-1);
+  background: var(--bg-hover);
+}
+
+.pre :deep(.md-table tr:last-child td) {
+  border-bottom: 0;
+}
+
+.msg.user .pre :deep(code) {
   background: rgba(255, 255, 255, 0.6);
 }
 

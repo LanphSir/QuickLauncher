@@ -1,30 +1,38 @@
 <script lang="ts">
 /**
- * 插件页浮层菜单（`···` 与右键共用）。
+ * 浮层菜单（宿主与插件页共用的唯一实现）。
  *
  * 为什么不用 naive-ui / 原生右键菜单：原生菜单在这个圆角浮窗里像另一个程序的，
- * 而且拿不到"危险操作变红、图标对齐、Esc 只关菜单不退插件"这些细节。
+ * 而且拿不到"危险操作变红、图标对齐、Esc 只关菜单"这些细节。
  *
- * 交互约定（与主面板的 ContextMenu 保持一致）：
- * - 位置按视口翻转，贴边时整体平移而不是裁掉一半；
- * - Esc / 点外面 / 滚动容器滚动 都会关闭，Esc 在捕获阶段拦下，不会顺带把插件退掉；
- * - 上下键在项之间移动焦点，回车即触发（原生 button 行为），打开时焦点在第一项。
+ * 两种用法：
+ * - **自管**（插件页）：自己挂 `<Teleport>`，点外面 / Esc / 滚动都自己关；
+ * - **托管**（宿主的面板浮层）：`managed` 打开，不再 Teleport、不拦外面点击和 Esc，
+ *   交给 `OverlayHost` 统一处理（遮罩、Esc 只关栈顶、Tab 困在层内）。
+ *   宿主里再自己关一次，会出现"Esc 关了菜单又触发面板隐藏"这种连锁反应。
+ *
+ * 定位：挂载后量真实尺寸再定向。菜单项可能换行、带提示、带分隔线，
+ * 按 `itemCount * 行高` 估算迟早会在某个组合下把菜单顶出窗口。
  */
 </script>
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import { MENU_W, type MenuIcon, type MenuItem } from './menu'
+import { MENU_ICONS, MENU_W, type MenuIcon, type MenuItem } from './menu'
 
-const ITEM_H = 32
-/** 上下内边距 + 边框，给翻转计算留够余量 */
-const PAD = 12
+/** 视口边距：菜单贴边时留一点缝，别把圆角切掉 */
+const PAD = 8
 
-const props = defineProps<{
-  x: number
-  y: number
-  items: MenuItem[]
-}>()
+const props = withDefaults(
+  defineProps<{
+    x: number
+    y: number
+    items: MenuItem[]
+    /** 由 OverlayHost 托管：不 Teleport、不自己拦外部点击与 Esc */
+    managed?: boolean
+  }>(),
+  { managed: false }
+)
 
 const emit = defineEmits<{
   pick: [key: string]
@@ -32,32 +40,34 @@ const emit = defineEmits<{
 }>()
 
 const el = ref<HTMLDivElement | null>(null)
+/** 先按原坐标渲染一次（不可见），量到尺寸后再定位，避免闪一帧在错误位置 */
+const pos = ref({ left: props.x, top: props.y, ready: false })
+const origin = ref('top left')
 
-const height = computed(() => props.items.length * ITEM_H + PAD)
+const valid = computed(() => props.items.filter((item) => item.separator || item.label))
 
-const style = computed(() => {
+function pathOf(icon?: string): string | undefined {
+  if (!icon) return undefined
+  return icon.startsWith('M') ? icon : MENU_ICONS[icon as MenuIcon]
+}
+
+function place(): void {
+  const node = el.value
+  if (!node) return
+  const rect = node.getBoundingClientRect()
   const vw = window.innerWidth
   const vh = window.innerHeight
-  // 贴边时整体平移而不是裁掉：菜单被切一半比位置不完美糟得多
-  const left = Math.max(8, Math.min(props.x, vw - MENU_W - 8))
-  const top = props.y + height.value > vh - 8 ? Math.max(8, props.y - height.value) : props.y
-  return { left: `${left}px`, top: `${top}px`, width: `${MENU_W}px` }
-})
-
-const PATHS: Record<MenuIcon, string> = {
-  rename: 'M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3z M13.5 6.5l3 3',
-  delete:
-    'M4 7h16 M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2 M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12',
-  copy: 'M9 9h9v11H9z M6 15H4V4h11v2',
-  chat: 'M20 12a8 8 0 0 1-11.6 7.1L4 20l1-4.2A8 8 0 1 1 20 12z',
-  folder: 'M4 7a1 1 0 0 1 1-1h5l2 2h7a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z',
-  up: 'M12 19V5 M6 11l6-6 6 6',
-  down: 'M12 5v14 M6 13l6 6 6-6',
-  external: 'M14 4h6v6 M20 4l-8 8 M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5'
+  let left = props.x
+  let top = props.y
+  // 右边放不下就翻到光标左侧；翻完还放不下就贴边（贴边总比被裁掉好）
+  if (left + rect.width > vw - PAD) left = Math.max(PAD, Math.min(props.x - rect.width, vw - rect.width - PAD))
+  if (top + rect.height > vh - PAD) top = Math.max(PAD, props.y - rect.height)
+  origin.value = `${top < props.y ? 'bottom' : 'top'} ${left < props.x ? 'right' : 'left'}`
+  pos.value = { left, top, ready: true }
 }
 
 function pick(item: MenuItem): void {
-  if (item.disabled) return
+  if (item.disabled || item.separator) return
   emit('pick', item.key)
   emit('close')
 }
@@ -71,6 +81,8 @@ function onDocPointer(event: PointerEvent): void {
 
 function onKey(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
+    // 托管时 Esc 归 OverlayHost（它只关栈顶，还能把焦点还回去）
+    if (props.managed) return
     // capture 拦下：插件页自己的 Esc 处理会把整个插件退掉
     event.preventDefault()
     event.stopPropagation()
@@ -78,13 +90,23 @@ function onKey(event: KeyboardEvent): void {
     return
   }
   if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
-  event.preventDefault()
   const buttons = Array.from(el.value?.querySelectorAll<HTMLButtonElement>('.pop-item') ?? []).filter(
     (b) => !b.disabled
   )
   if (buttons.length === 0) return
+  event.preventDefault()
   const at = buttons.indexOf(document.activeElement as HTMLButtonElement)
-  const next = event.key === 'ArrowDown' ? (at + 1) % buttons.length : (at <= 0 ? buttons.length - 1 : at - 1)
+  // 还没聚焦时：↓ 进第一项，↑ 进最后一项
+  const next =
+    at < 0
+      ? event.key === 'ArrowDown'
+        ? 0
+        : buttons.length - 1
+      : event.key === 'ArrowDown'
+        ? (at + 1) % buttons.length
+        : at <= 0
+          ? buttons.length - 1
+          : at - 1
   buttons[next]?.focus()
 }
 
@@ -93,37 +115,65 @@ function onScroll(): void {
   emit('close')
 }
 
+const listening = ref(false)
+
 onMounted(() => {
-  document.addEventListener('pointerdown', onDocPointer, true)
-  window.addEventListener('keydown', onKey, true)
-  window.addEventListener('scroll', onScroll, true)
-  void nextTick(() => el.value?.querySelector<HTMLButtonElement>('.pop-item:not([disabled])')?.focus())
+  void nextTick(() => {
+    place()
+    // 上下键两种模式都要：宿主的菜单不抢焦点，只能靠键盘自己走进去
+    window.addEventListener('keydown', onKey, true)
+    if (!props.managed) {
+      // 外部点击与滚动归自己；托管时这两件归 OverlayHost 的遮罩
+      document.addEventListener('pointerdown', onDocPointer, true)
+      window.addEventListener('scroll', onScroll, true)
+      void nextTick(() => el.value?.querySelector<HTMLButtonElement>('.pop-item:not([disabled])')?.focus())
+    }
+    listening.value = true
+  })
 })
 
 onUnmounted(() => {
-  document.removeEventListener('pointerdown', onDocPointer, true)
+  if (!listening.value) return
   window.removeEventListener('keydown', onKey, true)
+  if (props.managed) return
+  document.removeEventListener('pointerdown', onDocPointer, true)
   window.removeEventListener('scroll', onScroll, true)
 })
 </script>
 
 <template>
-  <Teleport to="body">
-    <div ref="el" class="pop-menu" :style="style" role="menu">
-      <button
-        v-for="item in items"
-        :key="item.key"
-        class="pop-item"
-        :class="{ danger: item.danger }"
-        :disabled="item.disabled"
-        role="menuitem"
-        @click="pick(item)"
-      >
-        <svg v-if="item.icon" class="pop-icon" viewBox="0 0 24 24" aria-hidden="true">
-          <path :d="PATHS[item.icon]" />
-        </svg>
-        <span class="pop-label">{{ item.label }}</span>
-      </button>
+  <Teleport to="body" :disabled="props.managed">
+    <div
+      ref="el"
+      class="pop-menu"
+      :class="{ ready: pos.ready }"
+      :style="{
+        left: `${pos.left}px`,
+        top: `${pos.top}px`,
+        minWidth: `${MENU_W}px`,
+        transformOrigin: origin
+      }"
+      role="menu"
+    >
+      <template v-for="item in valid" :key="item.key">
+        <div v-if="item.separator" class="pop-sep" role="separator" />
+        <button
+          v-else
+          class="pop-item"
+          :class="{ danger: item.danger }"
+          :disabled="item.disabled"
+          role="menuitem"
+          @click="pick(item)"
+        >
+          <svg v-if="item.icon" class="pop-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path :d="pathOf(item.icon)" />
+          </svg>
+          <span class="pop-label">{{ item.label }}</span>
+          <span v-if="item.hint" class="pop-hint">{{ item.hint }}</span>
+        </button>
+      </template>
+      <!-- 全是分隔线时不至于渲染出一张空卡片 -->
+      <p v-if="!valid.length" class="pop-empty">没有可用操作</p>
     </div>
   </Teleport>
 </template>
@@ -132,13 +182,20 @@ onUnmounted(() => {
 .pop-menu {
   position: fixed;
   z-index: 60;
+  max-width: 280px;
   padding: 5px;
+  display: flex;
+  flex-direction: column;
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-3);
+  opacity: 0;
+}
+
+.pop-menu.ready {
+  opacity: 1;
   animation: pop-in 0.12s var(--ease);
-  transform-origin: top left;
 }
 
 @keyframes pop-in {
@@ -210,5 +267,24 @@ onUnmounted(() => {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.pop-hint {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--text-4);
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.pop-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line);
+}
+
+.pop-empty {
+  padding: 8px 9px;
+  font-size: 12px;
+  color: var(--text-4);
 }
 </style>

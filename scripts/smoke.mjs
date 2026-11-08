@@ -164,7 +164,8 @@ const menuLayers = await evaluate(ws, `Array.from(document.querySelectorAll('[da
 check('右键菜单经统一浮层渲染', menuLayers.length === 1 && menuLayers[0] === 'context-menu', menuLayers.join(','))
 
 await evaluate(ws, `(() => {
-  const item = Array.from(document.querySelectorAll('.ctx-item')).find((e) => e.textContent.includes('应用详情'))
+  // v0.6.9 起宿主的菜单与插件页共用一份 PopMenu，行类名从 .ctx-item 变成 .pop-item
+  const item = Array.from(document.querySelectorAll('.pop-menu .pop-item')).find((e) => e.textContent.includes('应用详情'))
   if (!item) return false
   item.click()
   return true

@@ -66,7 +66,7 @@ function menuItemsFor(p: PluginSummary): ContextMenuItem[] {
     { key: 'open', label: '打开', icon: 'play', action: () => void open(p) },
     {
       key: 'pin',
-      label: p.pinned ? '取消固定' : '固定到已固定',
+      label: p.pinned ? '取消固定' : '固定到顶部',
       icon: p.pinned ? 'pin-off' : 'pin',
       action: () => emit('pin', p)
     },
